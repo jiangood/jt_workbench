@@ -6,4 +6,3 @@ dist/
 *.local
 .playwright-mcp/
 .idea/
-.playwright-mcp/

@@ -1,8 +1,8 @@
-# workbench-cf
+# jt_workbench
 
-个人工作台的 Cloudflare 免费版重写：**Worker（Hono + D1 + R2）+ 局域网执行节点 agent**。
+个人工作台的 Cloudflare 免费版重写：**Worker（Hono + D1 + R2）+ 局域网计算节点 agent**。
 
-- 方案文档（唯一事实源）：`C:\Users\water\.opencode\plan\cloudflare-migration.md`
+- 开发 / 贡献约定：`AGENTS.md`
 - 旧系统参考（只读）：`D:\ws\workbench`（并行运行期间保持在线，切流稳定后归档）
 
 ## 结构
@@ -10,7 +10,7 @@
 | 目录 | 说明 |
 |------|------|
 | `worker/` | Cloudflare Worker：静态页 + API + `/node/*` 节点协议（core/modules 分层） |
-| `agent/` | 局域网执行节点：Node 22 + TS + esbuild 单文件，docker compose 双容器（agent + watchtower fork） |
+| `agent/` | 局域网计算节点：Node 22 + TS + esbuild 单文件，docker compose 双容器（agent + watchtower fork） |
 
 ## 开发
 
@@ -19,22 +19,22 @@ cd worker && npm ci && npm run dev     # wrangler dev
 cd agent && npm ci && npm run dev      # build + node dist/agent.mjs（需 NODE_KEY）
 ```
 
-**本地不碰线上**：`wrangler dev` 默认 local 模式（本地 D1 / R2）；`npm run deploy` 被 `scripts/guard-deploy.mjs` 拦截，只能 `npm run deploy:dry`（只打包）。任何 `--remote` 命令、R2 写入、生产 API 写请求都不要在本地执行。
+**本地不碰线上**：`wrangler dev` 默认 local 模式（本地 D1 / R2）；`npm run deploy` 被 `guard-deploy.mjs` 拦截（要求 `CI=true`），本地只能用 `npm run deploy:dry` 打包预检。红线细节见 `AGENTS.md`。
 
 ## 发布到线上
 
 线上只通过 **GitHub Release** 变更，push 不部署：
 
 1. 在 `main` 上开发完，本地 `npm run check` 全绿；
-2. GitHub → Releases → **Draft a new release** → 新建 tag（如 `v0.2.0`）→ **Publish release**；
+2. GitHub → Releases → **Draft a new release** → 新建 tag（如 `v0.6.0`）→ **Publish release**；
 3. `release.yml` 自动执行：校验 tag 在 `main` 上 → worker / agent 类型检查 + worker dry-run → D1 迁移 → 部署 Worker → 仅当 `agent/` 有改动时构建镜像（发布 tag + `v<sha>` + `latest`，版本号烧进镜像）并回写 D1 `agent_latest_version`（发布 tag 去掉前缀 `v`），节点据此即时升级。
 
 只发布有变化的半边：纯 Worker 发布不会重推 agent `latest`，节点不会白白重启。失败在 Actions 里 **Re-run jobs** 即可，不会重复建 release。
 
 - **D1 迁移必须向后兼容**（expand/contract）：先加列/表 → 改代码 → 再删旧结构；D1 不会随 Worker 回滚。
 - **回滚**：把旧 tag 重新发布一次 release（走同一流程、有记录），或用 `v<sha>` 镜像重建 agent。不要在本地直接 `wrangler rollback`。
-- **首次初始化**（订阅源 / 抓取任务 / 屏蔽词）在 `migrations/0013_seed_news.sql` 里，随发布自动执行一次，无需手工 `d1 execute`。
 - 仓库 Secrets 需要 `CLOUDFLARE_API_TOKEN`；建议给 `production` environment 配 required reviewer，让发布先等人工批准。
+- 迁移 / 首次 seed（`0013_seed_news.sql`）/ 镜像标签与版本回写的约定见 `AGENTS.md`「发布（CI）」。
 
 ### Cloudflare API Token
 
@@ -56,25 +56,23 @@ cd agent && npm ci && npm run dev      # build + node dist/agent.mjs（需 NODE_
 - 首次绑定自定义域若报 DNS 权限错误，再给 token 加 `Zone : DNS : Edit`
 - 轮换：新建 token 更新 secret 后，在 Cloudflare 撤销旧 token；泄露时立即撤销
 
-## 部署执行节点（agent）
+## 部署计算节点（agent）
 
-agent 是局域网里的哑执行节点：poll 领任务 → 执行 → 回传，无状态、无本地队列；升级交给 Watchtower，不手工重建。
+agent 是局域网里的哑计算节点：poll 领任务 → 执行 → 回传，无状态、无本地队列；升级交给 Watchtower，不手工重建。
 
 **部署只有两步：后台点「添加节点」→ 之后在该行点「查看接入方式」拿命令 → 在目标机器粘贴执行。** 宿主机不需要 `.env`，节点密钥由安装脚本直接写进 `docker-compose.yml`。
 
 ### 1. Worker 侧前置（一次性）
 
-无需本地操作：发布 release 时 `release.yml` 会自动 `wrangler d1 migrations apply jt_workbench --remote`，建表和默认数据（`0013_seed_news.sql`）都在迁移里。只需在仓库 Secrets 配好 `CLOUDFLARE_API_TOKEN`。
+无需本地操作：建表与默认数据随 release 自动迁移（见「发布到线上」），只需在仓库 Secrets 配好 `CLOUDFLARE_API_TOKEN`。站点起来后：
 
-- 节点登记直接写 `node_registry`（添加即入库，`0010`）；`node_claim`（`0011`）已废弃，表保留但不再读写。
-- 管理员密码存 D1，**不需要 `wrangler secret`**：
-  - 首次部署：发布完成后打开站点 → 登录页自动切到「初始化管理员」→ 设置账号密码（≥8 位）。
-  - 日常改密：`/#/admin` →「账号安全」→ 输入当前密码和新密码；改完所有旧会话立即失效，需重新登录。
-- 其他参数（JWT 密钥 / 邮件提醒 / agent 版本）都在 `/#/admin` →「参数与密钥」里维护。邮件提醒收在一张卡片里：选服务商模板（QQ / 163 / 126 / Gmail / Outlook / 新浪 / 阿里云）+ 填邮箱账号和授权码即可，SMTP 主机 / 端口 / 加密方式自动配好，卡片里还能直接发一封测试邮件。
+- 首次部署：打开登录页会自动切到「初始化管理员」→ 设置账号密码（≥8 位）。
+- 日常改密：`/#/admin` →「账号安全」→ 输入当前密码和新密码；改完所有旧会话立即失效，需重新登录。
+- 其他参数（JWT 密钥 / 邮件提醒 / agent 版本）都在 `/#/admin` →「参数与密钥」里维护，**不需要 `wrangler secret`**。邮件提醒收在一张卡片里：选服务商模板（QQ / 163 / 126 / Gmail / Outlook / 新浪 / 阿里云）+ 填邮箱账号和授权码即可，SMTP 主机 / 端口 / 加密方式自动配好，卡片里还能直接发一封测试邮件。
 
 ### 2. 后台添加节点
 
-登录 `/#/admin` →「执行节点」→ **添加节点** → 输入名称（建议主机名，如 `nas-01`）。
+登录 `/#/admin` →「计算节点」→ **添加节点** → 输入名称（建议主机名，如 `nas-01`）。
 
 添加后立刻在列表里登记（接入前显示离线）；点击该行 **查看接入方式**，弹窗里有接入命令（节点密钥只写进生成的 compose，**页面不展示**）：
 
@@ -114,11 +112,11 @@ docker login ghcr.io -u jiangood
 
 （镜像公开的话可以删掉 compose 里 watchtower 的 `~/.docker/config.json` 挂载，否则 Docker 会把不存在的挂载点建成目录。）
 
-> watchtower 镜像用 `ghcr.io/nicholas-fedor/watchtower`（当前 `latest` = 1.24.0）。两点原因：Docker Hub 的正确仓库名是 `nickfedor/watchtower`（`nicholas-fedor/watchtower` 在 hub 上不存在，拉取会报 repository does not exist），且国内直连 hub 基本拉不动；ghcr 与 hub 由同一发布流水线推送，内容一致。
+> watchtower 镜像用 `ghcr.io/nicholas-fedor/watchtower`。两点原因：Docker Hub 的正确仓库名是 `nickfedor/watchtower`（`nicholas-fedor/watchtower` 在 hub 上不存在，拉取会报 repository does not exist），且国内直连 hub 基本拉不动；ghcr 与 hub 由同一发布流水线推送，内容一致。
 
 ### 4. 验证
 
-页面弹窗会自动变成「节点已接入（在线）」；之后在 `/#/admin` 的「执行节点」表格里能看到该节点在线。
+页面弹窗会自动变成「节点已接入（在线）」；之后在 `/#/admin` 的「计算节点」表格里能看到该节点在线。
 
 也可以在宿主机看日志：
 
@@ -138,7 +136,7 @@ cd workbench-agent && docker compose logs -f workbench-agent
 ### 5. 升级、回滚、重装
 
 - **日常升级**：发布 release（见「发布到线上」）→ 推 `:latest` + 回写 D1 `agent_latest_version` → 节点下次 poll（≤10min）发现版本落后且空闲，立刻 POST Watchtower `/v1/update`（`async=true`），秒级拉新重建；Watchtower 自身的 15min 轮询保留为兜底。重建时原样复制 command / env / 挂载 / 网络 / 重启策略。
-- **即时升级的两处前提**（v5.1）：agent 容器要有 `WATCHTOWER_URL` / `WATCHTOWER_TOKEN`，watchtower 要开 `WATCHTOWER_HTTP_API_ENDPOINTS=update` + 同一个 token（安装脚本写的 compose 已带）。老节点没这两项也能升级，只是回到 15min 轮询——想立刻生效就重装一次。
+- **即时升级的两处前提**：agent 容器要有 `WATCHTOWER_URL` / `WATCHTOWER_TOKEN`，watchtower 要开 `WATCHTOWER_HTTP_API_ENDPOINTS=update` + 同一个 token（安装脚本写的 compose 已带）。老节点没这两项也能升级，只是回到 15min 轮询——想立刻生效就重装一次。
 - **配置变更**（换镜像、改 Worker 地址等）Watchtower 不负责，手动改 `workbench-agent/docker-compose.yml` 后 `docker compose up -d`。
 - **回滚**：把 `image:` 钉到 `ghcr.io/jiangood/workbench-agent:v<short-sha>`（对应提交的短 sha，也可用发布 tag）再 `up -d`；钉住的镜像没有更新摘要，即时升级和 15min 轮询都不会把它拉回 `latest`，确认稳定后再改回 `:latest`。
 - **重装 / 换机**：在节点行点「查看接入方式」取回长期有效的命令（命令自带 `WORKBENCH_AGENT_FORCE=1`，已登记节点不设过期）。

@@ -1,13 +1,13 @@
 # 项目约定（jt_workbench）
 
-个人工作台的 Cloudflare 免费版重写：Worker（控制面 + 存储面）+ 局域网执行节点 agent。
-方案文档（唯一事实源）：`C:\Users\water\.opencode\plan\cloudflare-migration.md`。
+个人工作台的 Cloudflare 免费版重写：Worker（控制面 + 存储面）+ 局域网计算节点 agent。
+使用 / 部署说明见 `README.md`；本文件是开发约定。
 
 ## 布局
 
 - `worker/`：Cloudflare Worker（Hono + D1 + R2），静态页 + API + 节点协议
 - Cloudflare 资源统一 `jt` 前缀，避免与另一项目混淆：Worker `jt-workbench`、D1 `jt_workbench`、R2 `jt-workbench`（`zll-*` 属于另一个项目，勿混用）
-- `agent/`：局域网执行节点（Node 22 + TypeScript + esbuild 单文件，容器化部署）
+- `agent/`：局域网计算节点（Node 22 + TypeScript + esbuild 单文件，容器化部署）
 - **两棵依赖树各自独立**：`worker/package-lock.json` 与 `agent/package-lock.json` 各自提交，禁止顺手改对方的依赖版本
 - 参考旧项目：`D:\ws\workbench`（只读——Java 源码 / `application.yml` 业务参数 / `WorkbenchDataInitializer.java` 的 seed cron）
 
@@ -47,14 +47,14 @@
 - **密钥不在页面展示**：`/api/admin/nodes` 不返回 `node_key`，取密钥只能从该行「查看接入方式」弹窗的 compose 里拿；换密钥点「重置密钥」（`POST /api/admin/nodes/:name/rotate-key`）——旧密钥立即失效、心跳行删除（立刻显示离线），随后用新接入命令重装（命令自带 `WORKBENCH_AGENT_FORCE=1`）
 - **密钥一律不进 agent 环境变量**（例外只有两个，均由安装脚本写进 compose：节点自身的 `NODE_KEY`，以及同机 Watchtower 的 `WATCHTOWER_TOKEN`——随机生成、只走 compose 内网做即时升级，不落 D1）：与 Worker 同一条红线——第三方 token / API Key 存 D1（`app_config` + `CONFIG_FIELDS`），Worker 下发任务时注入 payload，agent 只读 `payload` 里的值（例：`zsxq_sync` 的 token）
 - 出站 fetch 一律挂 `AbortSignal.timeout(30s)`；SSRF 守卫默认拒绝内网/环回地址
-- 一次只持一个任务；本地队列已删除（v4.9 领 1 + 捎带下发）
+- 一次只持一个任务（领 1 + 捎带下发）；本地队列已删除
 
 ## 发布（CI）
 
 - **push 不部署**：`main` 上直接开发，push 只进版本库；线上只由 `release.yml` 在 GitHub Release 发布时变更
 - `release.yml` 流程：校验 release tag 在 `main` 上 → `check` + `deploy:dry` → `wrangler d1 migrations apply --remote` → `wrangler deploy` → 仅 `agent/` 有 diff 时构建镜像
-- agent 镜像打三个标签：发布 tag（可追溯）+ `v<sha>`（不可变回滚锚点）+ `:latest`（Watchtower 轮询目标）
-- agent 有变更时把发布 tag（去前缀 `v`）烧进镜像，并回写 D1 `agent_latest_version`：节点下次 poll 发现落后且空闲，就触发 Watchtower 即时升级（`/v1/update?async=true`），15min 轮询保留兜底
+- agent 镜像打三个标签：发布 tag（可追溯）+ `v<sha>`（不可变回滚锚点）+ `:latest`（Watchtower 轮询目标）；agent 有变更时把发布 tag（去前缀 `v`）烧进镜像并回写 D1 `agent_latest_version`，节点空闲即触发 Watchtower 即时升级，15min 轮询保留兜底
 - 纯 Worker 发布不重推 `latest`，避免所有节点无意义重启
 - 迁移必须向后兼容（expand/contract）：D1 只能向前，Worker 回滚不会回滚 schema
 - 首次初始化（订阅源 / 抓取任务 / 屏蔽词）在 `0013_seed_news.sql` 迁移里，不手工执行
+- 具体步骤、token 配置与回滚见 `README.md`「发布到线上」
