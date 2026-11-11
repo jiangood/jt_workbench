@@ -74,6 +74,8 @@
  * ============================================================ */
 :root,
 :root[data-theme="light"] {
+  color-scheme: light;
+
   --bg: #f7fafa;
   --surface: #ffffff;
   --surface-2: var(--slate-100);
@@ -113,8 +115,10 @@
   --down: #15803d;
 }
 
-/* 深色主题结构位：本轮不暴露开关，后续加 data-theme="dark" 即可生效 */
+/* 深色主题：首屏脚本 / 侧栏开关写 data-theme="dark" */
 :root[data-theme="dark"] {
+  color-scheme: dark;
+
   --bg: #0d1414;
   --surface: #131c1c;
   --surface-2: #1a2524;
@@ -151,6 +155,11 @@
 
   --up: #f87171;
   --down: #4ade80;
+
+  /* 深色下阴影需要更重才可见 */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
+  --shadow-md: 0 4px 14px rgba(0, 0, 0, .45);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, .55);
 }
 
 /* ============================================================
@@ -284,6 +293,26 @@ textarea:focus-visible {
 }
 .navlink[aria-current="page"] .ico,
 .navlink.active .ico { opacity: 1 }
+
+/* 侧栏底部的主题开关：桌面常驻，移动端随抽屉出现 */
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  margin-top: auto;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  background: none;
+  color: var(--muted-fg);
+  font-family: inherit;
+  font-size: var(--fs-md);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
+}
+.theme-toggle:hover { background: var(--surface-2); color: var(--fg) }
 
 .nav-group {
   margin: var(--sp-4) var(--sp-2) var(--sp-1);
@@ -625,9 +654,9 @@ textarea { resize: vertical; line-height: 1.55 }
 }
 .alert .ico { flex: 0 0 auto; margin-top: 2px }
 .alert strong { font-weight: 650 }
-.alert.danger { background: var(--danger-wash); border-color: var(--danger-line); color: #8a1c12 }
-.alert.warning { background: var(--warn-wash); border-color: var(--warn-line); color: #7c4a03 }
-.alert.success { background: var(--ok-wash); border-color: var(--ok-line); color: #14532d }
+.alert.danger { background: var(--danger-wash); border-color: var(--danger-line); color: var(--danger) }
+.alert.warning { background: var(--warn-wash); border-color: var(--warn-line); color: var(--warn) }
+.alert.success { background: var(--ok-wash); border-color: var(--ok-line); color: var(--ok) }
 
 /* 列表 */
 .list { display: flex; flex-direction: column; gap: var(--sp-2) }
@@ -641,8 +670,13 @@ textarea { resize: vertical; line-height: 1.55 }
   color: inherit;
   transition: border-color var(--dur-fast) ease, background var(--dur-fast) ease;
 }
-.list > a:hover { border-color: var(--primary); background: #fbfdfd }
+.list > a:hover { border-color: var(--primary); background: var(--surface-2) }
 .list > a.active { border-color: var(--primary); background: var(--primary-wash) }
+
+/* 笔记：左侧定宽列表 + 右侧自适应编辑器；窄屏改为上下堆叠 */
+.note-split { display: flex; align-items: flex-start; gap: var(--sp-4) }
+.note-list { flex: 0 0 320px; min-width: 0 }
+.note-editor { flex: 1 1 auto; min-width: 0 }
 
 /* 原生弹窗 */
 dialog {
@@ -681,6 +715,8 @@ dialog h5 { font-size: var(--fs-lg); font-weight: 650; margin-bottom: var(--sp-3
   border-top: 1px solid var(--border);
   box-shadow: 0 -4px 16px rgba(15, 23, 42, .06);
 }
+/* 作者样式里的 display:flex 会盖掉 [hidden] 的 UA display:none，必须显式还原 */
+.playerbar[hidden] { display: none }
 .playerbar .container { max-width: none; padding: 0 }
 audio { height: 34px }
 
@@ -766,6 +802,11 @@ hr.sep { border: 0; border-top: 1px solid var(--border); margin: var(--sp-5) 0 }
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)) }
 }
 
+@media (max-width: 640px) {
+  /* 书架卡片窄屏改单列，避免卡片底部三个按钮挤爆 166px 列宽 */
+  .book-grid > * { flex: 1 1 100% }
+}
+
 @media (max-width: 768px) {
   .topbar {
     position: sticky;
@@ -825,7 +866,10 @@ hr.sep { border: 0; border-top: 1px solid var(--border); margin: var(--sp-5) 0 }
   .page-title { font-size: var(--fs-lg) }
   th, td { padding: 8px 10px }
 
-  /* 窄屏表格由 layout.js 包一层 .table-scroll，横向滚动而不挤压列宽 */
+  .note-split { flex-direction: column; align-items: stretch }
+  .note-list { flex: 1 1 auto; width: 100% }
+
+  /* 窄屏表格由 setupTableScroll 包一层 .table-scroll，横向滚动而不挤压列宽 */
   .table-scroll {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;

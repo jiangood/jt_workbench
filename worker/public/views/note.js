@@ -13,13 +13,14 @@ export async function render(main) {
         <button class="btn sm primary" id="new">${icon('plus')}新建</button>
       </div>
     </div>
-    <div class="row">
-      <div><div class="list" id="notes"></div></div>
-      <div id="editor"></div>
+    <div class="note-split">
+      <div class="note-list"><div class="list" id="notes"></div></div>
+      <div class="note-editor" id="editor"></div>
     </div>`
 
   main.querySelector('#new').onclick = () => openEditor(main, null)
   currentId = null
+  emptyEditor(main.querySelector('#editor'))
   await refreshList(main)
 }
 
@@ -56,6 +57,10 @@ function renderAttaches(n) {
     <a class="badge" href="/api/note/attach/${esc(n.id)}/${i}">${icon('note', 14)}${esc(a.filename)} (${(a.size / 1024).toFixed(0)}KB)</a>`,
     )
     .join(' ')
+}
+
+function emptyEditor(editor) {
+  editor.innerHTML = '<div class="empty">选择左侧笔记，或点「新建」</div>'
 }
 
 function openEditor(main, n) {
@@ -106,7 +111,7 @@ function openEditor(main, n) {
     if (!n || !confirm('删除笔记及附件？')) return
     await api(`/api/note/${n.id}`, { method: 'DELETE' })
     currentId = null
-    editor.innerHTML = ''
+    emptyEditor(editor)
     await refreshList(main)
   }
 }

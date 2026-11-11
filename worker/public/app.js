@@ -6,6 +6,7 @@ import {
   setupDialog,
   setupDrawer,
   setupTableScroll,
+  setupTheme,
 } from './lib.js'
 
 const ROUTES = [
@@ -89,6 +90,7 @@ async function render() {
 
 renderNav()
 setupDrawer()
+setupTheme()
 setupDialog()
 window.addEventListener('hashchange', render)
 render()

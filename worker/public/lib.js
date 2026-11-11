@@ -22,6 +22,9 @@ const ICONS = {
   online: '<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>',
   offline: '<circle cx="12" cy="12" r="9"/><path d="m9 9 6 6M15 9l-6 6"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  moon: '<path d="M20.5 14.3A8.5 8.5 0 1 1 9.7 3.5a7 7 0 0 0 10.8 10.8Z"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.4 5.4l1.4 1.4M17.2 17.2l1.4 1.4M18.6 5.4l-1.4 1.4M6.8 17.2l-1.4 1.4"/>',
+  paperclip: '<path d="m20.5 11.6-8.2 8.2a4.7 4.7 0 0 1-6.6-6.6l8.5-8.5a3.1 3.1 0 0 1 4.4 4.4l-8.5 8.5a1.6 1.6 0 0 1-2.2-2.2l7.7-7.7"/>',
 }
 
 /** icon('news', 16) → 内联 SVG 字符串（装饰性，aria-hidden） */
@@ -145,6 +148,54 @@ export function setupDrawer() {
   })
 }
 
+/** 主题开关：首屏脚本已定 data-theme，这里只负责按钮、持久化与跟随系统 */
+export function setupTheme() {
+  const root = document.documentElement
+  const sidebar = document.getElementById('sidebar')
+  if (!sidebar) return
+
+  sidebar.insertAdjacentHTML(
+    'beforeend',
+    '<button class="theme-toggle" id="theme-toggle" type="button" aria-pressed="false" aria-label="深色模式"><span class="theme-icon"></span><span>深色模式</span></button>',
+  )
+  const btn = document.getElementById('theme-toggle')
+  const iconSlot = btn.querySelector('.theme-icon')
+  const KEY = 'wb-theme'
+
+  const stored = () => {
+    try {
+      return localStorage.getItem(KEY)
+    } catch {
+      return null
+    }
+  }
+
+  const apply = (theme) => {
+    const dark = theme === 'dark'
+    root.dataset.theme = dark ? 'dark' : 'light'
+    btn.setAttribute('aria-pressed', String(dark))
+    iconSlot.innerHTML = icon(dark ? 'sun' : 'moon', 18)
+  }
+
+  apply(root.dataset.theme === 'dark' ? 'dark' : 'light')
+
+  btn.addEventListener('click', () => {
+    const next = root.dataset.theme === 'dark' ? 'light' : 'dark'
+    apply(next)
+    try {
+      localStorage.setItem(KEY, next)
+    } catch {
+      /* 隐私模式下忽略 */
+    }
+  })
+
+  // 没显式选过主题时跟随系统切换
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+    if (stored()) return
+    apply(e.matches ? 'dark' : 'light')
+  })
+}
+
 /** 弹窗：点遮罩关闭 + 打开时回到顶部 */
 export function setupDialog() {
   const dlg = document.getElementById('dlg')
@@ -198,7 +249,6 @@ export const player = {
     audio.dataset.id = String(id)
     document.getElementById('np-title').textContent = title || ''
     document.getElementById('player-bar').hidden = false
-    document.body.classList.add('has-player')
     audio.play().catch(() => {})
     notifyPlayer()
   },
@@ -212,7 +262,6 @@ export const player = {
     delete audio.dataset.id
     document.getElementById('player-bar').hidden = true
     document.getElementById('np-title').textContent = ''
-    document.body.classList.remove('has-player')
     notifyPlayer()
   },
 

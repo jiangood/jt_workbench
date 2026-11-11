@@ -1,4 +1,4 @@
-import { api, esc, fmtTime } from '../lib.js'
+import { api, esc, fmtTime, icon } from '../lib.js'
 
 const PAGE_SIZE = 20
 let page = 1
@@ -40,7 +40,7 @@ export async function render(main) {
           </div>`
               : ''
           }
-          ${(t.files ?? []).length ? `<div class="small muted mt-1">📎 ${esc(t.files.map((f) => f.name).join('、'))}</div>` : ''}
+          ${(t.files ?? []).length ? `<div class="small muted mt-1">${icon('paperclip', 14)} ${esc(t.files.map((f) => f.name).join('、'))}</div>` : ''}
           <small class="muted">${fmtTime(t.createTime)}</small>
         </div>`,
           )

@@ -35,7 +35,7 @@ export async function render(main) {
       </div>
     </div>
     <div id="up-progress" class="small muted mb-2"></div>
-    <div class="row">
+    <div class="row book-grid">
       ${
         data.books
           .map(
