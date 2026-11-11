@@ -1,14 +1,13 @@
 # 部署双容器：agent + watchtower fork（v4.4：原版已归档，fork 语法兼容）
-# 密钥走 .env（不入库）；NODE_ID 多节点部署时必须各不相同
+# v4.12：本文件由后台「添加节点」生成的一键脚本自动落盘（含内联的 NODE_KEY）。
+#        这里留作手工部署参考：把 <NODE_KEY> 换成后台该节点显示/复制的密钥即可。
 services:
   workbench-agent:
-    image: ghcr.io/<you>/workbench-agent:latest
+    image: ghcr.io/jiangood/workbench-agent:latest
     restart: unless-stopped
+    command: ['https://jt.410518072.xyz'] # 唯一的启动配置：Worker 地址
     environment:
-      - WORKER_URL=${WORKER_URL}
-      - NODE_ID=${NODE_ID}
-      - NODE_KEY=${NODE_KEY}
-      # - POLL_INTERVAL=600
+      - NODE_KEY=<后台添加节点后生成>
     labels:
       - com.centurylinklabs.watchtower.enable=true
 

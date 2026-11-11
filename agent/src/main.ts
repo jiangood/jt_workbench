@@ -1,5 +1,6 @@
 import pino from 'pino'
-import { client, FatalError } from './client.js'
+import { client, UnauthorizedError } from './client.js'
+import { getConfig } from './config.js'
 import { run, register } from './runner.js'
 import { rssHandler } from './jobs/rss.js'
 import { stockHandler } from './jobs/stock.js'
@@ -12,7 +13,6 @@ register('rss_fetch', rssHandler)
 register('stock_eod', stockHandler)
 register('zsxq_sync', zsxqHandler)
 
-const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL ?? 600) * 1000 // 10 min（v4.6）
 /** poll 抖动（v4.8）：±60~90s，多节点部署时各节点 poll 时点自然错峰 */
 const jitterMs = () => {
   const delay = 60_000 + Math.random() * 30_000
@@ -22,7 +22,10 @@ const jitterMs = () => {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 async function main(): Promise<void> {
-  log.info({ pollIntervalMs: POLL_INTERVAL_MS }, 'agent starting')
+  const cfg = getConfig()
+
+  log.info({ workerUrl: cfg.workerUrl, pollIntervalMs: cfg.pollIntervalMs }, 'agent starting')
+
   while (true) {
     try {
       let { jobs } = await client.poll()
@@ -32,16 +35,20 @@ async function main(): Promise<void> {
         jobs = next.jobs
       }
     } catch (e) {
-      if (e instanceof FatalError) {
-        log.fatal({ err: String(e) }, 'fatal, exiting') // 配置错误不静默
-        process.exit(1)
+      if (e instanceof UnauthorizedError) {
+        // 密钥未登记 / 节点被注销：后台重新添加或重新签发安装命令后自动恢复
+        log.warn(
+          '节点未登记或密钥已失效：后台 /#/admin →「执行节点」核查（60s 后重试，无需重启）',
+        )
+        await sleep(60_000)
+        continue
       }
       // 可重试错误：退避 30s，任务状态不动（lease 兜底）
       log.error({ err: String(e) }, 'poll failed')
       await sleep(30_000)
       continue
     }
-    await sleep(POLL_INTERVAL_MS + jitterMs())
+    await sleep(cfg.pollIntervalMs + jitterMs())
   }
 }
 

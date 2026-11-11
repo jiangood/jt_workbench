@@ -1,4 +1,4 @@
-/** zsxq_sync：知识星球话题同步（极简 TS client，token 走 agent env，不进 D1；签名可选——读接口仅 token） */
+/** zsxq_sync：知识星球话题同步（极简 TS client；token 由 Worker 从 D1 注入 payload，agent 不读环境变量） */
 
 import { z } from 'zod'
 import { ZsxqClient, ZsxqApiError, type ZsxqTopic } from '../zsxq-client.js'
@@ -8,12 +8,11 @@ const payloadSchema = z.object({
   groupId: z.string().min(1),
   count: z.number().int().min(1).max(30).default(20),
   endTime: z.string().optional(), // 分页游标（YYYY-MM-DDTHH:mm:ss.SSS+0800）
+  token: z.string().min(1, '缺少知识星球 token：请到后台「参数与密钥」填写'),
 })
 
 export const zsxqHandler: JobHandler = async (payload, ctx) => {
-  const { groupId, count, endTime } = payloadSchema.parse(payload)
-  const token = process.env.ZSXQ_TOKEN
-  if (!token) throw new Error('ZSXQ_TOKEN not configured (agent env)')
+  const { groupId, count, endTime, token } = payloadSchema.parse(payload)
 
   const client = new ZsxqClient(token)
 
