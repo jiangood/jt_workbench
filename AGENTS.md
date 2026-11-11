@@ -34,6 +34,7 @@
   `app.js` 管路由，`views/*.js` 是视图（ES module，各自导出 `render(main, params)` / `destroy()`）；
   `lib.js` 提供 api / 图标 / 弹窗 / 转义 / 脚本懒加载 / 常驻播放器。无框架、无前端构建、无 TS
 - 视图生命周期红线：切页前 router 先关弹窗再调 `destroy()`——Chart 实例、epub book、定时器、事件监听必须在 `destroy()` 里释放
+- 播放统一走 `lib.js` 的 `player`（队列 / 顺序·列表·单曲·随机 / 播放列表面板 / localStorage 记忆），视图不要直接操作 `<audio>`；音乐元数据编辑走 `PATCH /api/music/:id`，时长由上传时浏览器 `music-metadata` 解析后随 query 提交
 - 旧素材引用（`/news.html` 等）由 `index.ts` 的 `LEGACY_PAGES` 301 到 `/#/news`；新增视图记得同步路由表与旧链接映射
 - 样式 = 自写 `public/app.css`（design tokens + dark 主题 + 移动端抽屉，无 bootstrap）；弹窗用原生 `<dialog>`（`lib.js` 的 `showDialog/closeModal`），窄屏表格由 `setupTableScroll` 自动包 `.table-scroll`
 - **低频配置收进弹窗**：页面只留高频操作（浏览 / 立即执行），token、订阅源、屏蔽词、星球勾选这类设置项一律折叠为「配置」按钮 → `showDialog()` 打开（参考 `views/zsxq.js` 的「同步配置」、`views/news.js` 的订阅源/屏蔽词），避免每次进页都先看到一堆设置

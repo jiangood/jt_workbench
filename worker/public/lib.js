@@ -510,18 +510,19 @@ function playIndex(i, { autoplay = true } = {}) {
   notifyPlayer()
 }
 
-/** 下一首：auto=true 表示自然播完（单曲循环重放；顺序播放到末尾停止） */
+/** 下一首：auto=true 表示自然播完（单曲循环重放；顺序播放到末尾停在最后一首） */
 function nextTrack(auto = false) {
   if (!queue.length) return
   if (modeKey === 'one' && auto) return playIndex(index)
-  if (modeKey === 'shuffle' && queue.length > 1) {
+  if (modeKey === 'shuffle') {
+    if (queue.length === 1) return playIndex(0)
     let n = index
     while (n === index) n = Math.floor(Math.random() * queue.length)
     return playIndex(n)
   }
   if (index + 1 < queue.length) return playIndex(index + 1)
   if (modeKey === 'list' || !auto) return playIndex(0)
-  stopPlayback()
+  // 顺序播放放完最后一首：停在末尾，队列和播放条保留，便于用户重听
 }
 
 /** 上一首：播过 3 秒先回到本曲开头（主流播放器习惯） */

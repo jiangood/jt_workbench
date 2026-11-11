@@ -2224,11 +2224,14 @@ hr.sep { border: 0; border-top: 1px solid var(--border); margin: var(--sp-5) 0 }
 
 /* 音乐页 / 播放条：窄屏优先保证标题和操作可见，播放速度之类的高级项不做 */
 @media (max-width: 640px) {
-  .playerbar { padding: 6px var(--sp-2) }
-  .player-inner { gap: var(--sp-2) }
-  .np { flex: 1 1 60px }
+  /* 播放条改两行：第一行标题 + 控制，第二行原生进度条；底部留白全靠这个变量 */
+  :root { --playerbar-h: 80px }
+  .playerbar { padding: 4px var(--sp-2) 6px }
+  .player-inner { flex-wrap: wrap; row-gap: 2px; gap: var(--sp-2) }
+  .np { flex: 1 1 auto }
   .np-sub { display: none }
   .player-ctrls .icon-btn { width: 30px; height: 30px }
+  .player-inner audio { order: 3; flex: 1 0 100%; height: 32px }
   .playlist {
     right: var(--sp-2);
     left: var(--sp-2);
