@@ -2,7 +2,7 @@
 
 import { Hono } from 'hono'
 import { ok, ApiError, type Env } from '../core/envelope'
-import { getConfig } from '../core/config'
+import { findField, getConfig, setConfig, validateConfig } from '../core/config'
 import { serveFile } from '../core/files'
 
 export const zsxq = new Hono<Env>()
@@ -95,10 +95,24 @@ zsxq.get('/groups', async (c) => {
   })
 })
 
+/** 保存 / 清除知识星球 token（仍存 D1 app_config，后台「参数与密钥」同步可见） */
+zsxq.post('/token', async (c) => {
+  const b = await c.req.json<{ token?: string }>()
+  const field = findField('zsxq_token')
+  if (!field) throw new ApiError(500, 500, 'config field missing')
+
+  const value = (b.token ?? '').trim()
+  const err = validateConfig(field, value)
+  if (err) throw new ApiError(400, 400, err)
+
+  await setConfig(c.env, field.key, value)
+  return ok({ hasToken: !!value })
+})
+
 /** 刷新星球列表：给节点排一个一次性 zsxq_groups 任务（token 由 Worker 下发时注入） */
 zsxq.post('/groups/refresh', async (c) => {
   const token = await getConfig(c.env, 'zsxq_token')
-  if (!token) throw new ApiError(400, 400, '请先在后台「参数与密钥」填写知识星球 token')
+  if (!token) throw new ApiError(400, 400, '请先填写知识星球 token（本页「同步星球」卡片）')
 
   const db = c.env.DB
   const now = Date.now()

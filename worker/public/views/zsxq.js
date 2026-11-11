@@ -12,7 +12,7 @@ const stopPoll = () => {
 /** 星球列表空态：按 token / 拉取任务状态给不同引导 */
 function emptyGroupsHint(g) {
   if (!g.hasToken) {
-    return '还没有星球列表：先到后台「参数与密钥」填写知识星球 token，再点右上角「刷新星球列表」。'
+    return '还没有星球列表：先在上方填写知识星球 token，保存后会自动拉取；也可以点右上角「刷新星球列表」。'
   }
   const r = g.refresh
   if (r?.status === 'pending' || r?.status === 'leased') {
@@ -45,7 +45,7 @@ export async function render(main) {
     <div class="page-head">
       <div>
         <h1 class="page-title">知识星球</h1>
-        <p class="page-sub">共 ${esc(d.total)} 条 · ${esc(statusText)} · token 在后台「参数与密钥」维护</p>
+        <p class="page-sub">共 ${esc(d.total)} 条 · ${esc(statusText)}</p>
       </div>
       <div class="page-actions">
         <button class="btn sm" id="refresh-groups">${refreshing ? '正在拉取…' : '刷新星球列表'}</button>
@@ -57,6 +57,14 @@ export async function render(main) {
       <div class="section-head" style="margin-top: 0">
         <h2>同步星球</h2>
         <label class="check"><input type="checkbox" id="sync-enabled" ${job.enabled ? 'checked' : ''}> 启用同步</label>
+      </div>
+      <div class="flex wrap center mb-2">
+        <input class="field field-sm" id="token" type="password" autocomplete="off" style="max-width: 320px"
+               placeholder="${g.hasToken ? 'token 已配置，留空不修改' : '粘贴知识星球 token'}"
+               aria-label="知识星球 token">
+        <button class="btn sm" id="save-token">保存 token</button>
+        ${g.hasToken ? `<button class="btn sm warn" id="clear-token">清除</button>` : ''}
+        <span class="small muted">${g.hasToken ? 'token 已配置' : 'token 未配置'} · wx.zsxq.com 登录后从请求头取</span>
       </div>
       ${
         groups.length
@@ -118,6 +126,33 @@ export async function render(main) {
 
   main.querySelector('#refresh-groups').onclick = () => queueRefresh(main)
 
+  // token 就地维护：保存后自动拉一次星球列表，操作连贯
+  main.querySelector('#save-token').onclick = async () => {
+    const btn = main.querySelector('#save-token')
+    const input = main.querySelector('#token')
+    const token = input.value.trim()
+    if (!token) return toast('先粘贴知识星球 token', true)
+    const res = await run(btn, () =>
+      api('/api/zsxq/token', { method: 'POST', body: JSON.stringify({ token }) }),
+    )
+    if (!res.ok) return
+    input.value = ''
+    await queueRefresh(main, false, 'token 已保存，正在拉取星球列表…')
+  }
+
+  const clearToken = main.querySelector('#clear-token')
+  if (clearToken) {
+    clearToken.onclick = async () => {
+      if (!confirm('清除 token 后同步会失败，需要重新填写才能拉取星球列表。确定清除？')) return
+      const res = await run(clearToken, () =>
+        api('/api/zsxq/token', { method: 'POST', body: JSON.stringify({ token: '' }) }),
+      )
+      if (!res.ok) return
+      toast('token 已清除')
+      await rerender(render, main)
+    }
+  }
+
   main.querySelector('#save-group').onclick = async () => {
     const btn = main.querySelector('#save-group')
     const groupIds = [...main.querySelectorAll('#group-list input[name="group"]:checked')].map((i) => i.value)
@@ -139,7 +174,7 @@ export async function render(main) {
 }
 
 /** 请求节点拉一次星球列表（token 由 Worker 下发时注入） */
-async function queueRefresh(main, auto = false) {
+async function queueRefresh(main, auto = false, message = auto ? '正在拉取星球列表…' : '已请求节点拉取星球列表') {
   const btn = main.querySelector('#refresh-groups')
   const res = await run(btn, () => api('/api/zsxq/groups/refresh', { method: 'POST' }))
   if (!res.ok) return
@@ -147,7 +182,7 @@ async function queueRefresh(main, auto = false) {
     const hint = main.querySelector('#group-empty')
     if (hint) hint.textContent = '正在从知识星球拉取你加入的星球…（需要至少一个在线节点，稍等片刻）'
   }
-  toast(auto ? '正在拉取星球列表…' : '已请求节点拉取星球列表')
+  toast(message)
   pollGroups(main)
 }
 
