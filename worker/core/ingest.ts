@@ -51,6 +51,21 @@ function numOrNull(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null
 }
 
+interface ZsxqGroupItem {
+  groupId: string
+  name?: string | null
+}
+
+function asZsxqGroupItem(item: unknown): ZsxqGroupItem | null {
+  if (typeof item !== 'object' || item === null) return null
+  const it = item as Record<string, unknown>
+  if (typeof it.groupId !== 'string' || !it.groupId) return null
+  return {
+    groupId: it.groupId,
+    name: typeof it.name === 'string' && it.name ? it.name : null,
+  }
+}
+
 interface ZsxqItem {
   topicId: string
   groupId: string
@@ -117,6 +132,22 @@ export async function ingest(
                close = excluded.close, volume = excluded.volume, fetched_at = excluded.fetched_at`,
           )
           .bind(r.code, r.tradeDate, r.open, r.high, r.low, r.close, r.volume, now),
+      ),
+    )
+    return results.reduce((n, r) => n + (r.meta.changes ?? 0), 0)
+  }
+  if (type === 'zsxq_groups') {
+    // 星球列表（勾选同步目标用）：只更新名字，不碰 enabled（勾选状态由 /api/zsxq/job 维护）
+    const rows = items.map(asZsxqGroupItem).filter((r): r is ZsxqGroupItem => r !== null)
+    if (!rows.length) return 0
+    const results = await db.batch(
+      rows.map((r) =>
+        db
+          .prepare(
+            `INSERT INTO zsxq_group (id, name, enabled) VALUES (?, ?, 0)
+             ON CONFLICT (id) DO UPDATE SET name = COALESCE(excluded.name, name)`,
+          )
+          .bind(r.groupId, r.name),
       ),
     )
     return results.reduce((n, r) => n + (r.meta.changes ?? 0), 0)

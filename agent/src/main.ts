@@ -6,7 +6,7 @@ import { run, register } from './runner.js'
 import { maybeRequestUpdate } from './update.js'
 import { rssHandler } from './jobs/rss.js'
 import { stockHandler } from './jobs/stock.js'
-import { zsxqHandler } from './jobs/zsxq.js'
+import { zsxqHandler, zsxqGroupsHandler } from './jobs/zsxq.js'
 
 const log = pino()
 
@@ -14,6 +14,7 @@ const log = pino()
 register('rss_fetch', rssHandler)
 register('stock_eod', stockHandler)
 register('zsxq_sync', zsxqHandler)
+register('zsxq_groups', zsxqGroupsHandler)
 
 /** poll 抖动（v4.8）：±60~90s，多节点部署时各节点 poll 时点自然错峰 */
 const jitterMs = () => {
@@ -45,7 +46,7 @@ async function main(): Promise<void> {
       if (e instanceof UnauthorizedError) {
         // 密钥被重置 / 节点被注销：后台用「安装命令」重新部署后自动恢复
         log.warn(
-          '节点未登记或密钥已失效：后台 /#/admin →「执行节点」→「安装命令」重装（60s 后重试，无需重启）',
+          '节点未登记或密钥已失效：后台 /#/admin →「计算节点」→「安装命令」重装（60s 后重试，无需重启）',
         )
         await sleep(60_000)
         continue

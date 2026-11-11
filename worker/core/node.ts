@@ -59,7 +59,7 @@ async function claimPipeline(env: Bindings, nodeId: string, now: number): Promis
 
   const payload = row.payload ? (JSON.parse(row.payload) as Record<string, unknown>) : {}
   // 密钥不进 agent 环境变量：第三方 token 存 D1（app_config），下发这一刻注入 payload
-  if (row.type === 'zsxq_sync') {
+  if (row.type === 'zsxq_sync' || row.type === 'zsxq_groups') {
     const token = await getConfig(env, 'zsxq_token')
     if (token) payload.token = token
   }
