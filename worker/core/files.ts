@@ -68,6 +68,18 @@ export async function serveFile(
     return fileResponse(obj, null, filename, cacheControl, opts, started)
   }
 
+  // 起播最常见的是 bytes=0-（开区间）：直接整对象流式读，size 从对象里拿，省掉一次 head 往返
+  if (range.from === 0 && range.to === null) {
+    const obj = await env.R2.get(key)
+    if (!obj) return notFound()
+    if (obj.size === 0) {
+      const headers = baseHeaders(obj.httpEtag, cacheControl, opts, started)
+      headers.set('content-range', 'bytes */0')
+      return new Response('range not satisfiable', { status: 416, headers })
+    }
+    return fileResponse(obj, { start: 0, end: obj.size - 1, size: obj.size }, filename, cacheControl, opts, started)
+  }
+
   // 有 Range：先 head 拿总大小，再分段读
   const head = await env.R2.head(key)
   if (!head) return notFound()

@@ -371,6 +371,108 @@ export function setupTableScroll(root) {
   return () => observer.disconnect()
 }
 
+/* ---------------- 「更多」下拉：删除类操作收进菜单，避免误点 ---------------- */
+
+/** 当前打开的下拉（同一时间只开一个） */
+let activeMore = null
+
+/** 关闭当前「更多」下拉：切页 / 重绘 / 滚动时调用，顺手摘掉 document 监听 */
+export function closeMoreMenu() {
+  if (!activeMore) return
+  const { btn, menu, onPointer, onKey, onMove } = activeMore
+  activeMore = null
+  menu.hidden = true
+  menu.classList.remove('is-fixed')
+  menu.removeAttribute('style')
+  btn.setAttribute('aria-expanded', 'false')
+  document.removeEventListener('pointerdown', onPointer, true)
+  document.removeEventListener('keydown', onKey)
+  window.removeEventListener('scroll', onMove, true)
+  window.removeEventListener('resize', onMove)
+}
+
+/**
+ * 「更多」下拉的 HTML：图标触发按钮 + 菜单容器。
+ * items: [{ label, icon, danger, disabled, attrs }]，删除 / 清空 / 移除放最后一项并标 danger。
+ * opts: { label: 按钮可访问名, triggerClass: 触发按钮 class（默认 icon-btn）, iconSize }
+ */
+export function moreMenu(id, items, opts = {}) {
+  const key = esc(id)
+  const trigger = opts.triggerClass || 'icon-btn'
+  const body = items
+    .map((it) => {
+      const attrs = Object.entries(it.attrs || {})
+        .map(([k, v]) => ` ${k}="${esc(v)}"`)
+        .join('')
+      return `<button class="more-item${it.danger ? ' danger' : ''}" type="button" role="menuitem"${
+        it.disabled ? ' disabled' : ''
+      }${attrs}>${it.icon ? icon(it.icon, 14) : ''}${esc(it.label)}</button>`
+    })
+    .join('')
+  return `<span class="more">
+    <button class="${trigger}" type="button" data-more="${key}" aria-haspopup="menu" aria-expanded="false"
+            aria-label="${esc(opts.label || '更多操作')}">${icon('more', opts.iconSize || 16)}</button>
+    <div class="more-menu" id="more-${key}" role="menu" hidden>${body}</div>
+  </span>`
+}
+
+/** fixed 定位：表格在窄屏是滚动容器，绝对定位的菜单会被裁掉 */
+function placeMoreMenu(btn, menu) {
+  menu.hidden = false
+  menu.classList.add('is-fixed')
+  const r = btn.getBoundingClientRect()
+  const gap = 4
+  const mw = menu.offsetWidth
+  const mh = menu.offsetHeight
+  const below = r.bottom + gap
+  const top = below + mh <= window.innerHeight - 8 ? below : Math.max(8, r.top - gap - mh)
+  const left = Math.min(Math.max(8, r.right - mw), window.innerWidth - mw - 8)
+  menu.style.top = `${Math.round(top)}px`
+  menu.style.left = `${Math.round(left)}px`
+}
+
+/**
+ * 接线 root 内所有「更多」按钮：点按钮开合，点外部 / Esc / 滚动 / 尺寸变化关闭。
+ * 每次重绘后调用一次即可（会先关掉上一个，避免旧节点的监听残留）；
+ * 菜单项点击在捕获阶段先关菜单，confirm 取消或报错时不会留下浮层。
+ */
+export function setupMoreMenus(root) {
+  closeMoreMenu()
+  root.querySelectorAll('[data-more]').forEach((btn) => {
+    const menu = btn.parentElement?.querySelector('.more-menu')
+    if (!menu) return
+    btn.addEventListener('click', () => {
+      if (activeMore?.btn === btn) return closeMoreMenu()
+      closeMoreMenu()
+      const onPointer = (e) => {
+        if (!menu.contains(e.target) && !btn.contains(e.target)) closeMoreMenu()
+      }
+      const onKey = (e) => {
+        if (e.key !== 'Escape') return
+        e.stopPropagation()
+        closeMoreMenu()
+        btn.focus()
+      }
+      const onMove = () => closeMoreMenu()
+      activeMore = { btn, menu, onPointer, onKey, onMove }
+      placeMoreMenu(btn, menu)
+      btn.setAttribute('aria-expanded', 'true')
+      document.addEventListener('pointerdown', onPointer, true)
+      document.addEventListener('keydown', onKey)
+      window.addEventListener('scroll', onMove, true)
+      window.addEventListener('resize', onMove)
+      menu.querySelector('.more-item:not([disabled])')?.focus()
+    })
+    menu.addEventListener(
+      'click',
+      (e) => {
+        if (e.target.closest('.more-item')) closeMoreMenu()
+      },
+      true,
+    )
+  })
+}
+
 /* ---------------- 常驻播放器：队列 / 播放模式 / 播放列表 ---------------- */
 
 /** localStorage：队列 + 模式跨刷新保留（参考主流音乐平台的「上次队列」） */
@@ -427,7 +529,7 @@ function readPersisted() {
   }
 }
 
-/** 统一队列条目结构：接口与缓存都可能是旧字段（filename / 缺 duration） */
+/** 统一队列条目结构：接口与缓存都可能是旧字段（filename / 缺 duration / 旧版本无 version） */
 function normalizeTrack(t) {
   const id = Number(t?.id)
   if (!Number.isFinite(id)) return null
@@ -437,8 +539,16 @@ function normalizeTrack(t) {
     title: String(t.title || t.filename || '未命名曲目'),
     artist: String(t.artist || ''),
     duration: Number.isFinite(duration) && duration > 0 ? Math.round(duration) : null,
+    /** 文件版本（r2_key 里的 uuid）：换文件必换 v，播放地址才敢长缓存 */
+    version: String(t.version || t.fileVersion || ''),
   }
 }
+
+/** 播放地址：带 ?v= 后响应是 immutable 长缓存，重播 / 往回拖都不必重新回源 */
+function playUrl(t) {
+  return `/api/music/play/${t.id}${t.version ? `?v=${encodeURIComponent(t.version)}` : ''}`
+}
+
 
 function setNowPlaying(t) {
   const title = document.getElementById('np-title')
@@ -484,10 +594,16 @@ function renderQueue() {
           </span>
           <span class="pl-dur small muted">${fmtDuration(t.duration)}</span>
         </button>
-        <button class="icon-btn pl-x" type="button" data-pl-remove="${i}" aria-label="移出播放列表" title="移出播放列表">${icon('close', 14)}</button>
+        ${moreMenu(
+          `pl-${i}`,
+          [{ label: '移出播放列表', icon: 'trash', danger: true, attrs: { 'data-pl-remove': i } }],
+          { label: `更多操作 ${t.title}` },
+        )}
       </li>`,
     )
     .join('')
+  // 行是整段重建的，菜单按钮每次都要重新接线（会先关掉上一个浮层）
+  setupMoreMenus(list)
 
   // 面板开着时跟着当前曲目滚动，但不要打断用户手动浏览
   if (panel && !panel.hidden) list.querySelector('.pl-item.active')?.scrollIntoView({ block: 'nearest' })
@@ -499,7 +615,7 @@ function playIndex(i, { autoplay = true } = {}) {
   if (!audio) return
   index = i
   const t = queue[i]
-  audio.src = `/api/music/play/${t.id}`
+  audio.src = playUrl(t)
   audio.dataset.id = String(t.id)
   const bar = document.getElementById('player-bar')
   if (bar) bar.hidden = false
@@ -630,6 +746,33 @@ function updateTrack(id, patch) {
   notifyPlayer()
 }
 
+/**
+ * 列表刷新后给队列补元数据（文件版本 / 时长）：队列存在 localStorage，
+ * 旧版本的记录没有 version，补上之后再次播放才能命中 ?v= 长缓存。标题 / 艺术家不覆盖（用户可能手动改过）。
+ */
+function syncQueueMeta(list) {
+  const fresh = new Map()
+  for (const t of list || []) {
+    const n = normalizeTrack(t)
+    if (n) fresh.set(n.id, n)
+  }
+  if (!fresh.size || !queue.length) return
+  let changed = false
+  queue = queue.map((t) => {
+    const f = fresh.get(t.id)
+    if (!f) return t
+    const version = f.version
+    const duration = f.duration ?? t.duration
+    if (version === t.version && duration === t.duration) return t
+    changed = true
+    return { ...t, version, duration }
+  })
+  if (!changed) return
+  persist()
+  renderQueue()
+  notifyPlayer()
+}
+
 function queuePanelOpen() {
   const panel = document.getElementById('playlist')
   return !!panel && !panel.hidden
@@ -648,6 +791,7 @@ function closeQueuePanel() {
   const panel = document.getElementById('playlist')
   const btn = document.getElementById('np-queue')
   if (!panel) return
+  closeMoreMenu()
   panel.hidden = true
   btn?.setAttribute('aria-expanded', 'false')
 }
@@ -681,9 +825,19 @@ export function initPlayer() {
   document.getElementById('np-mode').onclick = () => cycleMode()
   queueBtn.onclick = () => toggleQueuePanel()
   document.getElementById('pl-close').onclick = () => closeQueuePanel()
+  // 清空是不可逆操作：收进表头「更多」，与页面其它删除类入口一致
+  const moreSlot = document.getElementById('pl-more')
+  if (moreSlot) {
+    moreSlot.innerHTML = moreMenu(
+      'pl',
+      [{ label: '清空播放列表', icon: 'trash', danger: true, attrs: { id: 'pl-clear' } }],
+      { label: '播放列表更多操作' },
+    )
+  }
   document.getElementById('pl-clear').onclick = () => {
     if (queue.length && confirm('清空播放列表并停止播放？')) stopPlayback()
   }
+  setupMoreMenus(document.getElementById('playlist'))
 
   items.onclick = (e) => {
     const rm = e.target.closest('[data-pl-remove]')
@@ -711,7 +865,7 @@ export function initPlayer() {
       Number.isInteger(saved.index) && saved.index >= 0 && saved.index < queue.length ? saved.index : 0
     syncModeButton()
     const t = queue[index]
-    audio.src = `/api/music/play/${t.id}`
+    audio.src = playUrl(t)
     audio.dataset.id = String(t.id)
     setNowPlaying(t)
     const bar = document.getElementById('player-bar')
@@ -753,6 +907,7 @@ export const player = {
   cycleMode,
   removeAt,
   updateTrack,
+  syncMeta: syncQueueMeta,
   stop: stopPlayback,
 
   /** 订阅播放状态变化（切歌/队列变化/停止），返回取消订阅函数 */

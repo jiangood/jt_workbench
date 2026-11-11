@@ -1,4 +1,4 @@
-import { api, closeModal, esc, icon, rerender, run, showDialog, toast } from '../lib.js'
+import { api, closeModal, closeMoreMenu, esc, icon, moreMenu, rerender, run, setupMoreMenus, showDialog, toast } from '../lib.js'
 
 const REPEAT = { none: '单次', daily: '每天', weekly: '每周', monthly: '每月', yearly: '每年' }
 
@@ -92,7 +92,11 @@ export async function render(main) {
             }</td>
             <td class="nowrap">
               <button class="btn sm" data-e="${esc(r.id)}">编辑</button>
-              <button class="btn sm danger" data-d="${esc(r.id)}" aria-label="删除">${icon('trash', 14)}</button>
+              ${moreMenu(
+                `reminder-${r.id}`,
+                [{ label: '删除提醒', icon: 'trash', danger: true, attrs: { 'data-d': r.id } }],
+                { label: `更多操作 ${r.title}`, triggerClass: 'btn sm' },
+              )}
             </td>
           </tr>`,
             )
@@ -101,6 +105,7 @@ export async function render(main) {
       </tbody>
     </table>`
 
+  setupMoreMenus(main)
   main.querySelector('#scan').onclick = async () => {
     const res = await run(main.querySelector('#scan'), () => api('/api/reminder/scan', { method: 'POST' }))
     if (!res.ok) return
@@ -312,4 +317,6 @@ function showForm(main, r, preset = null) {
   }
 }
 
-export function destroy() {}
+export function destroy() {
+  closeMoreMenu()
+}

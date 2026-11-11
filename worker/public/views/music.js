@@ -1,13 +1,16 @@
 import {
   api,
   closeModal,
+  closeMoreMenu,
   esc,
   fmtDuration,
   icon,
   loadModuleOnce,
+  moreMenu,
   player,
   rerender,
   run,
+  setupMoreMenus,
   showDialog,
   toast,
 } from '../lib.js'
@@ -70,7 +73,11 @@ function rowHtml(t, i) {
         <div class="row-acts">
           <button class="icon-btn" data-q="${esc(t.id)}" aria-label="加入播放列表" title="加入播放列表">${icon('plus', 16)}</button>
           <button class="icon-btn" data-e="${esc(t.id)}" aria-label="编辑曲目信息" title="编辑曲目信息">${icon('edit', 16)}</button>
-          <button class="icon-btn danger" data-d="${esc(t.id)}" aria-label="删除" title="删除">${icon('trash', 16)}</button>
+          ${moreMenu(
+            `music-${t.id}`,
+            [{ label: '删除曲目', icon: 'trash', danger: true, attrs: { 'data-d': t.id } }],
+            { label: `更多操作 ${title}` },
+          )}
         </div>
       </td>
     </tr>`
@@ -82,6 +89,7 @@ function paintTracks(main, list) {
   tbody.innerHTML =
     list.map(rowHtml).join('') ||
     '<tr><td colspan="7" class="muted">暂无曲目 · 点右上角「上传」添加，或拖入音频文件</td></tr>'
+  setupMoreMenus(main)
   main.querySelector('#play-all').disabled = !list.length
   main.querySelector('#play-shuffle').disabled = !list.length
   paintActive(main)
@@ -210,15 +218,14 @@ export async function render(main) {
   paintTracks(main, cached || [])
   paintSummary(main, cached || [])
 
-  // vendor 只服务上传解析：与列表请求并行，加载失败也不挡列表
-  const metaPromise = loadModuleOnce('/vendor/music-metadata.min.js').catch(() => null)
-
   const data = await api('/api/music/list')
   if (!alive) return
   tracks = data.tracks || []
   writeCache(tracks)
   paintTracks(main, tracks)
   paintSummary(main, tracks)
+  // 队列里（localStorage 恢复的）旧曲目补文件版本，再次播放才能命中长缓存
+  player.syncMeta(tracks)
 
   unsubscribe?.()
   unsubscribe = player.onChange(() => paintActive(main))
@@ -239,7 +246,9 @@ export async function render(main) {
     enqueue(files, {
       title: '上传音乐',
       // 浏览器端 music-metadata parseBlob（v3 决策 #9）：失败就用文件名
+      // vendor 有 234KB，等真要上传再拉——进页就下会和音频流抢同一条带宽
       prepare: async (file) => {
+        metadata = metadata || (await loadModuleOnce('/vendor/music-metadata.min.js').catch(() => null))
         if (!metadata) return {}
         try {
           const meta = await metadata.parseBlob(file)
@@ -260,11 +269,6 @@ export async function render(main) {
       },
     })
   }
-
-  // metadata 就绪后供上传解析用（未就绪时上传会退回文件名，不阻塞交互）
-  metaPromise.then((mod) => {
-    metadata = mod
-  })
 
   // 表格操作走事件委托：tbody 重绘后不用重新绑定
   main.onclick = async (e) => {
@@ -289,6 +293,7 @@ export async function render(main) {
 
 export function destroy() {
   alive = false
+  closeMoreMenu()
   unsubscribe?.()
   unsubscribe = null
 }

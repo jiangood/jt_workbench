@@ -1,4 +1,4 @@
-import { api, esc, icon, loadScriptOnce, rerender, rerenderKeepingFocus, run, showDialog, toast } from '../lib.js'
+import { api, closeMoreMenu, esc, icon, loadScriptOnce, moreMenu, rerender, rerenderKeepingFocus, run, setupMoreMenus, showDialog, toast } from '../lib.js'
 // 组件叫 filterGroup，和「分组」业务概念无关：本页只用它渲染阅读状态筛选条
 import { emptyState, filterGroup as filterButtons, setupFilter } from '../ui.js'
 import { enqueue } from '../upload.js'
@@ -67,7 +67,11 @@ function bookCard(b) {
                           title="下载原文件" aria-label="下载原文件《${label}》">${icon('download', 14)}</a>`
                     : ''
                 }
-                <button class="btn sm danger" data-d="${esc(b.id)}" title="删除" aria-label="删除《${label}》">${icon('trash', 14)}</button>
+                ${moreMenu(
+                  `book-${b.id}`,
+                  [{ label: '删除这本书', icon: 'trash', danger: true, attrs: { 'data-d': b.id } }],
+                  { label: `更多操作《${title}》`, triggerClass: 'btn sm' },
+                )}
               </div>
             </div>
           </div>
@@ -146,6 +150,7 @@ export async function render(main) {
     }`
 
   // 封面加载失败（豆瓣限流 / 下架）时退回占位图标
+  setupMoreMenus(main)
   main.querySelectorAll('.book-cover img').forEach((img) => {
     img.addEventListener('error', () => img.closest('.book-cover')?.classList.add('no-cover'))
   })
@@ -614,5 +619,6 @@ async function parseEpubMeta(file) {
 
 export function destroy() {
   alive = false
+  closeMoreMenu()
   document.getElementById('dlg-body').innerHTML = ''
 }

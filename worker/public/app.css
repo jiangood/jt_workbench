@@ -1158,8 +1158,8 @@ body:has(.playerbar:not([hidden])) .note-split {
 .editor-head .icon-btn { width: 30px; height: 30px; color: var(--muted-fg) }
 .editor-head .icon-btn:hover { color: var(--fg) }
 
-/* 「更多」下拉：绝对定位在按钮下方，点外部 / Esc / 选完关闭 */
-.more { position: relative }
+/* 「更多」下拉：默认绝对定位在按钮下方，点外部 / Esc / 选完关闭 */
+.more { position: relative; display: inline-flex; vertical-align: middle }
 .more-menu {
   position: absolute;
   top: calc(100% + 4px);
@@ -1192,6 +1192,21 @@ body:has(.playerbar:not([hidden])) .note-split {
 .more-item.danger { color: var(--danger) }
 .more-item.danger:hover { background: var(--danger-wash) }
 .more-item:disabled { background: none; opacity: .45; cursor: not-allowed }
+/* 表格 / 卡片里用 fixed 定位：滚动容器（.table-scroll）不会把它裁掉；坐标由 JS 按视口算 */
+.more-menu.is-fixed {
+  position: fixed;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  left: auto;
+  z-index: 70;
+  max-width: min(260px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+}
+/* 书卡工具栏：更多按钮与其他图标等宽 */
+.book-tools .more { flex: 1 1 0; min-width: 0 }
+.book-tools .more .btn { width: 100% }
 
 .editor-meta {
   display: flex;
@@ -1875,8 +1890,10 @@ audio { height: 34px }
 .pl-meta { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; line-height: 1.35 }
 .pl-title { font-size: var(--fs-sm) }
 .pl-dur { flex: 0 0 auto; font-variant-numeric: tabular-nums }
-.pl-x { width: 28px; height: 28px; flex: 0 0 auto; opacity: 0 }
-.pl-item:hover .pl-x, .pl-x:focus-visible { opacity: 1 }
+/* 行尾「更多」：移动端不会误触移出，菜单里再确认 */
+.pl-item .more { flex: 0 0 auto }
+.pl-item .more > .icon-btn { width: 28px; height: 28px; color: var(--muted-fg) }
+.playlist-acts .more > .icon-btn { width: 30px; height: 30px }
 .pl-empty { padding: var(--sp-5) var(--sp-3); text-align: center }
 
 /* 上传队列面板：右下角常驻，压在播放条之上、toast 之下（30 < 45 < 90 < dialog top layer） */
@@ -2239,7 +2256,6 @@ hr.sep { border: 0; border-top: 1px solid var(--border); margin: var(--sp-5) 0 }
     bottom: calc(var(--playerbar-h) + var(--sp-2));
     max-height: 55vh;
   }
-  .pl-x { opacity: 1 }
 
   /* 音乐表：只留 序号 / 标题（艺术家折行）/ 时长 / 操作 */
   .col-artist,

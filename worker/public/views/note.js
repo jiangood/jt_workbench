@@ -1,4 +1,4 @@
-import { api, esc, icon, rerender, run, showDialog, toast } from '../lib.js'
+import { api, closeMoreMenu, esc, icon, moreMenu, rerender, run, setupMoreMenus, showDialog, toast } from '../lib.js'
 import { enqueue } from '../upload.js'
 
 let currentId = null
@@ -20,8 +20,6 @@ let searchResults = []
 /** 请求序号：连续输入时只认最后一次请求，避免旧结果覆盖新结果 */
 let searchSeq = 0
 let searchTimer = 0
-/** 编辑器「更多」菜单的关闭函数：切页 / 重绘编辑器时兜底移除 document 监听 */
-let closeMoreMenu = null
 
 export async function render(main, params = {}) {
   alive = true
@@ -555,7 +553,7 @@ function attachmentsOf(n) {
 }
 
 function emptyEditor(editor) {
-  closeMoreMenu?.()
+  closeMoreMenu()
   editor.innerHTML = '<div class="editor-empty"><div class="empty">从列表里选一篇笔记，或点「新建」</div></div>'
 }
 
@@ -607,7 +605,7 @@ function syncFolderLabel(main, fallback = null) {
 }
 
 function openEditor(main, n) {
-  closeMoreMenu?.()
+  closeMoreMenu()
   currentId = n?.id != null ? Number(n.id) : null
   const editor = main.querySelector('#editor')
   const folderId = n ? n.folder_id : /^\d+$/.test(selectedFolder) ? Number(selectedFolder) : null
@@ -617,18 +615,14 @@ function openEditor(main, n) {
       <input class="field" id="e-title" placeholder="标题" value="${esc(n?.title ?? '')}" aria-describedby="e-msg">
       <div class="editor-acts">
         <button class="btn primary sm" id="e-save">保存</button>
-        <div class="more">
-          <button class="icon-btn" id="e-more" type="button" aria-haspopup="menu" aria-expanded="false"
-                  aria-controls="e-more-menu" aria-label="更多操作">${icon('more', 18)}</button>
-          <div class="more-menu" id="e-more-menu" role="menu" hidden>
-            <button class="more-item" type="button" role="menuitem" id="e-move">
-              ${icon('folder', 14)}移动到目录…
-            </button>
-            <button class="more-item danger" type="button" role="menuitem" id="e-del" ${n ? '' : 'disabled'}>
-              ${icon('trash', 14)}删除笔记
-            </button>
-          </div>
-        </div>
+        ${moreMenu(
+          'note',
+          [
+            { label: '移动到目录…', icon: 'folder', attrs: { id: 'e-move' } },
+            { label: '删除笔记', icon: 'trash', danger: true, disabled: !n, attrs: { id: 'e-del' } },
+          ],
+          { iconSize: 18 },
+        )}
       </div>
     </div>
     <div class="field-error" id="e-msg" role="alert"></div>
@@ -656,40 +650,11 @@ function openEditor(main, n) {
     titleEl.removeAttribute('aria-invalid')
   })
 
-  // 「更多」下拉：点按钮开关，点外部 / Esc / 选完自动关；destroy 时兜底移除监听
-  const moreBtn = editor.querySelector('#e-more')
-  const menu = editor.querySelector('#e-more-menu')
-  const onDocPointer = (e) => {
-    if (!menu.contains(e.target) && !moreBtn.contains(e.target)) closeMenu()
-  }
-  const onDocKey = (e) => {
-    if (e.key !== 'Escape') return
-    closeMenu()
-    moreBtn.focus()
-  }
-  function closeMenu() {
-    menu.hidden = true
-    moreBtn.setAttribute('aria-expanded', 'false')
-    document.removeEventListener('pointerdown', onDocPointer, true)
-    document.removeEventListener('keydown', onDocKey)
-    if (closeMoreMenu === closeMenu) closeMoreMenu = null
-  }
-  closeMoreMenu = closeMenu
-  moreBtn.onclick = () => {
-    if (!menu.hidden) {
-      closeMenu()
-      return
-    }
-    menu.hidden = false
-    moreBtn.setAttribute('aria-expanded', 'true')
-    document.addEventListener('pointerdown', onDocPointer, true)
-    document.addEventListener('keydown', onDocKey)
-    menu.querySelector('.more-item:not([disabled])')?.focus()
-  }
+  // 「更多」下拉：删除笔记等破坏性操作收进菜单，点外部 / Esc 自动关
+  setupMoreMenus(editor)
 
   // 「移动到目录」：只改归属，不动正文；未保存的新笔记先记在本地，保存时一起落库
   editor.querySelector('#e-move').onclick = () => {
-    closeMenu()
     const cur = labelEl.dataset.folderId ? Number(labelEl.dataset.folderId) : null
     const { close, body } = showDialog(
       `<h2>移动到目录</h2>
@@ -791,7 +756,6 @@ function openEditor(main, n) {
 
   editor.querySelector('#e-del').onclick = async () => {
     const btn = editor.querySelector('#e-del')
-    closeMenu()
     if (!n || !confirm('删除笔记及附件？')) return
     const res = await run(btn, () => api(`/api/note/${n.id}`, { method: 'DELETE' }))
     if (!res.ok) return
@@ -804,7 +768,7 @@ function openEditor(main, n) {
 
 export function destroy() {
   alive = false
-  closeMoreMenu?.()
+  closeMoreMenu()
   clearTimeout(searchTimer)
   searchSeq += 1
 }

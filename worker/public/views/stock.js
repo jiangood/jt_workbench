@@ -1,4 +1,4 @@
-import { api, esc, icon, loadScriptOnce, rerender, run, showDialog, toast } from '../lib.js'
+import { api, closeMoreMenu, esc, icon, loadScriptOnce, moreMenu, rerender, run, setupMoreMenus, showDialog, toast } from '../lib.js'
 
 let watch = []
 let chart = null
@@ -112,7 +112,11 @@ export async function render(main) {
                 <td class="text-end mono">${x ? x.high.toFixed(2) + ' / ' + x.low.toFixed(2) : '—'}</td>
                 <td class="muted small">${esc(x?.time ?? '')}</td>
                 <td><button class="btn sm" data-k="${esc(r.code)}">日线</button></td>
-                <td><button class="btn sm danger" data-d="${esc(r.code)}" aria-label="删除">${icon('trash', 14)}</button></td>
+                <td class="text-end">${moreMenu(
+                  `stock-${r.code}`,
+                  [{ label: '删除自选', icon: 'trash', danger: true, attrs: { 'data-d': r.code } }],
+                  { label: `更多操作 ${r.code}`, triggerClass: 'btn sm' },
+                )}</td>
               </tr>`
             })
             .join('') || '<tr><td colspan="10" class="muted">暂无自选股，先添加一只</td></tr>'
@@ -120,9 +124,11 @@ export async function render(main) {
       </tbody>
     </table>`
 
+  setupMoreMenus(main)
   main.querySelector('#add-stock').onclick = () => openAddDialog(main)
   main.querySelectorAll('[data-d]').forEach((b) => {
     b.onclick = async () => {
+      if (!confirm(`从自选股中移除 ${b.dataset.d}？`)) return
       const res = await run(b, () => api(`/api/stock/watch/${b.dataset.d}`, { method: 'DELETE' }))
       if (!res.ok) return
       toast('已移除')
@@ -366,5 +372,6 @@ async function showDaily(code, btn) {
 }
 
 export function destroy() {
+  closeMoreMenu()
   destroyChart()
 }

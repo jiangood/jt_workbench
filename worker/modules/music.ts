@@ -11,9 +11,11 @@ const MAX_TITLE = 300
 const MAX_META = 200
 
 music.get('/list', async (c) => {
+  // fileVersion = r2_key 里的 uuid（music/<uuid>/<filename>）：播放 URL 带上 ?v= 才能长缓存
   const rows = await c.env.DB
     .prepare(
-      `SELECT id, title, artist, album, duration, filename, size, created_at AS createdAt
+      `SELECT id, title, artist, album, duration, filename, size, created_at AS createdAt,
+              substr(r2_key, 7, 36) AS fileVersion
        FROM music ORDER BY created_at DESC`,
     )
     .all()
@@ -77,25 +79,48 @@ music.patch('/:id', async (c) => {
 })
 
 music.delete('/:id', async (c) => {
-  const row = await c.env.DB.prepare('SELECT r2_key FROM music WHERE id = ?').bind(c.req.param('id')).first<{ r2_key: string }>()
+  const id = Number(c.req.param('id'))
+  const row = await c.env.DB.prepare('SELECT r2_key FROM music WHERE id = ?').bind(id).first<{ r2_key: string }>()
   if (row) {
     await deleteFile(c.env, row.r2_key)
-    await c.env.DB.prepare('DELETE FROM music WHERE id = ?').bind(c.req.param('id')).run()
+    await c.env.DB.prepare('DELETE FROM music WHERE id = ?').bind(id).run()
+    r2KeyCache.delete(id)
   }
   return ok(null)
 })
 
 /** 流播放（Range 透传，进度条拖动原生支持） */
 music.get('/play/:id', async (c) => {
-  const row = await c.env.DB
-    .prepare('SELECT r2_key FROM music WHERE id = ?')
-    .bind(c.req.param('id'))
-    .first<{ r2_key: string }>()
-  if (!row) throw new ApiError(404, 404, 'not found')
-  return serveFile(c.env, row.r2_key, c.req.raw)
+  const id = Number(c.req.param('id'))
+  if (!Number.isInteger(id)) throw new ApiError(400, 400, 'not found')
+  const key = await r2KeyOf(c, id)
+  if (!key) throw new ApiError(404, 404, 'not found')
+  return serveFile(c.env, key, c.req.raw)
 })
 
 // ---------- 辅助 ----------
+
+/**
+ * 播放用的 id → r2_key isolate 缓存：起播 / 拖进度条每发一个 Range 请求都要查一次 D1（~0.3s），
+ * 而曲目文件上传后就不再变（编辑只改 title/artist/album），30s 陈旧可接受；删除时立即失效。
+ */
+const R2_KEY_TTL_MS = 30_000
+const R2_KEY_CACHE_MAX = 500
+const r2KeyCache = new Map<number, { at: number; key: string }>()
+
+async function r2KeyOf(c: Context<Env>, id: number): Promise<string | null> {
+  const hit = r2KeyCache.get(id)
+  if (hit && Date.now() - hit.at < R2_KEY_TTL_MS) return hit.key
+
+  const row = await c.env.DB.prepare('SELECT r2_key FROM music WHERE id = ?').bind(id).first<{ r2_key: string }>()
+  if (!row) {
+    r2KeyCache.delete(id)
+    return null
+  }
+  if (r2KeyCache.size >= R2_KEY_CACHE_MAX) r2KeyCache.clear() // isolate 长活，防无限增长
+  r2KeyCache.set(id, { at: Date.now(), key: row.r2_key })
+  return row.r2_key
+}
 
 /** 时长（秒）：只接受有限正数，超出一天视为解析异常 */
 function duration(raw: string | undefined): number | null {
