@@ -243,6 +243,10 @@ code {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
+/* #main 只是路由切换后的焦点落点（tabindex="-1"），本身不可交互：
+   不画整页焦点环，否则键盘点导航后内容区会多出一圈大框 */
+#main:focus-visible { outline: none }
+
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
@@ -796,6 +800,127 @@ textarea[aria-invalid="true"] { border-color: var(--danger) }
 .badge.warn { background: var(--warn-wash); color: var(--warn); border-color: var(--warn-line) }
 .badge.muted { background: var(--surface-2); color: var(--muted-fg) }
 
+/* 书架（book 视图）：分类胶囊 + 封面卡片 */
+.book-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: var(--sp-3);
+}
+.category-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: var(--sp-4);
+}
+.category-chips .pill { font-family: inherit; cursor: pointer }
+.category-chips .pill[aria-pressed="true"] {
+  background: var(--primary-wash);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.book-card {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+}
+.book-cover {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 3 / 4;
+  background: var(--surface-2);
+  color: var(--muted-fg);
+}
+.book-cover img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.book-cover.no-cover img { display: none }
+.book-cover > .badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+}
+.book-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px 12px;
+}
+.book-title {
+  display: -webkit-box;
+  overflow: hidden;
+  min-height: 2.7em;
+  font-weight: 600;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.book-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.book-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: auto;
+  padding-top: 8px;
+}
+.book-opt-cover {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 40px;
+  border-radius: 3px;
+  object-fit: cover;
+  background: var(--surface-2);
+}
+.book-picked {
+  display: flex;
+  gap: 10px;
+  margin-top: var(--sp-3);
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+.book-picked img {
+  flex: 0 0 auto;
+  width: 56px;
+  height: 80px;
+  border-radius: 4px;
+  object-fit: cover;
+}
+.cover-preview {
+  display: block;
+  width: 72px;
+  height: 104px;
+  margin-top: 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  object-fit: cover;
+}
+.cover-preview[hidden] { display: none }
+.book-picked-summary {
+  display: -webkit-box;
+  overflow: hidden;
+  margin-top: 4px;
+  color: var(--muted-fg);
+  font-size: var(--fs-sm);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
 .alert {
   display: flex;
   align-items: flex-start;
@@ -865,41 +990,159 @@ textarea[aria-invalid="true"] { border-color: var(--danger) }
 }
 .link-btn:hover { color: var(--primary-h); text-decoration: underline }
 
-/* 笔记：左侧目录树 + 定宽列表，右侧自适应编辑器；窄屏改为上下堆叠 */
-.note-split { display: flex; align-items: flex-start; gap: var(--sp-4) }
-.note-side { flex: 0 0 340px; min-width: 0 }
-.note-list { min-width: 0 }
-.note-editor { flex: 1 1 auto; min-width: 0 }
-
-/* 目录树：缩进用 --depth 控制，行内工具按钮悬停/聚焦时出现 */
-.note-folders {
-  margin-bottom: var(--sp-3);
-  padding: var(--sp-2);
+/* 笔记：目录 / 列表 / 编辑器 三栏，各栏独立滚动；窄屏改为上下堆叠 */
+.note-split {
+  display: grid;
+  grid-template-columns: minmax(180px, 220px) minmax(240px, 320px) minmax(0, 1fr);
+  gap: var(--sp-4);
+  align-items: stretch;
+  /* 扣掉页头与容器内边距：三栏落在首屏内，长内容只在各栏里滚 */
+  height: clamp(420px, calc(100dvh - 200px), 1200px);
+}
+.note-pane {
+  min-width: 0;
+  min-height: 0;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
 }
+/* 播放条出现时底部被占掉一条，三栏同步压缩，免得整页跟着多出滚动 */
+body:has(.playerbar:not([hidden])) .note-split {
+  height: clamp(420px, calc(100dvh - 200px - var(--playerbar-h)), 1200px);
+}
+/* 目录 / 列表：头部常驻，内容单独滚动 */
+.note-pane-folders,
+.note-pane-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  overflow: hidden;
+}
+.note-pane-folders > #folder-tree,
+.note-pane-list > .list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* 编辑器：顶栏常驻（保存 / 更多在右上），正文铺满整栏 */
+.note-pane-editor {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+.editor-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+}
+.editor-head #e-title { flex: 1 1 auto; min-width: 0 }
+.editor-acts { display: flex; flex: 0 0 auto; align-items: center; gap: 2px }
+.editor-head .icon-btn { width: 30px; height: 30px; color: var(--muted-fg) }
+.editor-head .icon-btn:hover { color: var(--fg) }
+
+/* 「更多」下拉：绝对定位在按钮下方，点外部 / Esc / 选完关闭 */
+.more { position: relative }
+.more-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 5;
+  min-width: 132px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-lg);
+}
+.more-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.more-item:hover { background: var(--surface-2) }
+.more-item.danger { color: var(--danger) }
+.more-item.danger:hover { background: var(--danger-wash) }
+.more-item:disabled { background: none; opacity: .45; cursor: not-allowed }
+
+.editor-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3) 0;
+}
+.editor-meta > label { flex: 0 0 auto; font-size: var(--fs-sm) }
+.editor-meta > select {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 340px;
+  height: var(--btn-h-sm);
+  padding: 0 8px;
+}
+
+.note-pane-editor > #e-msg { padding: 0 var(--sp-3) }
+
+.note-pane-editor > #e-content {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 180px;
+  margin-top: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border: 0;
+  border-radius: 0;
+  resize: none;
+}
+.note-pane-editor > #e-content:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px }
+
+.editor-foot {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-top: 1px solid var(--border);
+}
+.editor-attaches { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0 }
+.editor-empty { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; padding: var(--sp-4) }
+
+/* 目录树：缩进用 --depth 控制 */
 .note-folder-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--sp-2);
-  padding: 0 var(--sp-1) var(--sp-1);
+  padding: 0 var(--sp-1);
   font-size: var(--fs-sm);
   font-weight: 600;
 }
 .note-folder-head .link-btn { flex: 0 0 auto }
 
-/* 全库搜索：输入框在目录树上方，结果不按目录筛选（点目录即退出搜索） */
-.note-search { margin-bottom: var(--sp-3) }
+/* 全库搜索：输入框固定在列表上方，结果不按目录筛选（点目录即退出搜索） */
+.note-search { flex: 0 0 auto }
 .list > .note-search-meta {
   padding: 0 2px;
   border: 0;
   background: none;
   font-size: var(--fs-xs);
 }
-.note-list mark { padding: 0 1px; border-radius: 2px; background: var(--primary-wash); color: var(--primary); font-weight: 600 }
-.note-list .item-preview {
+.note-pane-list mark { padding: 0 1px; border-radius: 2px; background: var(--primary-wash); color: var(--primary); font-weight: 600 }
+.note-pane-list .item-preview {
   display: -webkit-box;
   margin: 2px 0 4px;
   overflow: hidden;
@@ -962,10 +1205,6 @@ textarea[aria-invalid="true"] { border-color: var(--danger) }
 .link-btn.danger:hover { color: var(--danger); text-decoration: underline }
 .note-folder-hint { margin: 0; flex: 1 1 auto; font-size: var(--fs-xs) }
 .folder-admin-foot { align-items: center; gap: var(--sp-3) }
-
-.note-folder-pick { display: flex; align-items: center; gap: var(--sp-2) }
-.note-folder-pick > label { flex: 0 0 auto; font-size: var(--fs-sm) }
-.note-folder-pick > select { max-width: 280px; height: var(--btn-h-sm); padding: 0 8px }
 
 /* 首页卡片流：资讯（宽）/ 提醒 / 自选股 / 笔记 / 知识星球 */
 .home-grid {
@@ -1213,6 +1452,9 @@ dialog {
 dialog.xl { max-width: 1100px; width: 94% }
 dialog::backdrop { background: rgba(15, 23, 42, .45) }
 dialog h2, dialog h5 { font-size: var(--fs-lg); font-weight: 650; margin-bottom: var(--sp-3) }
+
+/* 图表容器：固定高度，Chart.js 在弹窗里撑满而不按宽度比例撑高 */
+.chart-box { position: relative; height: min(360px, 60vh) }
 .dlg-foot {
   display: flex;
   justify-content: flex-end;
@@ -1414,11 +1656,23 @@ hr.sep { border: 0; border-top: 1px solid var(--border); margin: var(--sp-5) 0 }
     -webkit-overflow-scrolling: touch;
   }
   .table-scroll th, .table-scroll td { white-space: nowrap }
+
+  /* 笔记三栏收窄，优先保住编辑器宽度 */
+  .note-split {
+    grid-template-columns: minmax(160px, 190px) minmax(220px, 280px) minmax(0, 1fr);
+    gap: var(--sp-3);
+  }
+}
+
+/* 笔记三栏在窄屏放不下：退回上下堆叠，目录 / 列表各自限高滚动 */
+@media (max-width: 900px) {
+  .note-split { grid-template-columns: minmax(0, 1fr); height: auto; gap: var(--sp-3) }
+  .note-pane-folders, .note-pane-list { max-height: 320px }
 }
 
 @media (max-width: 640px) {
-  /* 书架卡片窄屏改单列，避免卡片底部三个按钮挤爆 166px 列宽 */
-  .book-grid > * { flex: 1 1 100% }
+  /* 书架窄屏两列，封面比例固定，避免整宽翻页过长 */
+  .book-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-2) }
   .home-grid { grid-template-columns: minmax(0, 1fr) }
   .home-card-wide { grid-column: auto }
   .home-news-meta { display: none }
@@ -1485,9 +1739,6 @@ hr.sep { border: 0; border-top: 1px solid var(--border); margin: var(--sp-5) 0 }
   .home-card { padding: var(--sp-3) }
   .statusbar { gap: 6px 14px; padding: 8px var(--sp-3) }
   th, td { padding: 8px 10px }
-
-  .note-split { flex-direction: column; align-items: stretch }
-  .note-side { flex: 1 1 auto; width: 100% }
 
   /* 手机上表头不再吸附（滚动容器在 .table-scroll 上，sticky 已无意义） */
   thead th { position: static }

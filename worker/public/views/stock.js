@@ -40,6 +40,7 @@ function buildChart(canvas, meta) {
     },
     options: {
       responsive: true,
+      maintainAspectRatio: false, // 由 .chart-box 固定高度，弹窗里不随宽度撑高
       plugins: { legend: { labels: { color: c.tick, boxWidth: 12 } } },
       scales: {
         x: {
@@ -117,10 +118,7 @@ export async function render(main) {
             .join('') || '<tr><td colspan="10" class="muted">暂无自选股，先添加一只</td></tr>'
         }
       </tbody>
-    </table>
-    <div id="chart-wrap" class="card mt-3 d-none">
-      <div class="card-body"><canvas id="chart" height="90"></canvas></div>
-    </div>`
+    </table>`
 
   main.querySelector('#add-stock').onclick = () => openAddDialog(main)
   main.querySelectorAll('[data-d]').forEach((b) => {
@@ -132,7 +130,7 @@ export async function render(main) {
     }
   })
   main.querySelectorAll('[data-k]').forEach((b) => {
-    b.onclick = () => showDaily(main, b.dataset.k, b)
+    b.onclick = () => showDaily(b.dataset.k, b)
   })
 }
 
@@ -325,7 +323,7 @@ function openAddDialog(main) {
   input.focus()
 }
 
-async function showDaily(main, code, btn) {
+async function showDaily(code, btn) {
   const res = await run(btn, () => api(`/api/stock/daily/${code}?days=120`))
   if (!res.ok) return
   const bars = res.data.bars ?? []
@@ -333,22 +331,38 @@ async function showDaily(main, code, btn) {
     toast(`${code} 暂无日线数据`, true)
     return
   }
-  chartCode = code
-  const wrap = main.querySelector('#chart-wrap')
-  wrap.classList.remove('d-none')
 
-  const canvas = main.querySelector('#chart')
+  destroyChart()
+  chartCode = code
+  const name = watch.find((r) => r.code === code)?.name
+  const { close, body } = showDialog(
+    `<h2>${esc(code)}${name ? ` ${esc(name)}` : ''} 日线</h2>
+     <div class="chart-box"><canvas id="stock-chart"></canvas></div>
+     <p class="muted small mt-2" id="stock-chart-note"></p>
+     <div class="dlg-foot">
+       <button class="btn sm" type="button" data-close>关闭</button>
+     </div>`,
+    { xl: true, label: `${code} 日线` },
+  )
+
+  const canvas = body.querySelector('#stock-chart')
   chartMeta = { code, labels: bars.map((b) => b.day), closes: bars.map((b) => b.close) }
   const range = `${chartMeta.labels[0]} 至 ${chartMeta.labels.at(-1)}`
+  body.querySelector('#stock-chart-note').textContent = `${range} · 共 ${chartMeta.labels.length} 个交易日`
   canvas.setAttribute('role', 'img')
   canvas.setAttribute('aria-label', `${code} 日线收盘价，${range}，共 ${chartMeta.labels.length} 个交易日`)
 
-  chart?.destroy()
   chart = buildChart(canvas, chartMeta)
   watchTheme(canvas)
 
-  const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-  wrap.scrollIntoView({ behavior: still ? 'auto' : 'smooth' })
+  // 弹窗关闭（按钮 / Esc / 路由切换）时释放图表，避免主题监听残留
+  const dlg = document.getElementById('dlg')
+  const onClose = () => {
+    dlg.removeEventListener('close', onClose)
+    destroyChart()
+  }
+  dlg.addEventListener('close', onClose)
+  body.querySelector('[data-close]').onclick = close
 }
 
 export function destroy() {

@@ -17,7 +17,7 @@ const ROUTES = [
   { path: '/reminder', title: '提醒', icon: 'bell', load: () => import('./views/reminder.js') },
   { path: '/note', title: '笔记', icon: 'note', load: () => import('./views/note.js') },
   { path: '/music', title: '音乐', icon: 'music', load: () => import('./views/music.js') },
-  { path: '/book', title: '读书', icon: 'book', load: () => import('./views/book.js') },
+  { path: '/book', title: '书架', icon: 'book', load: () => import('./views/book.js') },
   { path: '/zsxq', title: '知识星球', icon: 'star', load: () => import('./views/zsxq.js') },
   { path: '/admin', title: '系统', icon: 'gear', load: () => import('./views/admin.js') },
 ]
@@ -51,8 +51,12 @@ function setActive(path) {
   })
 }
 
+let isFirstRender = true
+
 async function render() {
   const seq = ++ticket
+  const initial = isFirstRender
+  isFirstRender = false
   const { path, params } = parseHash()
   const route = ROUTES.find((r) => r.path === path) || ROUTES[0]
   if (route.path !== path) history.replaceState(null, '', `#${route.path}`)
@@ -89,7 +93,9 @@ async function render() {
   }
 
   // 路由切换后把焦点交给主内容：键盘用户不必从头 Tab，抽屉跳转也靠这里收尾
-  if (seq === ticket) main.focus({ preventScroll: true })
+  // 首次渲染（刷新/首次打开）不抢焦点：脚本聚焦会让 #main 在 Chrome 命中原生 :focus-visible，
+  // 整页内容区出现一圈焦点框，直到点击空白处失焦才消失
+  if (seq === ticket && !initial) main.focus({ preventScroll: true })
 }
 
 renderNav()

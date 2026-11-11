@@ -17,6 +17,8 @@ let searchResults = []
 /** 请求序号：连续输入时只认最后一次请求，避免旧结果覆盖新结果 */
 let searchSeq = 0
 let searchTimer = 0
+/** 编辑器「更多」菜单的关闭函数：切页 / 重绘编辑器时兜底移除 document 监听 */
+let closeMoreMenu = null
 
 export async function render(main, params = {}) {
   searchQuery = ''
@@ -34,21 +36,21 @@ export async function render(main, params = {}) {
       </div>
     </div>
     <div class="note-split">
-      <aside class="note-side">
+      <aside class="note-pane note-pane-folders" aria-label="笔记目录">
+        <div class="note-folder-head">
+          <span>目录</span>
+          <button class="link-btn" id="folder-manage" type="button" aria-label="管理目录">管理</button>
+        </div>
+        <div id="folder-tree" role="tree" aria-label="笔记目录"></div>
+      </aside>
+      <section class="note-pane note-pane-list" aria-label="笔记列表">
         <div class="note-search">
           <label class="sr-only" for="note-search">搜索笔记</label>
           <input class="field field-sm" id="note-search" type="search" placeholder="搜索标题或正文…" autocomplete="off">
         </div>
-        <div class="note-folders">
-          <div class="note-folder-head">
-            <span>目录</span>
-            <button class="link-btn" id="folder-manage" type="button" aria-label="管理目录">管理</button>
-          </div>
-          <div id="folder-tree" role="tree" aria-label="笔记目录"></div>
-        </div>
-        <div class="note-list"><div class="list" id="notes"></div></div>
-      </aside>
-      <div class="note-editor" id="editor"></div>
+        <div class="list" id="notes"></div>
+      </section>
+      <div class="note-pane note-pane-editor" id="editor"></div>
     </div>`
 
   main.querySelector('#new').onclick = () => openEditor(main, null)
@@ -549,7 +551,8 @@ function attachmentsOf(n) {
 }
 
 function emptyEditor(editor) {
-  editor.innerHTML = '<div class="empty">选择左侧笔记，或点「新建」</div>'
+  closeMoreMenu?.()
+  editor.innerHTML = '<div class="editor-empty"><div class="empty">从列表里选一篇笔记，或点「新建」</div></div>'
 }
 
 /** 目录下拉：按树深度缩进，和左侧目录结构一致 */
@@ -578,30 +581,41 @@ function syncFolderSelect(main, fallback = null) {
 }
 
 function openEditor(main, n) {
+  closeMoreMenu?.()
   currentId = n?.id != null ? Number(n.id) : null
   const editor = main.querySelector('#editor')
   const folderId = n ? n.folder_id : /^\d+$/.test(selectedFolder) ? Number(selectedFolder) : null
   editor.innerHTML = `
-    <label class="sr-only" for="e-title">标题</label>
-    <input class="field mb-2" id="e-title" placeholder="标题" value="${esc(n?.title ?? '')}" aria-describedby="e-msg">
-    <div class="note-folder-pick mb-2">
+    <div class="editor-head">
+      <label class="sr-only" for="e-title">标题</label>
+      <input class="field" id="e-title" placeholder="标题" value="${esc(n?.title ?? '')}" aria-describedby="e-msg">
+      <div class="editor-acts">
+        <button class="btn primary sm" id="e-save">保存</button>
+        <div class="more">
+          <button class="icon-btn" id="e-more" type="button" aria-haspopup="menu" aria-expanded="false"
+                  aria-controls="e-more-menu" aria-label="更多操作">${icon('more', 18)}</button>
+          <div class="more-menu" id="e-more-menu" role="menu" hidden>
+            <button class="more-item danger" type="button" role="menuitem" id="e-del" ${n ? '' : 'disabled'}>
+              ${icon('trash', 14)}删除笔记
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="field-error" id="e-msg" role="alert"></div>
+    <div class="editor-meta">
       <label class="muted" for="e-folder">目录</label>
       <select class="field field-sm" id="e-folder" aria-label="所在目录">${folderOptions(folderId)}</select>
     </div>
     <label class="sr-only" for="e-content">正文</label>
-    <textarea class="field mb-2" id="e-content" rows="14" placeholder="正文（原文存储，展示即所见）">${esc(n?.content ?? '')}</textarea>
-    <div class="field-error" id="e-msg" role="alert"></div>
-    <div class="flex between">
-      <div class="flex">
-        <label class="btn sm mb-0">
-          ${icon('upload')}附件
-          <input class="sr-only" type="file" id="e-file" multiple>
-        </label>
-        <button class="btn sm danger" id="e-del" ${n ? '' : 'disabled'}>${icon('trash')}删除</button>
-      </div>
-      <button class="btn primary sm" id="e-save">保存</button>
-    </div>
-    <div class="mt-2" id="e-attaches">${renderAttaches(n)}</div>`
+    <textarea class="field" id="e-content" rows="14" placeholder="正文（原文存储，展示即所见）">${esc(n?.content ?? '')}</textarea>
+    <div class="editor-foot">
+      <label class="btn sm mb-0">
+        ${icon('upload')}附件
+        <input class="sr-only" type="file" id="e-file" multiple>
+      </label>
+      <div class="editor-attaches" id="e-attaches">${renderAttaches(n)}</div>
+    </div>`
 
   const titleEl = editor.querySelector('#e-title')
   const msgEl = editor.querySelector('#e-msg')
@@ -609,6 +623,37 @@ function openEditor(main, n) {
     msgEl.textContent = ''
     titleEl.removeAttribute('aria-invalid')
   })
+
+  // 「更多」下拉：点按钮开关，点外部 / Esc / 选完自动关；destroy 时兜底移除监听
+  const moreBtn = editor.querySelector('#e-more')
+  const menu = editor.querySelector('#e-more-menu')
+  const onDocPointer = (e) => {
+    if (!menu.contains(e.target) && !moreBtn.contains(e.target)) closeMenu()
+  }
+  const onDocKey = (e) => {
+    if (e.key !== 'Escape') return
+    closeMenu()
+    moreBtn.focus()
+  }
+  function closeMenu() {
+    menu.hidden = true
+    moreBtn.setAttribute('aria-expanded', 'false')
+    document.removeEventListener('pointerdown', onDocPointer, true)
+    document.removeEventListener('keydown', onDocKey)
+    if (closeMoreMenu === closeMenu) closeMoreMenu = null
+  }
+  closeMoreMenu = closeMenu
+  moreBtn.onclick = () => {
+    if (!menu.hidden) {
+      closeMenu()
+      return
+    }
+    menu.hidden = false
+    moreBtn.setAttribute('aria-expanded', 'true')
+    document.addEventListener('pointerdown', onDocPointer, true)
+    document.addEventListener('keydown', onDocKey)
+    menu.querySelector('.more-item:not([disabled])')?.focus()
+  }
 
   editor.querySelector('#e-save').onclick = async () => {
     const btn = editor.querySelector('#e-save')
@@ -676,8 +721,10 @@ function openEditor(main, n) {
   }
 
   editor.querySelector('#e-del').onclick = async () => {
+    const btn = editor.querySelector('#e-del')
+    closeMenu()
     if (!n || !confirm('删除笔记及附件？')) return
-    const res = await run(editor.querySelector('#e-del'), () => api(`/api/note/${n.id}`, { method: 'DELETE' }))
+    const res = await run(btn, () => api(`/api/note/${n.id}`, { method: 'DELETE' }))
     if (!res.ok) return
     toast('已删除')
     currentId = null
@@ -687,6 +734,7 @@ function openEditor(main, n) {
 }
 
 export function destroy() {
+  closeMoreMenu?.()
   clearTimeout(searchTimer)
   searchSeq += 1
 }

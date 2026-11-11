@@ -6,7 +6,7 @@ let redirectTimer = 0
 let installPollTimer = 0
 
 const TABS = [
-  { id: 'nodes', label: '执行节点' },
+  { id: 'nodes', label: '计算节点' },
   { id: 'runs', label: '任务运行' },
   { id: 'config', label: '参数与密钥' },
   { id: 'account', label: '账号安全' },
@@ -38,7 +38,7 @@ export async function render(main, params = {}) {
 
     <section class="tab-pane" ${paneAttrs('nodes')}>
       <div class="section-head" style="margin-top: 0">
-        <h2>执行节点</h2>
+        <h2>计算节点</h2>
         <button class="btn primary sm" id="node-add" type="button">${icon('plus')}添加节点</button>
       </div>
       <div class="small muted" style="max-width: 980px">
@@ -83,7 +83,7 @@ export async function render(main, params = {}) {
       <div class="section-head" style="margin-top: 0"><h2>参数与密钥</h2></div>
       <div class="small muted" style="max-width: 860px">
         全部存 D1 <code>app_config</code>，保存即生效，不再需要 <code>wrangler secret</code>；
-        管理员密码在「账号安全」，节点在「执行节点」直接登记。
+        管理员密码在「账号安全」，节点在「计算节点」直接登记。
       </div>
       <div id="cfg-list" class="mt-2" style="max-width: 860px"></div>
       <div id="cfg-note" class="small mt-2" role="status" style="max-width: 860px"></div>

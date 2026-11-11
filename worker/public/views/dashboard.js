@@ -86,7 +86,7 @@ export async function render(main) {
   let banner = ''
   if (allOffline) {
     banner = `<div class="alert danger">${icon('alert')}
-      <span><strong>执行节点离线</strong>——抓取/同步/收盘任务与提醒外发已停（离线判定 30 分钟）。${nodes.length ? `最后心跳：${fmtTime(nodes[0].last_seen_at)}` : '从未有节点上线（检查宿主机 agent）'}</span></div>`
+      <span><strong>计算节点离线</strong>——抓取/同步/收盘任务与提醒外发已停（离线判定 30 分钟）。${nodes.length ? `最后心跳：${fmtTime(nodes[0].last_seen_at)}` : '从未有节点上线（检查宿主机 agent）'}</span></div>`
   } else if (outdated) {
     banner = `<div class="alert warning">${icon('refresh')}
       <span><strong>agent 版本落后</strong>——节点版本与最新发布不一致，等待 Watchtower 拉取或手动升级。</span></div>`
@@ -110,7 +110,7 @@ export async function render(main) {
           </button>`
         })
         .join('')
-    : emptyBox('news', '暂无资讯，等待执行节点抓取', '管理订阅源', '#/news')
+    : emptyBox('news', '暂无资讯，等待计算节点抓取', '管理订阅源', '#/news')
 
   const reminders = d.reminders ?? {}
   const upcoming = reminders.upcoming ?? []

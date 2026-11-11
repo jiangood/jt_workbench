@@ -150,7 +150,7 @@ export async function serveInstallScript(c: Context<Env>): Promise<Response> {
     console.error('resolve install script failed:', String(err))
   }
   if (!nodeId) {
-    return scriptError('接入链接无效：节点可能已注销或重置过密钥，请回后台「执行节点」重新查看接入方式')
+    return scriptError('接入链接无效：节点可能已注销或重置过密钥，请回后台「计算节点」重新查看接入方式')
   }
 
   return new Response(buildScript(requestOrigin(c), nodeId, key), {

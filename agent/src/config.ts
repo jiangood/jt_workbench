@@ -34,7 +34,7 @@ function loadWorkerUrl(): string {
 function loadNodeKey(): string {
   const key = process.env.NODE_KEY?.trim()
   if (!key) {
-    throw new Error('缺少 NODE_KEY：请用后台 /#/admin →「执行节点」→「添加节点」生成的安装脚本部署')
+    throw new Error('缺少 NODE_KEY：请用后台 /#/admin →「计算节点」→「添加节点」生成的安装脚本部署')
   }
   if (key.length < MIN_KEY_LEN || key.length > MAX_KEY_LEN || !/^[!-~]+$/.test(key)) {
     throw new Error('NODE_KEY 格式不正确（需 16~128 位可见 ASCII 字符）')
