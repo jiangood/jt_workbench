@@ -4,7 +4,7 @@
 
 import { api, esc, fmtTime, icon, loadScriptOnce, run, showDialog } from '../lib.js'
 
-const REPEAT = { none: '单次', daily: '每天', weekly: '每周', monthly: '每月' }
+const REPEAT = { none: '单次', daily: '每天', weekly: '每周', monthly: '每月', yearly: '每年' }
 const DAY_MS = 86400_000
 
 const pad = (n) => String(n).padStart(2, '0')
@@ -27,6 +27,15 @@ function fmtShort(ts) {
 function quoteTimeText(value) {
   const m = String(value ?? '').match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})/)
   return m ? `${m[2]}-${m[3]} ${m[4]}:${m[5]}` : String(value ?? '')
+}
+
+/** 提前点摘要：30/7/1 + 当天 */
+function offsetText(offsets) {
+  const list = Array.isArray(offsets) ? offsets : []
+  const leads = list.filter((o) => o > 0)
+  const sameDay = list.includes(0)
+  if (!leads.length) return '当天'
+  return `提前 ${leads.join('/')} 天${sameDay ? ' + 当天' : ''}`
 }
 
 /** 提醒倒计时：待发送 / 今天 / N 天后（发送语义由 tick 扫描决定，这里只做展示） */
@@ -108,11 +117,17 @@ export async function render(main) {
   const reminderList = upcoming.length
     ? upcoming
         .map((r) => {
-          const tone = remindTone(r.remindAt)
+          // 倒计时看“事件日”，不是提前通知日；农历显示农历月/日，公历显示具体时间
+          const eventAt = r.eventAt ?? r.remindAt
+          const tone = remindTone(eventAt)
+          const when =
+            r.calendarType === 'lunar' && r.lunarText ? `农历${esc(r.lunarText)}` : esc(fmtShort(eventAt))
+          const lead = offsetText(r.offsets)
+          const repeatText = REPEAT[r.repeat] || esc(r.repeat || '单次')
           return `<a class="home-row" href="#/reminder">
             <span class="home-row-main">
               <span class="home-row-title">${esc(r.title)}</span>
-              <span class="home-row-meta">${esc(fmtShort(r.remindAt))} · ${REPEAT[r.repeat] || esc(r.repeat || '单次')}</span>
+              <span class="home-row-meta">${when} · ${repeatText}${lead === '当天' ? '' : ` · ${esc(lead)}`}</span>
             </span>
             <span class="badge ${tone.cls}">${tone.text}</span>
           </a>`

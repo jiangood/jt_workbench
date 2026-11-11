@@ -1,6 +1,7 @@
 import pino from 'pino'
 import { client, UnauthorizedError } from './client.js'
 import { getConfig } from './config.js'
+import { describeError } from './describe-error.js'
 import { run, register } from './runner.js'
 import { rssHandler } from './jobs/rss.js'
 import { stockHandler } from './jobs/stock.js'
@@ -36,15 +37,15 @@ async function main(): Promise<void> {
       }
     } catch (e) {
       if (e instanceof UnauthorizedError) {
-        // 密钥未登记 / 节点被注销：后台重新添加或重新签发安装命令后自动恢复
+        // 密钥被重置 / 节点被注销：后台用「安装命令」重新部署后自动恢复
         log.warn(
-          '节点未登记或密钥已失效：后台 /#/admin →「执行节点」核查（60s 后重试，无需重启）',
+          '节点未登记或密钥已失效：后台 /#/admin →「执行节点」→「安装命令」重装（60s 后重试，无需重启）',
         )
         await sleep(60_000)
         continue
       }
       // 可重试错误：退避 30s，任务状态不动（lease 兜底）
-      log.error({ err: String(e) }, 'poll failed')
+      log.error({ err: describeError(e) }, 'poll failed')
       await sleep(30_000)
       continue
     }

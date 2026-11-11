@@ -5,16 +5,19 @@ import type { Context } from 'hono'
 import { fail, ok, type Env } from '../core/envelope'
 import { changePassword, revocationBaseline } from '../core/auth'
 import {
-  getClaimByName,
+  addNode,
   getRegisteredNode,
   isValidNodeName,
   listRegisteredNodes,
   MAX_NODE_NAME_LEN,
   randomNodeKey,
+  rotateNodeKey,
   unregisterNode,
-  upsertClaim,
 } from '../core/nodekey'
 import { buildInstall, requestOrigin } from '../core/install'
+import { sendMail } from '../core/mail'
+import { lunarLabel } from '../core/lunar'
+import { parseOffsets } from '../core/recurrence'
 import { findField, getConfigs, listConfig, resetConfig, setConfig, validateConfig } from '../core/config'
 
 const ONLINE_MS = 30 * 60_000 // 3× poll 间隔容错（v4.6）
@@ -49,7 +52,6 @@ async function nodesPayload(env: Env['Bindings']) {
     const st = stateMap.get(r.node_id)
     return {
       node_id: r.node_id,
-      node_key: r.node_key,
       created_at: r.created_at,
       updated_at: r.updated_at,
       agent_version: st?.agent_version ?? '',
@@ -96,10 +98,13 @@ admin.get('/summary', async (c) => {
         .all(),
       db
         .prepare(
-          `SELECT id, title, remind_at AS remindAt, repeat FROM reminder
-           WHERE enabled = 1 ORDER BY remind_at LIMIT 4`,
+          `SELECT id, title, calendar_type AS calendarType, lunar_month AS lunarMonth,
+                  lunar_day AS lunarDay, lunar_leap AS lunarLeap, anchor_at AS anchorAt,
+                  event_at AS eventAt, remind_at AS remindAt, remind_offsets AS remindOffsets, repeat
+           FROM reminder WHERE enabled = 1
+           ORDER BY COALESCE(event_at, remind_at) LIMIT 4`,
         )
-        .all(),
+        .all<Record<string, unknown>>(),
       db
         .prepare(
           `SELECT id, title, substr(content, 1, 90) AS preview, updated_at AS updatedAt
@@ -120,6 +125,20 @@ admin.get('/summary', async (c) => {
   const held = Object.fromEntries((heldJobs.results ?? []).map((r: Record<string, unknown>) => [r.node_id, r.n]))
   const latest = cfg.agent_latest_version
   const card = (i: number) => (counts[i].results[0] as { n: number }).n
+  const upcomingRows = (upcoming.results ?? []).map((row) => {
+    const eventAt = (row.eventAt as number | null) ?? (row.remindAt as number)
+    return {
+      ...row,
+      eventAt,
+      anchorAt: (row.anchorAt as number | null) ?? eventAt,
+      offsets: parseOffsets(row.remindOffsets),
+      lunarLeap: !!row.lunarLeap,
+      lunarText:
+        row.calendarType === 'lunar' && row.lunarMonth && row.lunarDay
+          ? lunarLabel(Number(row.lunarMonth), Number(row.lunarDay), !!row.lunarLeap)
+          : null,
+    }
+  })
 
   return ok({
     cards: {
@@ -131,7 +150,7 @@ admin.get('/summary', async (c) => {
       note: card(3),
     },
     news: { today: newsToday?.n ?? 0, unread: newsUnread?.n ?? 0, latest: newsLatest.results ?? [] },
-    reminders: { due: reminderDue?.n ?? 0, upcoming: upcoming.results ?? [] },
+    reminders: { due: reminderDue?.n ?? 0, upcoming: upcomingRows },
     stocks: { watch: watch.results ?? [] },
     notes: { total: card(3), latest: notes.results ?? [] },
     library: { music: card(1), book: card(2) },
@@ -184,6 +203,19 @@ admin.post('/config/:key/rotate', async (c) => {
   return ok(await resetConfig(c.env, field.key))
 })
 
+/** 发一封测试邮件（只读参数 + 一次出站连接）：后台改完账号授权码可立即验证 */
+admin.post('/mail/test', async (c) => {
+  try {
+    await sendMail(c.env, {
+      subject: '【个人工作台】测试邮件',
+      html: '<p>收到这封邮件，说明邮件提醒配置已生效。</p>',
+    })
+  } catch (err) {
+    return fail(400, 400, err instanceof Error ? err.message : String(err))
+  }
+  return ok({ sent: true })
+})
+
 /** 后台改密：校验旧密码 → 写 D1 → 撤销全部旧会话（前端跳回登录页） */
 admin.post('/password', changePassword)
 
@@ -196,11 +228,11 @@ admin.post('/rotate-session', async (c) => {
   return ok({ rotated: true })
 })
 
-// ---------- 节点登记（D1 node_registry / node_claim，v4.12：后台生成密钥 + 一键安装） ----------
+// ---------- 节点登记（D1 node_registry，v4.13：后台生成密钥 + 一键接入） ----------
 
 /**
- * 添加节点：只写 10 分钟待认领凭据（列表不显示），agent 首次 poll 时才写入 node_registry。
- * 页面拿到 nodeId 后轮询 /nodes，看到记录即为安装成功；同名重发 = 刷新安装命令。
+ * 添加节点：直接写入 node_registry（列表立刻出现一条离线记录），接入命令长期有效。
+ * 现场环境不一定能马上接入，所以不再有 20 分钟「待认领」窗口；接入方式可随时从该行取回。
  */
 admin.post('/nodes', async (c) => {
   const body = await readBody<{ name?: string }>(c)
@@ -210,46 +242,45 @@ admin.post('/nodes', async (c) => {
   }
 
   try {
-    if (await getRegisteredNode(c.env, nodeId)) {
-      return fail(409, 409, '节点名称已存在：用该行「安装命令」重装，或先注销再添加')
-    }
     const nodeKey = randomNodeKey()
-    const expiresAt = await upsertClaim(c.env, nodeId, nodeKey)
+    if (!(await addNode(c.env, nodeId, nodeKey))) {
+      return fail(409, 409, '节点名称已存在：用该行「查看接入方式」重新部署，或先注销再添加')
+    }
     return ok({
       nodeId,
       nodes: await nodesPayload(c.env),
-      install: buildInstall(requestOrigin(c), { node_id: nodeId, node_key: nodeKey }, {
-        pending: true,
-        expiresAt,
-      }),
+      install: buildInstall(requestOrigin(c), { node_id: nodeId, node_key: nodeKey }),
     })
   } catch (err) {
-    console.error('create node claim failed:', String(err))
-    return fail(500, 500, 'node_claim 表不存在：先跑 wrangler d1 migrations apply')
+    console.error('register node failed:', String(err))
+    return fail(500, 500, 'node_registry 表不存在：先跑 wrangler d1 migrations apply')
   }
 })
 
-/** 安装命令：已登记节点可随时重新取回（长期有效）；待认领节点返回剩余 10 分钟内的命令 */
+/** 接入方式：只要节点仍登记着就长期可用（重置密钥会换掉 URL） */
 admin.get('/nodes/:name/install', async (c) => {
   const nodeId = c.req.param('name')
   try {
     const registered = await getRegisteredNode(c.env, nodeId)
-    if (registered) {
-      return ok({
-        install: buildInstall(requestOrigin(c), registered, { pending: false, expiresAt: null }),
-      })
-    }
-    const claim = await getClaimByName(c.env, nodeId)
-    if (claim) {
-      return ok({
-        install: buildInstall(requestOrigin(c), claim, { pending: true, expiresAt: claim.expires_at }),
-      })
-    }
-    return fail(404, 404, '节点不存在（安装命令可能已过期，请重新添加同名节点）')
+    if (!registered) return fail(404, 404, '节点不存在（可能已注销，请重新添加）')
+    return ok({ install: buildInstall(requestOrigin(c), registered) })
   } catch (err) {
     console.error('build install command failed:', String(err))
-    return fail(500, 500, 'node_registry / node_claim 表不存在：先跑 wrangler d1 migrations apply')
+    return fail(500, 500, 'node_registry 表不存在：先跑 wrangler d1 migrations apply')
   }
+})
+
+/** 重置节点密钥：旧密钥立即失效；列表不返回密钥，新值只能经「接入方式」弹窗取回 */
+admin.post('/nodes/:name/rotate-key', async (c) => {
+  const nodeId = c.req.param('name')
+  try {
+    const nodeKey = await rotateNodeKey(c.env, nodeId)
+    if (!nodeKey) return fail(404, 404, '节点不存在（可能已注销）')
+  } catch (err) {
+    console.error('rotate node key failed:', String(err))
+    return fail(500, 500, 'node_registry 表不存在：先跑 wrangler d1 migrations apply')
+  }
+  return ok({ rotated: nodeId, nodes: await nodesPayload(c.env) })
 })
 
 /** 注销节点：删除登记与心跳行（任务历史保留）；agent 仍在线会一直 401 直到重新登记 */

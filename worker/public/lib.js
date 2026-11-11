@@ -22,9 +22,11 @@ const ICONS = {
   online: '<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>',
   offline: '<circle cx="12" cy="12" r="9"/><path d="m9 9 6 6M15 9l-6 6"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 10h18"/>',
   moon: '<path d="M20.5 14.3A8.5 8.5 0 1 1 9.7 3.5a7 7 0 0 0 10.8 10.8Z"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.4 5.4l1.4 1.4M17.2 17.2l1.4 1.4M18.6 5.4l-1.4 1.4M6.8 17.2l-1.4 1.4"/>',
   paperclip: '<path d="m20.5 11.6-8.2 8.2a4.7 4.7 0 0 1-6.6-6.6l8.5-8.5a3.1 3.1 0 0 1 4.4 4.4l-8.5 8.5a1.6 1.6 0 0 1-2.2-2.2l7.7-7.7"/>',
+  chevron: '<path d="m9 6 6 6-6 6"/>',
 }
 
 /** icon('news', 16) → 内联 SVG 字符串（装饰性，aria-hidden） */

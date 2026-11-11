@@ -356,6 +356,10 @@ textarea:focus-visible {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
+  /* 滚动容器必须是绝对定位后代的包含块：视图里的 .sr-only 等绝对定位元素若以 ICB 为
+   * 包含块，就不会被这里的 overflow 裁剪，会按自己的静态位置把整页撑高 → 页面出现
+   * 「mainwrap 滚动条 + 窗口滚动条」两条滚动条（系统 / 笔记页最容易复现） */
+  position: relative;
 }
 
 .container {
@@ -658,18 +662,39 @@ textarea { resize: vertical; line-height: 1.55 }
 .input-group > input,
 .input-group > select { flex: 1 1 auto; min-width: 0 }
 
-/* 自选股添加行 / 提醒的"时间 + 重复"：桌面一行，≤480px 拆成两行（否则控件被压到 110px 左右） */
-.add-stock-row > #name { max-width: 130px }
+/* 提醒的"时间 + 重复"：桌面一行，≤480px 拆成两行（否则控件被压到 110px 左右） */
 .reminder-when > #f-repeat { max-width: 120px }
 @media (max-width: 480px) {
-  .add-stock-row,
   .reminder-when { flex-wrap: wrap }
-  /* 代码独占一行，名称与「添加」按钮同行（basis 0 才能让按钮的 58px 参与同行排列） */
-  .add-stock-row > #code { flex: 1 1 100% }
-  .add-stock-row > #name { flex: 1 1 0; max-width: none }
   /* 时间与重复各占一行 */
   .reminder-when > .field { flex: 1 1 100% }
   .reminder-when > #f-repeat { max-width: none }
+}
+
+/* 提醒表单：历法切换 / 多个提前点 */
+.field-label {
+  display: block;
+  margin-bottom: var(--sp-1);
+  color: var(--muted-fg);
+  font-size: var(--fs-sm);
+}
+.check-row { display: flex; flex-wrap: wrap; gap: 6px 14px }
+.check-row label,
+label.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.reminder-lunar > #f-lunar-month { max-width: 110px }
+.reminder-lunar > #f-lunar-day { max-width: 100px }
+.reminder-lunar > #f-lunar-time { max-width: 120px }
+@media (max-width: 480px) {
+  .reminder-lunar { flex-wrap: wrap }
+  .reminder-lunar > #f-lunar-month,
+  .reminder-lunar > #f-lunar-day { flex: 1 1 0; max-width: none }
+  .reminder-lunar > #f-lunar-time { flex: 1 1 100%; max-width: none }
 }
 
 /* 行内字段错误：常驻 live region（display:none 时 role=alert 不播报），空时零高不占位 */
@@ -679,6 +704,39 @@ textarea { resize: vertical; line-height: 1.55 }
 input[aria-invalid="true"],
 select[aria-invalid="true"],
 textarea[aria-invalid="true"] { border-color: var(--danger) }
+
+/* 弹窗表单字段标题 */
+.form-label { display: block; margin-bottom: var(--sp-1); font-size: var(--fs-sm); color: var(--muted-fg) }
+
+/* 联想下拉（股票搜索）：输入框下方挂 listbox，弹窗内点击不夺焦 */
+.combo { position: relative }
+.combo-list {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 248px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+}
+.combo-opt {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 7px 9px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.combo-opt:hover,
+.combo-opt[aria-selected="true"] { background: var(--surface-2) }
+.combo-opt[aria-disabled="true"] { opacity: .55; cursor: not-allowed }
+.combo-empty { padding: 8px 9px; color: var(--muted-fg); font-size: var(--fs-sm) }
+.combo-list[hidden] { display: none }
 
 /* 徽标 / 提示 */
 .badge {
@@ -769,10 +827,107 @@ textarea[aria-invalid="true"] { border-color: var(--danger) }
 }
 .link-btn:hover { color: var(--primary-h); text-decoration: underline }
 
-/* 笔记：左侧定宽列表 + 右侧自适应编辑器；窄屏改为上下堆叠 */
+/* 笔记：左侧目录树 + 定宽列表，右侧自适应编辑器；窄屏改为上下堆叠 */
 .note-split { display: flex; align-items: flex-start; gap: var(--sp-4) }
-.note-list { flex: 0 0 320px; min-width: 0 }
+.note-side { flex: 0 0 340px; min-width: 0 }
+.note-list { min-width: 0 }
 .note-editor { flex: 1 1 auto; min-width: 0 }
+
+/* 目录树：缩进用 --depth 控制，行内工具按钮悬停/聚焦时出现 */
+.note-folders {
+  margin-bottom: var(--sp-3);
+  padding: var(--sp-2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+.note-folder-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-1) var(--sp-1);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.note-folder-head .link-btn { flex: 0 0 auto }
+
+/* 全库搜索：输入框在目录树上方，结果不按目录筛选（点目录即退出搜索） */
+.note-search { margin-bottom: var(--sp-3) }
+.list > .note-search-meta {
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  font-size: var(--fs-xs);
+}
+.note-list mark { padding: 0 1px; border-radius: 2px; background: var(--primary-wash); color: var(--primary); font-weight: 600 }
+.note-list .item-preview {
+  display: -webkit-box;
+  margin: 2px 0 4px;
+  overflow: hidden;
+  font-size: var(--fs-xs);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 32px;
+  padding: 2px 4px 2px calc(var(--depth, 0) * 14px + 4px);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.tree-row:hover { background: var(--surface-2) }
+.tree-row.active { background: var(--primary-wash); color: var(--primary); font-weight: 600 }
+.tree-row:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px }
+
+.tree-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--muted-fg);
+  cursor: pointer;
+}
+.tree-toggle:hover { background: var(--surface-3) }
+.tree-toggle .ico { transition: transform var(--dur-fast) }
+.tree-toggle .ico.is-open { transform: rotate(90deg) }
+
+.tree-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.tree-count { flex: 0 0 auto; font-size: var(--fs-xs); font-variant-numeric: tabular-nums }
+
+/* 目录管理弹窗：缩进树 + 行内改名/新建输入；操作统一在这里，树行本身只做筛选 */
+.folder-admin { display: flex; flex-direction: column; gap: 2px; max-height: 46vh; overflow: auto }
+.folder-admin-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 36px;
+  padding: 2px var(--sp-1) 2px calc(var(--depth, 0) * 16px + 4px);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+}
+.folder-admin-row:hover { background: var(--surface-2) }
+.folder-admin-row.is-editing { background: var(--surface-2) }
+.folder-admin-acts { display: flex; flex: 0 0 auto; align-items: center; gap: var(--sp-2) }
+.folder-admin-row .folder-admin-input { flex: 1 1 auto; min-width: 0 }
+.link-btn.danger { color: var(--danger) }
+.link-btn.danger:hover { color: var(--danger); text-decoration: underline }
+.note-folder-hint { margin: 0; flex: 1 1 auto; font-size: var(--fs-xs) }
+.folder-admin-foot { align-items: center; gap: var(--sp-3) }
+
+.note-folder-pick { display: flex; align-items: center; gap: var(--sp-2) }
+.note-folder-pick > label { flex: 0 0 auto; font-size: var(--fs-sm) }
+.note-folder-pick > select { max-width: 280px; height: var(--btn-h-sm); padding: 0 8px }
 
 /* 首页卡片流：资讯（宽）/ 提醒 / 自选股 / 笔记 / 知识星球 */
 .home-grid {
@@ -1294,7 +1449,7 @@ hr.sep { border: 0; border-top: 1px solid var(--border); margin: var(--sp-5) 0 }
   th, td { padding: 8px 10px }
 
   .note-split { flex-direction: column; align-items: stretch }
-  .note-list { flex: 1 1 auto; width: 100% }
+  .note-side { flex: 1 1 auto; width: 100% }
 
   /* 手机上表头不再吸附（滚动容器在 .table-scroll 上，sticky 已无意义） */
   thead th { position: static }

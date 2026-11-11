@@ -1,6 +1,7 @@
 /** zsxq_sync：知识星球话题同步（极简 TS client；token 由 Worker 从 D1 注入 payload，agent 不读环境变量） */
 
 import { z } from 'zod'
+import { describeError } from '../describe-error.js'
 import { ZsxqClient, ZsxqApiError, type ZsxqTopic } from '../zsxq-client.js'
 import type { JobHandler } from '../types.js'
 
@@ -19,7 +20,7 @@ export const zsxqHandler: JobHandler = async (payload, ctx) => {
   // 沿用旧系统的克制节奏：页间随机停顿，避免触发风控
   await sleep(1000 + Math.random() * 2000)
 
-  const data = await client.listTopics(groupId, count, endTime)
+  const data = await client.listTopics(groupId, count, endTime, ctx.signal)
   const items = (data.topics ?? []).map((t: ZsxqTopic) => ({
     topicId: String(t.topic_id),
     groupId,
@@ -38,10 +39,11 @@ export const zsxqHandler: JobHandler = async (payload, ctx) => {
   // 顺带刷新星球名称（失败不影响同步结果）
   let groupName: string | null = null
   try {
-    const groups = await client.listGroups()
+    const groups = await client.listGroups(ctx.signal)
     groupName = (groups.groups ?? []).find((g) => String(g.group_id) === groupId)?.name ?? null
   } catch (e) {
     if (e instanceof ZsxqApiError) console.warn(`groups.list failed: ${e.code} ${e.message}`)
+    else console.warn(`groups.list failed: ${describeError(e)}`)
   }
 
   return {

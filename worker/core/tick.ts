@@ -4,6 +4,25 @@
 
 import type { Bindings } from './envelope'
 import { sendMail } from './mail'
+import { lunarLabel } from './lunar'
+import {
+  DAY_MS,
+  localParts,
+  offsetOf,
+  parseOffsets,
+  planNext,
+  startOfLocalDay,
+  type CalendarType,
+  type Repeat,
+} from './recurrence'
+
+const REPEAT_TEXT: Record<Repeat, string> = {
+  none: '单次',
+  daily: '每天',
+  weekly: '每周',
+  monthly: '每月',
+  yearly: '每年',
+}
 
 export async function runBuiltinTasks(db: D1Database, now: number): Promise<void> {
   // 一次 batch（自带事务）：运行历史 90 天 / 资讯 30 天 / 过期缓存行（cache 有 TTL 但从未清理，不删会永久堆积）
@@ -14,20 +33,38 @@ export async function runBuiltinTasks(db: D1Database, now: number): Promise<void
   ])
 }
 
+interface DueReminder {
+  id: number
+  title: string
+  note: string | null
+  repeat: string
+  calendarType: string
+  lunarMonth: number | null
+  lunarDay: number | null
+  lunarLeap: number
+  anchorAt: number | null
+  eventAt: number | null
+  remindAt: number
+  remindOffsets: string
+}
+
 export async function reminderScan(db: D1Database, env: Bindings, now: number): Promise<number> {
   const due = await db
-    .prepare('SELECT id, title, note, repeat FROM reminder WHERE enabled = 1 AND remind_at <= ? LIMIT 5')
+    .prepare(
+      `SELECT id, title, note, repeat,
+              calendar_type AS calendarType, lunar_month AS lunarMonth, lunar_day AS lunarDay,
+              lunar_leap AS lunarLeap, anchor_at AS anchorAt, event_at AS eventAt,
+              remind_at AS remindAt, remind_offsets AS remindOffsets
+       FROM reminder WHERE enabled = 1 AND remind_at <= ? LIMIT 5`,
+    )
     .bind(now)
-    .all<{ id: number; title: string; note: string | null; repeat: string }>()
+    .all<DueReminder>()
 
   // 并发发信（最多 5 封）：SMTP 单封最多 20s，串行会把一次 poll 拖到 1 分钟以上
   const results = await Promise.all(
     due.results.map(async (r) => {
       try {
-        await sendMail(env, {
-          subject: `【提醒】${r.title}`,
-          html: `<p>${escapeHtml(r.title)}</p>${r.note ? `<p>${escapeHtml(r.note)}</p>` : ''}<p style="color:#999;font-size:12px">— 个人工作台</p>`,
-        })
+        await sendMail(env, buildMail(r, now))
         return { r, error: null as string | null }
       } catch (err) {
         // 未配置 / 网络抖动都只记录错误：保留 remind_at，下轮自动重试
@@ -38,33 +75,90 @@ export async function reminderScan(db: D1Database, env: Bindings, now: number): 
 
   let sent = 0
   for (const { r, error } of results) {
-    if (error === null) {
-      sent++
-      if (r.repeat === 'none') {
-        await db
-          .prepare('UPDATE reminder SET last_sent_at = ?, last_error = NULL, enabled = 0 WHERE id = ?')
-          .bind(now, r.id)
-          .run()
-      } else {
-        await db
-          .prepare('UPDATE reminder SET last_sent_at = ?, last_error = NULL, remind_at = ? WHERE id = ?')
-          .bind(now, advance(now, r.repeat), r.id)
-          .run()
-      }
-    } else {
+    if (error !== null) {
       await db.prepare('UPDATE reminder SET last_error = ? WHERE id = ?').bind(error, r.id).run()
+      continue
+    }
+
+    sent++
+    const eventAt = r.eventAt ?? r.remindAt
+    const offsets = parseOffsets(r.remindOffsets)
+    const plan = planNext(
+      {
+        repeat: toRepeat(r.repeat),
+        calendarType: toCalendar(r.calendarType),
+        anchorAt: r.anchorAt ?? eventAt,
+        eventAt,
+        remindAt: r.remindAt,
+        offsets,
+        lunarMonth: r.lunarMonth,
+        lunarDay: r.lunarDay,
+        lunarLeap: !!r.lunarLeap,
+      },
+      now,
+      offsetOf(eventAt, r.remindAt),
+    )
+
+    if (plan.disable) {
+      await db
+        .prepare('UPDATE reminder SET last_sent_at = ?, last_error = NULL, enabled = 0 WHERE id = ?')
+        .bind(now, r.id)
+        .run()
+    } else {
+      await db
+        .prepare(
+          'UPDATE reminder SET last_sent_at = ?, last_error = NULL, event_at = ?, remind_at = ? WHERE id = ?',
+        )
+        .bind(now, plan.eventAt, plan.remindAt, r.id)
+        .run()
     }
   }
   return sent
 }
 
-function advance(now: number, repeat: string): number {
-  const d = new Date(now)
-  if (repeat === 'daily') d.setUTCDate(d.getUTCDate() + 1)
-  else if (repeat === 'weekly') d.setUTCDate(d.getUTCDate() + 7)
-  else if (repeat === 'monthly') d.setUTCMonth(d.getUTCMonth() + 1)
-  else return now // none：调用方置 enabled=0
-  return d.getTime()
+function buildMail(r: DueReminder, now: number) {
+  const eventAt = r.eventAt ?? r.remindAt
+  const p = localParts(eventAt)
+  const dateText = `${p.y}-${pad(p.m)}-${pad(p.d)} ${pad(p.h)}:${pad(p.min)}`
+  const days = Math.round((startOfLocalDay(eventAt) - startOfLocalDay(now)) / DAY_MS)
+  const whenText = days > 0 ? `还有 ${days} 天` : days === 0 ? '就是今天' : `已过 ${-days} 天`
+  const lunarText =
+    r.calendarType === 'lunar' && r.lunarMonth && r.lunarDay
+      ? `农历${lunarLabel(r.lunarMonth, r.lunarDay, !!r.lunarLeap)} · `
+      : ''
+  const repeatText = REPEAT_TEXT[toRepeat(r.repeat)]
+  const offsets = parseOffsets(r.remindOffsets)
+
+  return {
+    subject: `【提醒】${r.title}${days > 0 ? ` · 还有 ${days} 天` : days === 0 ? ' · 今天' : ''}`,
+    html:
+      `<p><strong>${escapeHtml(r.title)}</strong></p>` +
+      (r.note ? `<p>${escapeHtml(r.note)}</p>` : '') +
+      `<p>${lunarText}${dateText}（${whenText}）</p>` +
+      `<p style="color:#666">${repeatText} · ${offsetText(offsets)}</p>` +
+      `<p style="color:#999;font-size:12px">— 个人工作台</p>`,
+  }
+}
+
+function offsetText(offsets: number[]): string {
+  const leads = offsets.filter((o) => o > 0)
+  const sameDay = offsets.includes(0)
+  if (!leads.length) return '当天提醒'
+  return `提前 ${leads.join('/')} 天${sameDay ? ' + 当天' : ''}`
+}
+
+function toRepeat(value: string): Repeat {
+  return value === 'daily' || value === 'weekly' || value === 'monthly' || value === 'yearly'
+    ? value
+    : 'none'
+}
+
+function toCalendar(value: string): CalendarType {
+  return value === 'lunar' ? 'lunar' : 'solar'
+}
+
+function pad(n: number): string {
+  return String(n).padStart(2, '0')
 }
 
 function escapeHtml(s: string): string {

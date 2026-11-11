@@ -1,7 +1,7 @@
 /** stock_eod：新浪批量行情接口 → 结构化 items（收盘同步，agent 执行） */
 
 import { z } from 'zod'
-import { safeFetch } from '../ssrf.js'
+import { readBody, safeFetch } from '../ssrf.js'
 import type { JobHandler } from '../types.js'
 
 const payloadSchema = z.object({
@@ -16,9 +16,12 @@ export const stockHandler: JobHandler = async (payload, ctx) => {
   for (let i = 0; i < codes.length; i += 80) {
     const batch = codes.slice(i, i + 80)
     const url = `https://hq.sinajs.cn/list=${batch.join(',')}`
-    const res = await safeFetch(url, { headers: { referer: 'https://finance.sina.com.cn' } })
-    if (!res.ok) throw new Error(`sina HTTP ${res.status}`)
-    const text = new TextDecoder('gbk').decode(await res.arrayBuffer())
+    const res = await safeFetch(url, {
+      headers: { referer: 'https://finance.sina.com.cn' },
+      signal: ctx.signal,
+    })
+    if (!res.ok) throw new Error(`sina HTTP ${res.status} ${url}`)
+    const text = new TextDecoder('gbk').decode(await readBody(res, url))
 
     for (const m of text.matchAll(/hq_str_((?:sh|sz|bj)\d{6})="([^"]*)"/g)) {
       const [, code, raw] = m

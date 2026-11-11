@@ -1,17 +1,16 @@
 /**
- * 一键安装（v4.12）：后台只生成 10 分钟“待认领”凭据，节点列表不显示
+ * 一键安装（v4.13）：节点在后台直接登记，安装链接长期有效
  *
  *   curl -fsSL 'https://<worker>/install/<key>.sh' | sh
  *
- * - URL 里的 key 就是待认领密钥：脚本内联为 `NODE_KEY`，agent 首次 poll 时由
- *   `/node/*` 鉴权自动写入 node_registry（这一刻页面轮询到记录 → 提示安装成功）
+ * - URL 里的 key 就是 node_registry.node_key：脚本内联为 `NODE_KEY`，agent 首次 poll 即通过鉴权
  * - 脚本在目标机**当前目录**创建 `workbench-agent/docker-compose.yml`（仅此一个文件）并启动
- * - 凭据被消费后 URL 仍然可用（按 node_registry 的密钥反查），方便重装/取回 compose
+ * - 链接不需要登录态（安装端没有账号），密钥泄露时点「重置密钥」即可让旧链接立即失效
  */
 
 import type { Context } from 'hono'
 import type { Env } from './envelope'
-import { getClaimByKey, getNodeByKey } from './nodekey'
+import { getNodeByKey } from './nodekey'
 
 const AGENT_IMAGE = 'ghcr.io/jiangood/workbench-agent:latest'
 const AGENT_DIR = 'workbench-agent'
@@ -21,10 +20,6 @@ export interface InstallPayload {
   scriptUrl: string
   command: string
   compose: string
-  /** true = 还在等 agent 首次连接；false = 节点已登记（重装/取回命令） */
-  pending: boolean
-  /** 待认领凭据的过期时刻（epoch ms）；已登记节点为 null（长期可用） */
-  expiresAt: number | null
 }
 
 /**
@@ -36,19 +31,21 @@ export function requestOrigin(c: Context<Env>): string {
 }
 
 function buildCompose(workerUrl: string, nodeKey: string): string {
+  // command 必须写全 `node agent.mjs`：node 镜像自带 ENTRYPOINT docker-entrypoint.sh，
+  // 首参不是已知命令（如直接给 URL）时会被它改写成 `node <url>` → MODULE_NOT_FOUND
   return `# 由 workbench 后台生成 · 已内联节点密钥，请勿提交仓库或外传
 services:
   workbench-agent:
     image: ${AGENT_IMAGE}
     restart: unless-stopped
-    command: ['${workerUrl}']
+    command: ['node', 'agent.mjs', '${workerUrl}']
     environment:
       - NODE_KEY=${nodeKey}
     labels:
       - com.centurylinklabs.watchtower.enable=true
 
   watchtower:
-    image: nicholas-fedor/watchtower
+    image: ghcr.io/nicholas-fedor/watchtower:latest
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -116,36 +113,34 @@ function scriptError(message: string): Response {
   })
 }
 
-/** 后台响应：安装命令 + 手动方案（compose 原文） */
-export function buildInstall(
-  origin: string,
-  node: { node_id: string; node_key: string },
-  opts: { pending: boolean; expiresAt: number | null },
-): InstallPayload {
+/**
+ * 后台响应：接入命令 + 手动方案（compose 原文）。
+ * 命令统一带 WORKBENCH_AGENT_FORCE=1：首次执行无影响，重装/换机时直接覆盖旧 compose。
+ */
+export function buildInstall(origin: string, node: { node_id: string; node_key: string }): InstallPayload {
   const scriptUrl = `${origin}/install/${node.node_key}.sh`
   return {
     nodeId: node.node_id,
     scriptUrl,
-    command: `curl -fsSL '${scriptUrl}' | sh`,
+    command: `curl -fsSL '${scriptUrl}' | WORKBENCH_AGENT_FORCE=1 sh`,
     compose: buildCompose(origin, node.node_key),
-    pending: opts.pending,
-    expiresAt: opts.expiresAt,
   }
 }
 
-/** 公共端点：GET /install/<key>.sh（待认领凭据或已登记节点的密钥） */
+/** 公共端点：GET /install/<key>.sh（只认 node_registry 里现存的密钥） */
 export async function serveInstallScript(c: Context<Env>): Promise<Response> {
   const file = c.req.param('file') ?? ''
   const key = file.endsWith('.sh') ? file.slice(0, -3) : file
 
   let nodeId: string | null = null
   try {
-    const registered = await getNodeByKey(c.env, key)
-    nodeId = registered?.node_id ?? (await getClaimByKey(c.env, key))?.node_id ?? null
+    nodeId = (await getNodeByKey(c.env, key))?.node_id ?? null
   } catch (err) {
     console.error('resolve install script failed:', String(err))
   }
-  if (!nodeId) return scriptError('安装链接无效或已过期：请回后台「执行节点」重新生成（有效期 10 分钟）')
+  if (!nodeId) {
+    return scriptError('接入链接无效：节点可能已注销或重置过密钥，请回后台「执行节点」重新查看接入方式')
+  }
 
   return new Response(buildScript(requestOrigin(c), nodeId, key), {
     headers: {

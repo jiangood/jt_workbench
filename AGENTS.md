@@ -28,7 +28,7 @@
 - API 统一返回自定义 JSON 信封 `{code, data, message}`；`onError` 统一兜底
 - D1：时间统一 epoch 毫秒 `INTEGER`；布尔 `0/1`；JSON 列 `TEXT`；多语句写入用 `batch()`（自带事务）；索引单独 `CREATE INDEX`，不写进 CREATE TABLE；建表走 `wrangler d1 migrations`
 - **参数/密钥一律存 D1，Worker 不使用 `wrangler secret`**：
-  `app_config`（参数中心，注册表在 `core/config.ts` 的 `CONFIG_FIELDS`，缺失时可自动随机生成）+ `node_registry`（已认领节点）+ `node_claim`（10 分钟待认领凭据；密钥由后台生成，一键安装脚本写进 compose）+ `auth_state`（管理员凭据）。`Bindings` 只保留 `DB` / `R2`；新增参数只加 `CONFIG_FIELDS` 条目，**不要再新增 secret/var**
+  `app_config`（参数中心，注册表在 `core/config.ts` 的 `CONFIG_FIELDS`，缺失时可自动随机生成）+ `node_registry`（节点登记，添加即入库、密钥长期有效）+ `auth_state`（管理员凭据）。`Bindings` 只保留 `DB` / `R2`；新增参数只加 `CONFIG_FIELDS` 条目，**不要再新增 secret/var**（`node_claim` 已废弃，表保留待后续清理）
 - 分工红线（决策 #14）：**Worker 只做简单计算与展示**——循环 / 批量 / 抓取 / 解析类逻辑一律放 agent；浏览器承担展示类计算（DOMPurify / music-metadata / JSZip / lunar）
 - 前端 = **零构建 SPA（hash 路由）**：`public/index.html` 只是 shell（侧栏/播放条/弹窗），
   `app.js` 管路由，`views/*.js` 是视图（ES module，各自导出 `render(main, params)` / `destroy()`）；
@@ -43,7 +43,8 @@
 
 - 哑执行器：**任务 = 数据不是代码**（type 只是查表键，不执行任何来自网络的代码）
 - 不动态安装依赖；工具箱（cheerio / music-metadata / jszip 等）编译期预装进镜像
-- **节点身份不靠 ID，密钥由后台生成**：Worker 地址走启动参数（compose 的 `command`）；后台「添加节点」生成密钥并给出 `curl | sh` 安装命令（`GET /install/<key>.sh`，10 分钟内有效），脚本在当前目录创建 `workbench-agent/docker-compose.yml` 并把密钥写进 `NODE_KEY`；agent 首次 poll 自动写入 `node_registry`（列表只显示已认领节点）；`POLL_INTERVAL=600` 仅调试可选
+- **节点身份不靠 ID，密钥由后台生成**：Worker 地址走启动参数（compose 的 `command`）；后台「添加节点」直接把记录写进 `node_registry`（接入前显示离线）并生成 `curl | sh` 接入命令（`GET /install/<key>.sh`，长期有效；现场不能马上接入也没关系），脚本在当前目录创建 `workbench-agent/docker-compose.yml` 并把密钥写进 `NODE_KEY`；`POLL_INTERVAL=600` 仅调试可选
+- **密钥不在页面展示**：`/api/admin/nodes` 不返回 `node_key`，取密钥只能从该行「查看接入方式」弹窗的 compose 里拿；换密钥点「重置密钥」（`POST /api/admin/nodes/:name/rotate-key`）——旧密钥立即失效、心跳行删除（立刻显示离线），随后用新接入命令重装（命令自带 `WORKBENCH_AGENT_FORCE=1`）
 - **密钥一律不进 agent 环境变量**（节点自身的 `NODE_KEY` 除外，由安装脚本写进 compose）：与 Worker 同一条红线——第三方 token / API Key 存 D1（`app_config` + `CONFIG_FIELDS`），Worker 下发任务时注入 payload，agent 只读 `payload` 里的值（例：`zsxq_sync` 的 token）
 - 出站 fetch 一律挂 `AbortSignal.timeout(30s)`；SSRF 守卫默认拒绝内网/环回地址
 - 一次只持一个任务；本地队列已删除（v4.9 领 1 + 捎带下发）

@@ -2,7 +2,7 @@
 
 import Parser from 'rss-parser'
 import { z } from 'zod'
-import { safeFetch } from '../ssrf.js'
+import { readBody, safeFetch } from '../ssrf.js'
 import type { JobHandler } from '../types.js'
 
 const payloadSchema = z.object({
@@ -19,9 +19,10 @@ export const rssHandler: JobHandler = async (payload, ctx) => {
 
   const res = await safeFetch(url, {
     headers: { 'user-agent': 'workbench-agent/0.1 (+https://jt.410518072.xyz)' },
+    signal: ctx.signal,
   })
   if (!res.ok) throw new Error(`feed HTTP ${res.status} ${url}`)
-  const xml = await res.text()
+  const xml = new TextDecoder().decode(await readBody(res, url))
 
   const feed = await parser.parseString(xml)
   const items = feed.items.map((it) => ({

@@ -1,5 +1,6 @@
 import pino from 'pino'
 import { client, ConflictError, RetryableError } from './client.js'
+import { describeError } from './describe-error.js'
 import type { Envelope, Job, JobCtx, JobHandler } from './types.js'
 
 const log = pino()
@@ -69,8 +70,10 @@ export async function run(job: Job): Promise<Envelope> {
     return await client.complete(job.id, summary)
   } catch (e) {
     if (ac.signal.aborted) return { now: Date.now(), jobs: [] } // 被回收：沉默放弃
-    log.error({ jobId: job.id, err: String(e) }, 'job failed')
-    return client.fail(job.id, String(e))
+    // 带上 type + cause 链：fetch failed 的真实原因（ENOTFOUND/ECONNRESET/超时）都在 cause 里
+    const reason = describeError(e)
+    log.error({ jobId: job.id, type: job.type, err: reason }, 'job failed')
+    return client.fail(job.id, reason.slice(0, 500))
   } finally {
     clearInterval(hb)
   }

@@ -39,7 +39,7 @@ app.use('*', async (c, next) => {
 
 app.route('/node', node)
 
-// 节点一键安装脚本（公开：URL 里的 key 即 10 分钟待认领凭据，不依赖登录态）
+// 节点一键接入脚本（公开：URL 里的 key 即 node_registry 的节点密钥，不依赖登录态）
 app.get('/install/:file', serveInstallScript)
 
 // ---------- 认证 ----------

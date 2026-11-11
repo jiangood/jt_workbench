@@ -41,7 +41,7 @@ export async function sendMail(env: Bindings, content: MailContent): Promise<voi
 
   const to = cfg.reminder_to.trim()
   if (!to) {
-    throw new MailError('提醒收件邮箱未配置（后台 → 参数与密钥）；保留待发，配置后自动补发')
+    throw new MailError('收件邮箱未配置（后台 → 参数与密钥 → 邮件提醒）；保留待发，配置后自动补发')
   }
 
   // 未显式选服务商时：有 Resend Key 走旧通道，否则按 QQ 邮箱模板（只影响默认主机的提示）
@@ -62,10 +62,10 @@ export async function sendMail(env: Bindings, content: MailContent): Promise<voi
   const pass = cfg.smtp_pass
   const from = cfg.reminder_from.trim() || user
 
-  if (!host) throw new MailError('SMTP 主机未配置（后台 → 参数与密钥 → 邮件服务商）')
-  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new MailError('SMTP 端口未配置或不合法（后台 → 参数与密钥）')
-  if (!user || !pass) throw new MailError('SMTP 账号 / 授权码未配置（后台 → 参数与密钥）')
-  if (!from) throw new MailError('提醒发件人未配置（后台 → 参数与密钥）')
+  if (!host) throw new MailError('SMTP 主机未配置（后台 → 参数与密钥 → 邮件提醒 → 高级）')
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new MailError('SMTP 端口未配置或不合法（后台 → 参数与密钥 → 邮件提醒 → 高级）')
+  if (!user || !pass) throw new MailError('邮箱账号 / 授权码未配置（后台 → 参数与密钥 → 邮件提醒）')
+  if (!from) throw new MailError('发件人未配置（后台 → 参数与密钥 → 邮件提醒）')
 
   await sendViaSmtp({ host, port, secure, user, pass, from, to }, content)
 }

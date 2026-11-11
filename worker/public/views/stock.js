@@ -1,4 +1,4 @@
-import { api, esc, icon, loadScriptOnce, rerender, run, toast } from '../lib.js'
+import { api, esc, icon, loadScriptOnce, rerender, run, showDialog, toast } from '../lib.js'
 
 let watch = []
 let chart = null
@@ -92,20 +92,11 @@ export async function render(main) {
         <p class="page-sub">行情 60s 缓存 · 日线按需拉取</p>
       </div>
       <div class="page-actions">
-        <div>
-          <div class="input-group add-stock-row">
-            <label class="sr-only" for="code">股票代码</label>
-            <input class="field" id="code" placeholder="代码 sh600519" aria-describedby="add-msg">
-            <label class="sr-only" for="name">股票名称</label>
-            <input class="field" id="name" placeholder="名称 贵州茅台" aria-describedby="add-msg">
-            <button class="btn primary" id="add">添加</button>
-          </div>
-          <div class="field-error" id="add-msg" role="alert"></div>
-        </div>
+        <button class="btn primary" id="add-stock">${icon('plus')}添加</button>
       </div>
     </div>
     <table>
-      <thead><tr><th>代码</th><th>名称</th><th class="text-end">现价</th><th class="text-end">涨跌</th><th class="text-end">今开</th><th class="text-end">最高/最低</th><th class="text-end">时间</th><th>K线</th><th></th></tr></thead>
+      <thead><tr><th>代码</th><th>名称</th><th>分组</th><th class="text-end">现价</th><th class="text-end">涨跌</th><th class="text-end">今开</th><th class="text-end">最高/最低</th><th class="text-end">时间</th><th>K线</th><th></th></tr></thead>
       <tbody>
         ${
           watch
@@ -113,6 +104,7 @@ export async function render(main) {
               const x = qm[r.code]
               return `<tr>
                 <td class="mono">${esc(r.code)}</td><td>${esc(x?.name || r.name)}</td>
+                <td>${r.groupName ? `<span class="badge">${esc(r.groupName)}</span>` : '<span class="muted small">未分组</span>'}</td>
                 <td class="text-end mono">${x?.price?.toFixed(2) ?? '—'}</td>
                 <td class="text-end">${x ? pctHtml(x.changePct) : '—'}</td>
                 <td class="text-end mono">${x?.open?.toFixed(2) ?? '—'}</td>
@@ -122,7 +114,7 @@ export async function render(main) {
                 <td><button class="btn sm danger" data-d="${esc(r.code)}" aria-label="删除">${icon('trash', 14)}</button></td>
               </tr>`
             })
-            .join('') || '<tr><td colspan="9" class="muted">暂无自选股，先添加一只</td></tr>'
+            .join('') || '<tr><td colspan="10" class="muted">暂无自选股，先添加一只</td></tr>'
         }
       </tbody>
     </table>
@@ -130,32 +122,7 @@ export async function render(main) {
       <div class="card-body"><canvas id="chart" height="90"></canvas></div>
     </div>`
 
-  const codeEl = main.querySelector('#code')
-  const nameEl = main.querySelector('#name')
-  const addMsg = main.querySelector('#add-msg')
-  const sayAdd = (text, field) => {
-    addMsg.textContent = text
-    codeEl.removeAttribute('aria-invalid')
-    nameEl.removeAttribute('aria-invalid')
-    if (!text || !field) return
-    field.setAttribute('aria-invalid', 'true')
-    field.focus()
-  }
-  codeEl.addEventListener('input', () => sayAdd(''))
-  nameEl.addEventListener('input', () => sayAdd(''))
-
-  main.querySelector('#add').onclick = async () => {
-    const btn = main.querySelector('#add')
-    const code = codeEl.value.trim()
-    const name = nameEl.value.trim()
-    if (!code) return sayAdd('请填写股票代码', codeEl)
-    if (!name) return sayAdd('请填写股票名称', nameEl)
-    sayAdd('')
-    const res = await run(btn, () => api('/api/stock/watch', { method: 'POST', body: JSON.stringify({ code, name }) }))
-    if (!res.ok) return
-    toast('已加入自选')
-    await rerender(render, main)
-  }
+  main.querySelector('#add-stock').onclick = () => openAddDialog(main)
   main.querySelectorAll('[data-d]').forEach((b) => {
     b.onclick = async () => {
       const res = await run(b, () => api(`/api/stock/watch/${b.dataset.d}`, { method: 'DELETE' }))
@@ -167,6 +134,195 @@ export async function render(main) {
   main.querySelectorAll('[data-k]').forEach((b) => {
     b.onclick = () => showDaily(main, b.dataset.k, b)
   })
+}
+
+/** 添加弹窗：输入名称/代码 → 联想搜索 → 选择 → 填分组 → 确定 */
+function openAddDialog(main) {
+  const groups = [...new Set(watch.map((r) => r.groupName).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh'))
+  const { close, body } = showDialog(
+    `<h2>添加自选股</h2>
+     <form id="stock-add-form" novalidate>
+       <label class="form-label" for="stock-q">股票</label>
+       <div class="combo">
+         <input class="field" id="stock-q" placeholder="输入名称或代码，如 茅台 / 600519"
+                role="combobox" aria-autocomplete="list" aria-expanded="false"
+                aria-controls="stock-suggest" aria-describedby="stock-msg"
+                autocomplete="off" spellcheck="false">
+         <div class="combo-list" id="stock-suggest" role="listbox" aria-label="股票搜索结果" hidden></div>
+       </div>
+       <div class="field-error" id="stock-msg" role="alert"></div>
+       <label class="form-label mt-2" for="stock-group">分组（可选）</label>
+       <input class="field" id="stock-group" list="stock-group-list" maxlength="50"
+              placeholder="选择或输入分组，如 白酒" autocomplete="off">
+       <datalist id="stock-group-list">${groups.map((g) => `<option value="${esc(g)}"></option>`).join('')}</datalist>
+       <div class="dlg-foot">
+         <button class="btn sm" type="button" data-close>取消</button>
+         <button class="btn primary sm" type="submit">确定</button>
+       </div>
+     </form>`,
+    { label: '添加自选股' },
+  )
+
+  const form = body.querySelector('#stock-add-form')
+  const input = body.querySelector('#stock-q')
+  const list = body.querySelector('#stock-suggest')
+  const msg = body.querySelector('#stock-msg')
+  const groupEl = body.querySelector('#stock-group')
+
+  let options = []
+  let selected = null
+  let active = -1
+  let status = ''
+  let seq = 0
+  let timer = 0
+  let blurTimer = 0
+
+  const say = (text) => {
+    msg.textContent = text ?? ''
+    if (text) input.setAttribute('aria-invalid', 'true')
+    else input.removeAttribute('aria-invalid')
+  }
+
+  const paint = () => {
+    const open = options.length > 0 || Boolean(status)
+    if (options.length) {
+      list.innerHTML = options
+        .map(
+          (o, i) => `<div class="combo-opt" id="stock-opt-${i}" role="option" data-i="${i}" aria-selected="${i === active}"${o.added ? ' aria-disabled="true"' : ''}>
+            <span class="mono">${esc(o.code)}</span>
+            <span class="flex-grow-1">${esc(o.name)}</span>
+            ${o.added ? '<span class="badge">已添加</span>' : ''}
+          </div>`,
+        )
+        .join('')
+    } else {
+      list.innerHTML = `<div class="combo-empty">${esc(status || '未找到匹配的股票')}</div>`
+    }
+    list.hidden = !open
+    input.setAttribute('aria-expanded', String(open))
+    if (active >= 0) input.setAttribute('aria-activedescendant', `stock-opt-${active}`)
+    else input.removeAttribute('aria-activedescendant')
+    if (active >= 0) list.querySelector(`#stock-opt-${active}`)?.scrollIntoView({ block: 'nearest' })
+  }
+
+  const closeList = () => {
+    seq += 1 // 作废进行中的搜索，避免失焦后又弹回来
+    clearTimeout(timer)
+    options = []
+    active = -1
+    status = ''
+    list.hidden = true
+    list.innerHTML = ''
+    input.setAttribute('aria-expanded', 'false')
+    input.removeAttribute('aria-activedescendant')
+  }
+
+  const choose = (i) => {
+    const o = options[i]
+    if (!o || o.added) return
+    selected = o
+    input.value = `${o.code} ${o.name}`
+    say('')
+    closeList()
+    groupEl.focus()
+  }
+
+  const search = async (keyword) => {
+    const mySeq = ++seq
+    if (!keyword) {
+      closeList()
+      return
+    }
+    options = []
+    active = -1
+    status = '搜索中…'
+    paint()
+    try {
+      const data = await api(`/api/stock/search?keyword=${encodeURIComponent(keyword)}`)
+      if (mySeq !== seq) return
+      options = data.items ?? []
+      active = options.findIndex((o) => !o.added)
+      status = options.length ? '' : '未找到匹配的股票'
+      paint()
+    } catch (err) {
+      if (mySeq !== seq) return
+      options = []
+      active = -1
+      status = err?.message || '搜索失败'
+      paint()
+    }
+  }
+
+  input.addEventListener('input', () => {
+    selected = null
+    say('')
+    clearTimeout(timer)
+    const keyword = input.value.trim()
+    timer = setTimeout(() => search(keyword), 280)
+  })
+
+  input.addEventListener('blur', () => {
+    clearTimeout(blurTimer)
+    blurTimer = setTimeout(closeList, 150)
+  })
+
+  input.addEventListener('keydown', (e) => {
+    const open = !list.hidden
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      if (!open || !options.length) return
+      e.preventDefault()
+      const step = e.key === 'ArrowDown' ? 1 : -1
+      let next = active < 0 ? (step > 0 ? -1 : 0) : active
+      for (let n = 0; n < options.length; n += 1) {
+        next = (next + step + options.length) % options.length
+        if (!options[next].added) {
+          active = next
+          paint()
+          return
+        }
+      }
+      return
+    }
+    if (e.key === 'Enter' && open && active >= 0) {
+      e.preventDefault()
+      choose(active)
+      return
+    }
+    if (e.key === 'Escape' && open) {
+      e.preventDefault()
+      closeList()
+    }
+  })
+
+  // mousedown 阻止默认：点选项时输入框不失焦（否则 blur 先把列表关掉）
+  list.addEventListener('mousedown', (e) => e.preventDefault())
+  list.addEventListener('click', (e) => {
+    const opt = e.target instanceof Element ? e.target.closest('[data-i]') : null
+    if (opt) choose(Number(opt.dataset.i))
+  })
+
+  form.onsubmit = async (e) => {
+    e.preventDefault()
+    if (!selected) {
+      say('请从搜索结果中选择股票')
+      input.focus()
+      return
+    }
+    const groupName = groupEl.value.trim()
+    const res = await run(form.querySelector('button[type="submit"]'), () =>
+      api('/api/stock/watch', {
+        method: 'POST',
+        body: JSON.stringify({ code: selected.code, name: selected.name, groupName }),
+      }),
+    )
+    if (!res.ok) return
+    close()
+    toast('已加入自选')
+    await rerender(render, main)
+  }
+
+  body.querySelector('[data-close]').onclick = close
+  input.focus()
 }
 
 async function showDaily(main, code, btn) {

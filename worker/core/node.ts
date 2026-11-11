@@ -11,9 +11,19 @@ import { resolveNodeId } from './nodekey'
 
 const LEASE_MS = 10 * 60_000
 const TICK_WINDOW_MS = 10 * 60_000
+const MAX_ATTEMPTS = 3 // 单次触发最多重试 3 次（周期任务失败后按 cron 续排，不死）
 const TZ = 'Asia/Shanghai' // Worker 运行在 UTC，cron 解析显式指定
 
 export const node = new Hono<Env>()
+
+/** cron 下一次触发时刻（解析失败兜底 30 分钟后，避免任务永远停在原地） */
+function nextCronRun(cron: string, from: number): number {
+  try {
+    return new Cron(cron, { timezone: TZ }).nextRun()?.getTime() ?? from + 30 * 60_000
+  } catch {
+    return from + 30 * 60_000
+  }
+}
 
 /** 节点鉴权（所有 /node/* 端点）：x-node-key → node_registry.node_id，后续一律信任这里的身份 */
 node.use('*', async (c, next) => {
@@ -142,11 +152,7 @@ node.post('/jobs/:id/complete', async (c) => {
     .bind(id)
     .first<{ cron: string | null; started_at: number | null }>()
   if (!job) return nodeErr(409, 'lease lost')
-  let nextRunAt: number | null = null
-  if (job.cron) {
-    const n = new Cron(job.cron, { timezone: TZ }).nextRun()
-    nextRunAt = n ? n.getTime() : null
-  }
+  const nextRunAt = job.cron ? nextCronRun(job.cron, now) : null
   // 无 cron = 一次性任务：完成后置 done（next_run_at 不推进，回 pending 会被立刻重复领取）
   const nextStatus = job.cron ? 'pending' : 'done'
 
@@ -179,17 +185,27 @@ node.post('/jobs/:id/fail', async (c) => {
   const { error, agentVersion } = await c.req.json<{ error?: string; agentVersion?: string }>()
   const nodeId = c.get('node')
 
-  const row = await db.prepare('SELECT attempts, started_at FROM job WHERE id = ?').bind(id).first<{
+  const row = await db.prepare('SELECT attempts, started_at, cron FROM job WHERE id = ?').bind(id).first<{
     attempts: number
     started_at: number | null
+    cron: string | null
   }>()
   const attempts = (row?.attempts ?? 0) + 1
 
-  if (attempts < 3) {
+  if (attempts < MAX_ATTEMPTS) {
     const res = await db
       .prepare(`UPDATE job SET status = 'pending', attempts = ?, next_run_at = ?, lease_until = NULL, result = ?
                 WHERE id = ? AND status = 'leased' AND node_id = ?`)
       .bind(attempts, now + 5 * 60_000 * attempts, error ?? null, id, nodeId)
+      .run()
+    if (res.meta.changes === 0) return nodeErr(409, 'lease lost') // 所有权校验
+  } else if (row?.cron) {
+    // 周期任务不允许死：3 次失败只代表本轮抓取失败，排到下次 cron 继续跑；
+    // attempts 归零，让下一轮重新拿到完整的 3 次重试（否则只剩 1 次）。
+    const res = await db
+      .prepare(`UPDATE job SET status = 'pending', attempts = 0, next_run_at = ?, lease_until = NULL, result = ?
+                WHERE id = ? AND status = 'leased' AND node_id = ?`)
+      .bind(nextCronRun(row.cron, now), error ?? null, id, nodeId)
       .run()
     if (res.meta.changes === 0) return nodeErr(409, 'lease lost') // 所有权校验
   } else {

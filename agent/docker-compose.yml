@@ -1,18 +1,22 @@
 # 部署双容器：agent + watchtower fork（v4.4：原版已归档，fork 语法兼容）
+# watchtower 用 ghcr：hub 上的正确仓库名是 nickfedor/watchtower（nicholas-fedor 那个在 hub 不存在），
+# 且国内直连 hub 基本拉不动；ghcr 与 hub 同流水线发布，内容一致
 # v4.12：本文件由后台「添加节点」生成的一键脚本自动落盘（含内联的 NODE_KEY）。
-#        这里留作手工部署参考：把 <NODE_KEY> 换成后台该节点显示/复制的密钥即可。
+#        这里留作手工部署参考：<NODE_KEY> 从后台该节点「安装命令」弹窗的手动方案里复制
+#        （列表不展示密钥；需要换密钥点「重置密钥」后用新命令重新部署）
 services:
   workbench-agent:
     image: ghcr.io/jiangood/workbench-agent:latest
     restart: unless-stopped
-    command: ['https://jt.410518072.xyz'] # 唯一的启动配置：Worker 地址
+    # 必须写全 node agent.mjs：node 镜像 ENTRYPOINT 会把非命令首参改写成 `node <参数>`
+    command: ['node', 'agent.mjs', 'https://jt.410518072.xyz'] # 唯一的启动配置：Worker 地址
     environment:
       - NODE_KEY=<后台添加节点后生成>
     labels:
       - com.centurylinklabs.watchtower.enable=true
 
   watchtower:
-    image: nicholas-fedor/watchtower
+    image: ghcr.io/nicholas-fedor/watchtower:latest
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

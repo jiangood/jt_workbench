@@ -29,6 +29,8 @@ export interface ConfigField {
   maxLen?: number
   /** 有值时后台渲染成下拉框（如邮件服务商模板） */
   options?: ConfigOption[]
+  /** 后台分组：同 group 的字段合并渲染成一张卡片（目前只有 mail） */
+  group?: string
   /** 值缺失时自动随机生成（首次读取即落库） */
   generate?: () => string
 }
@@ -46,17 +48,51 @@ export const CONFIG_FIELDS: ConfigField[] = [
   },
   {
     key: 'mail_provider',
-    label: '邮件服务商（模板）',
+    label: '服务商模板',
     kind: 'text',
     maxLen: 32,
+    group: 'mail',
     options: MAIL_PROVIDER_OPTIONS,
-    hint: '选中内置模板会自动填好 SMTP 主机 / 端口 / 加密方式；QQ / 163 / 126 的密码填邮箱「授权码」（设置里开启 SMTP 后获取），不是登录密码',
+    hint: '选中内置模板会自动填好 SMTP 主机 / 端口 / 加密方式，只需再填邮箱账号与授权码',
+  },
+  {
+    key: 'smtp_user',
+    label: '邮箱账号',
+    kind: 'text',
+    maxLen: 128,
+    group: 'mail',
+    hint: 'SMTP 登录账号，通常就是完整邮箱地址（未单独填发件人时也作为发件人）',
+  },
+  {
+    key: 'smtp_pass',
+    label: '授权码 / 密码',
+    kind: 'secret',
+    maxLen: 256,
+    group: 'mail',
+    hint: 'QQ / 163 / 126 填邮箱「授权码」（邮箱设置里开启 SMTP 后获取），不是登录密码；Gmail 填应用专用密码',
+  },
+  {
+    key: 'reminder_from',
+    label: '发件人',
+    kind: 'text',
+    maxLen: 128,
+    group: 'mail',
+    hint: '留空则用邮箱账号；多数服务商要求与 SMTP 账号一致',
+  },
+  {
+    key: 'reminder_to',
+    label: '收件邮箱',
+    kind: 'text',
+    maxLen: 128,
+    group: 'mail',
+    hint: '所有提醒统一发到这里（个人收件箱）；留空则不发信，提醒保持待发',
   },
   {
     key: 'smtp_host',
     label: 'SMTP 主机',
     kind: 'text',
     maxLen: 128,
+    group: 'mail',
     hint: '选内置模板会自动填；自定义时手动填，如 smtp.example.com',
   },
   {
@@ -64,6 +100,7 @@ export const CONFIG_FIELDS: ConfigField[] = [
     label: 'SMTP 端口',
     kind: 'text',
     maxLen: 5,
+    group: 'mail',
     hint: '465 = SSL，587 = STARTTLS；Cloudflare 出站不允许 25 端口',
   },
   {
@@ -71,6 +108,7 @@ export const CONFIG_FIELDS: ConfigField[] = [
     label: 'SMTP 加密方式',
     kind: 'text',
     maxLen: 16,
+    group: 'mail',
     options: [
       { value: 'ssl', label: 'SSL（465）' },
       { value: 'starttls', label: 'STARTTLS（587）' },
@@ -78,39 +116,12 @@ export const CONFIG_FIELDS: ConfigField[] = [
     hint: '465 用 SSL，587 用 STARTTLS',
   },
   {
-    key: 'smtp_user',
-    label: 'SMTP 账号',
-    kind: 'text',
-    maxLen: 128,
-    hint: 'SMTP 登录账号（通常是完整邮箱地址）；留空则用「提醒发件人」',
-  },
-  {
-    key: 'smtp_pass',
-    label: 'SMTP 授权码 / 密码',
-    kind: 'secret',
-    maxLen: 256,
-    hint: 'QQ / 163 等填邮箱授权码；Gmail 填应用专用密码',
-  },
-  {
-    key: 'reminder_from',
-    label: '提醒发件人',
-    kind: 'text',
-    maxLen: 128,
-    hint: '发件邮箱（多数服务商要求与 SMTP 账号一致）；留空则用 SMTP 账号',
-  },
-  {
-    key: 'reminder_to',
-    label: '提醒收件邮箱',
-    kind: 'text',
-    maxLen: 128,
-    hint: '所有提醒统一发到这里（个人收件箱）；留空则不发信，提醒保持待发',
-  },
-  {
     key: 'resend_api_key',
     label: 'Resend 发信 Key（旧通道）',
     kind: 'secret',
     maxLen: 256,
-    hint: '仅当邮件服务商选「Resend HTTP API」时使用；配置 SMTP 后不再需要，留空即可',
+    group: 'mail',
+    hint: '仅当服务商模板选「Resend HTTP API」时使用；配置 SMTP 后不再需要，留空即可',
   },
   {
     key: 'agent_latest_version',
@@ -161,6 +172,7 @@ export interface ConfigItem {
   minLen?: number
   maxLen?: number
   options?: ConfigOption[]
+  group?: string
 }
 
 /** 0009 未迁移时返回 null（调用方退回临时值） */
@@ -257,6 +269,7 @@ function describeFromRow(field: ConfigField, row: ConfigRow | undefined): Config
     minLen: field.minLen,
     maxLen: field.maxLen,
     options: field.options,
+    group: field.group,
   }
 }
 

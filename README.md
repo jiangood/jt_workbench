@@ -60,31 +60,32 @@ cd agent && npm ci && npm run dev      # build + node dist/agent.mjs（需 NODE_
 
 agent 是局域网里的哑执行节点：poll 领任务 → 执行 → 回传，无状态、无本地队列；升级交给 Watchtower，不手工重建。
 
-**部署只有两步：后台点「添加节点」拿一条命令 → 在目标机器粘贴执行。** 宿主机不需要 `.env`，节点密钥由安装脚本直接写进 `docker-compose.yml`。
+**部署只有两步：后台点「添加节点」→ 之后在该行点「查看接入方式」拿命令 → 在目标机器粘贴执行。** 宿主机不需要 `.env`，节点密钥由安装脚本直接写进 `docker-compose.yml`。
 
 ### 1. Worker 侧前置（一次性）
 
 无需本地操作：发布 release 时 `release.yml` 会自动 `wrangler d1 migrations apply jt_workbench --remote`，建表和默认数据（`0013_seed_news.sql`）都在迁移里。只需在仓库 Secrets 配好 `CLOUDFLARE_API_TOKEN`。
 
-- 节点登记用 `node_registry`（已认领）+ `node_claim`（10 分钟待认领凭据，`0010` / `0011`）。
+- 节点登记直接写 `node_registry`（添加即入库，`0010`）；`node_claim`（`0011`）已废弃，表保留但不再读写。
 - 管理员密码存 D1，**不需要 `wrangler secret`**：
   - 首次部署：发布完成后打开站点 → 登录页自动切到「初始化管理员」→ 设置账号密码（≥8 位）。
   - 日常改密：`/#/admin` →「账号安全」→ 输入当前密码和新密码；改完所有旧会话立即失效，需重新登录。
-- 其他参数（JWT 密钥 / 邮件服务商与 SMTP / 发件人 / agent 版本）都在 `/#/admin` →「参数与密钥」里维护；邮件服务商内置 QQ / 163 / 126 / Gmail / Outlook / 新浪 / 阿里云模板，选中即自动填好 SMTP 主机 / 端口 / 加密方式。
+- 其他参数（JWT 密钥 / 邮件提醒 / agent 版本）都在 `/#/admin` →「参数与密钥」里维护。邮件提醒收在一张卡片里：选服务商模板（QQ / 163 / 126 / Gmail / Outlook / 新浪 / 阿里云）+ 填邮箱账号和授权码即可，SMTP 主机 / 端口 / 加密方式自动配好，卡片里还能直接发一封测试邮件。
 
 ### 2. 后台添加节点
 
 登录 `/#/admin` →「执行节点」→ **添加节点** → 输入名称（建议主机名，如 `nas-01`）。
 
-后台会生成节点密钥和一条安装命令：
+添加后立刻在列表里登记（接入前显示离线）；点击该行 **查看接入方式**，弹窗里有接入命令（节点密钥只写进生成的 compose，**页面不展示**）：
 
 ```bash
-curl -fsSL 'https://jt.410518072.xyz/install/<key>.sh' | sh
+curl -fsSL 'https://jt.410518072.xyz/install/<key>.sh' | WORKBENCH_AGENT_FORCE=1 sh
 ```
 
-**安装命令 10 分钟内有效，请尽快执行；生成后保持页面打开**——节点首次连接成功后页面会自动提示「安装成功」，并把节点加进列表。关闭页面也不影响安装，只是看不到这个即时提示。
+**命令长期有效**——现场机器不能马上接入（网络、命令不熟等）也没关系，之后随时回到该行点「查看接入方式」取回；弹窗开着时节点首次上线会自动提示「已接入（在线）」，关掉页面只是看不到即时提示。
+重置密钥后旧命令立即失效，需要从该行重新取回新命令。
 
-> 此刻数据库里还没有节点记录，只有一条 10 分钟待认领凭据（列表不显示）。agent 第一次 poll 时才写入 `node_registry`，因此不会留下「装了一半的离线节点」。
+> 节点记录在添加时就写入 `node_registry`，接入前一直显示离线；注销节点会连同记录一起删除。
 
 弹窗里还有「手动方案」：同样的 compose 内容 + 三行命令，适合不想 `curl | sh` 的情况。
 
@@ -97,12 +98,12 @@ curl -fsSL 'https://jt.410518072.xyz/install/<key>.sh' | sh
 
 脚本默认非 root 执行；报「无法访问 Docker」时先确认 Docker 服务已启动，权限问题按提示 `sudo usermod -aG docker $USER` 后重新登录。
 
-目录固定为 `workbench-agent`，默认**一台机器一个节点**。同一台机器要跑多个节点时，复制目录并改名（compose 项目名取自目录名），再手动换 compose 里的 `NODE_KEY`；watchtower 建议只保留一个。
+目录固定为 `workbench-agent`，默认**一台机器一个节点**。同一台机器要跑多个节点时，复制目录并改名（compose 项目名取自目录名），再手动换 compose 里的 `NODE_KEY`（点该节点「重置密钥」后用新接入命令在第二个目录部署）；watchtower 建议只保留一个。
 
-已存在 `workbench-agent/docker-compose.yml` 时脚本会拒绝覆盖；确认要重写请：
+接入命令统一带 `WORKBENCH_AGENT_FORCE=1`，重装/换机会直接覆盖已有 compose；手工执行时写成：
 
 ```bash
-WORKBENCH_AGENT_FORCE=1 sh ...
+curl -fsSL 'https://.../install/<key>.sh' | WORKBENCH_AGENT_FORCE=1 sh
 ```
 
 私有镜像需要先登录一次：
@@ -113,9 +114,11 @@ docker login ghcr.io -u jiangood
 
 （镜像公开的话可以删掉 compose 里 watchtower 的 `~/.docker/config.json` 挂载，否则 Docker 会把不存在的挂载点建成目录。）
 
+> watchtower 镜像用 `ghcr.io/nicholas-fedor/watchtower`（当前 `latest` = 1.24.0）。两点原因：Docker Hub 的正确仓库名是 `nickfedor/watchtower`（`nicholas-fedor/watchtower` 在 hub 上不存在，拉取会报 repository does not exist），且国内直连 hub 基本拉不动；ghcr 与 hub 由同一发布流水线推送，内容一致。
+
 ### 4. 验证
 
-页面弹窗会自动变成「节点已上线，安装成功」；之后在 `/#/admin` 的「执行节点」表格里能看到该节点在线。
+页面弹窗会自动变成「节点已接入（在线）」；之后在 `/#/admin` 的「执行节点」表格里能看到该节点在线。
 
 也可以在宿主机看日志：
 
@@ -126,17 +129,19 @@ cd workbench-agent && docker compose logs -f workbench-agent
 | 日志 / 现象 | 含义 |
 |-------------|------|
 | `agent starting` + `pollIntervalMs:600000` | 正常，之后约每 10min 一轮 poll |
-| `节点未登记或密钥已失效` | 密钥被注销 / 后台记录被删，回后台重新添加节点并重装 |
+| `节点未登记或密钥已失效` | 密钥被重置 / 节点被注销 / 记录被删：回后台该行「查看接入方式」取新命令重装（或重新添加节点） |
 | `缺少 NODE_KEY` | compose 里没有密钥（手动方案漏了），或用了旧的 agent 镜像 |
 | `poll failed` + `fetch failed` | Worker 地址不可达（域名 / 网络 / 证书问题） |
+| `job failed` + `fetch <url> failed: … [ENOTFOUND]` | 某个任务的外网源抓不动：方括号里是 cause 的错误码（DNS / TLS / 连接被重置），message 里带完整 URL；周期任务会在下个 cron 自动重试，不用重装 |
 
 ### 5. 升级、回滚、重装
 
 - **日常升级**：发布 release（见「发布到线上」）→ 推 `:latest` → Watchtower 每 15min 轮询，inspect 旧容器并原样复制 command / env / 挂载 / 网络 / 重启策略重建。
 - **配置变更**（换镜像、改 Worker 地址等）Watchtower 不负责，手动改 `workbench-agent/docker-compose.yml` 后 `docker compose up -d`。
 - **回滚**：把 `image:` 钉到 `ghcr.io/jiangood/workbench-agent:v<short-sha>`（对应提交的短 sha，也可用发布 tag）再 `up -d`；确认稳定后再改回 `:latest`。
-- **重装 / 换机**：在节点行点「安装命令」取回长期有效的 compose 命令（已登记节点不设过期），按提示覆盖即可。
-- **注销节点**：列表行「注销」→ 密钥立即失效（agent 持续 401），重新添加同名节点会生成新密钥和新的 10 分钟安装命令。
+- **重装 / 换机**：在节点行点「查看接入方式」取回长期有效的命令（命令自带 `WORKBENCH_AGENT_FORCE=1`，已登记节点不设过期）。
+- **重置密钥**：节点行「重置密钥」→ 旧密钥立即失效（该 agent 持续 401，列表立刻显示离线），再用该行「查看接入方式」取回新命令重新部署；列表里不展示密钥本身。
+- **注销节点**：列表行「注销」→ 密钥立即失效（agent 持续 401），重新添加同名节点会生成新密钥和新接入命令。
 - **退路**：若 `nicholas-fedor/watchtower` 失维护，删掉该容器，宿主机 crontab 两行等效：
 
   ```cron
@@ -147,7 +152,7 @@ cd workbench-agent && docker compose logs -f workbench-agent
 
 ```bash
 cd agent && npm ci && npm run build
-NODE_KEY=<后台节点密钥> node dist/agent.mjs https://jt.410518072.xyz
+NODE_KEY=<compose 里的节点密钥> node dist/agent.mjs https://jt.410518072.xyz
 # 或：NODE_KEY=... WORKER_URL=https://jt.410518072.xyz node dist/agent.mjs
 ```
 
