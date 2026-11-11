@@ -1,4 +1,4 @@
--- 0004 · 股票模块表（原 wb_stock_* 对应；盘中行情砍掉，现价页打开实时拉）
+-- 0003 · 股票模块表（原 wb_stock_* 对应；盘中行情砍掉，现价页打开实时拉）
 
 CREATE TABLE stock_watch (        -- 自选股
   code TEXT PRIMARY KEY,          -- sh600000 / sz000001 / bj430047

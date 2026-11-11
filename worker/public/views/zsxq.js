@@ -1,4 +1,4 @@
-import { api, esc, fmtTime, icon } from '../lib.js'
+import { api, esc, fmtTime, icon, rerender, run, scrollToTop, toast } from '../lib.js'
 
 const PAGE_SIZE = 20
 let page = 1
@@ -13,7 +13,7 @@ export async function render(main) {
     <div class="page-head">
       <div>
         <h1 class="page-title">知识星球</h1>
-        <p class="page-sub">共 ${esc(d.total)} 条 · 同步节奏克制（agent env 配 token）</p>
+        <p class="page-sub">共 ${esc(d.total)} 条 · 同步节奏克制（token 在后台「参数与密钥」维护）</p>
       </div>
       <div class="page-actions">
         <select class="field field-sm" id="group">${groupOpts || '<option value="">配置 groupId</option>'}</select>
@@ -53,19 +53,21 @@ export async function render(main) {
       <button class="btn sm" id="next" ${page * PAGE_SIZE >= d.total ? 'disabled' : ''}>下一页</button>
     </nav>`
 
-  main.querySelector('#prev').onclick = () => {
-    page--
-    render(main)
+  // 翻页后回顶，别让用户停在上一页底部
+  const go = async (delta) => {
+    page += delta
+    await rerender(render, main)
+    scrollToTop()
   }
-  main.querySelector('#next').onclick = () => {
-    page++
-    render(main)
-  }
+  main.querySelector('#prev').onclick = () => go(-1)
+  main.querySelector('#next').onclick = () => go(1)
   main.querySelector('#save-group').onclick = async () => {
+    const btn = main.querySelector('#save-group')
     const gid = main.querySelector('#group').value
-    if (!gid) return
-    await api('/api/zsxq/job', { method: 'POST', body: JSON.stringify({ groupId: gid, enabled: true }) })
-    alert('已保存：zsxq_sync 任务已启用')
+    if (!gid) return toast('先选择要同步的星球', true)
+    const res = await run(btn, () => api('/api/zsxq/job', { method: 'POST', body: JSON.stringify({ groupId: gid, enabled: true }) }))
+    if (!res.ok) return
+    toast('已保存：zsxq_sync 任务已启用')
   }
 }
 

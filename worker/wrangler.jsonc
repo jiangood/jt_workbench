@@ -1,5 +1,5 @@
 {
-  "name": "workbench-cf",
+  "name": "jt-workbench",
   "main": "index.ts",
   "compatibility_date": "2026-11-01",
   "assets": {
@@ -11,14 +11,14 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "workbench",
-      "database_id": "9c80568b-30a5-4781-af76-e112e85b8b17"
+      "database_name": "jt_workbench",
+      "database_id": "bf39be4c-4051-47ae-a2d9-f00775964152"
     }
   ],
   "r2_buckets": [
     {
       "binding": "R2",
-      "bucket_name": "workbench"
+      "bucket_name": "jt-workbench"
     }
   ]
 }

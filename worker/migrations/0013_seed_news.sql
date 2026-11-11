@@ -1,5 +1,6 @@
--- 种子：16 个订阅源（抄自旧 WorkbenchDataInitializer）+ 每源一行 rss_fetch 任务（2h，Quartz 风格零换算）
--- 幂等：重复执行 INSERT OR IGNORE；源管理页后续可增删
+-- 首次初始化：16 个订阅源 + 每源一行 rss_fetch 任务 + 默认屏蔽词。
+-- 由迁移保证「每个库只执行一次」（取代原来的手工 seed 脚本）；
+-- 内容为幂等写法，已初始化过的库执行到这里不会产生重复数据。
 INSERT OR IGNORE INTO news_source (id, name, type, url, category, sort) VALUES
   ('wb-src-hacker-news',  'Hacker News',       'RSS', 'https://hnrss.org/frontpage',              '技术社区', 10),
   ('wb-src-infoq-cn',     'InfoQ 中文',        'RSS', 'https://www.infoq.cn/feed',                '技术媒体', 20),

@@ -1,4 +1,4 @@
--- 0005 · 提醒模块表（原 wb_reminder_* 对应；外发走 Resend 免费 100 封/天）
+-- 0004 · 提醒模块表（原 wb_reminder_* 对应；外发走 Resend 免费 100 封/天）
 
 CREATE TABLE reminder (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

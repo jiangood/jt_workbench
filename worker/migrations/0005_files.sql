@@ -1,4 +1,4 @@
--- 0006 · 文件模块表（R2 本体；元数据在 D1；tag/epub 元数据由浏览器解析后随上传提交）
+-- 0005 · 文件模块表（R2 本体；元数据在 D1；tag/epub 元数据由浏览器解析后随上传提交）
 
 CREATE TABLE note (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

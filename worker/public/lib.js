@@ -59,15 +59,87 @@ export function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, (c) => ESC_MAP[c])
 }
 
+/* ---------------- 反馈：toast / 按钮 loading ---------------- */
+
+let toastEl = null
+let toastTimer = 0
+
+/** 短暂提示：3.2s 自动消失（失败 5s）。弹窗打开时挂进 dialog，否则会被遮罩盖住 */
+export function toast(message, bad = false) {
+  if (!toastEl) {
+    toastEl = document.createElement('div')
+    toastEl.className = 'toast'
+    toastEl.setAttribute('role', 'status')
+    toastEl.setAttribute('aria-live', 'polite')
+  }
+  const dlg = document.getElementById('dlg')
+  const host = dlg?.open ? dlg : document.body
+  if (toastEl.parentElement !== host) host.append(toastEl)
+  toastEl.textContent = message
+  toastEl.classList.toggle('is-bad', bad)
+  toastEl.dataset.show = '1'
+  clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => { toastEl.dataset.show = '' }, bad ? 5000 : 3200)
+}
+
 /**
- * 原生 <dialog> 弹窗：showDialog(html, { xl })。
+ * 视图内重绘：路由只兜首次 render，视图自己调的 render()/refreshList() 失败会变成
+ * unhandled rejection。统一走 toast 兜底。
+ */
+export function rerender(renderFn, main) {
+  return Promise.resolve()
+    .then(() => renderFn(main))
+    .catch((err) => toast(err?.message || '刷新失败', true))
+}
+
+/**
+ * 包一层异步动作：按钮进 loading（不变宽、不丢图标）+ 失败统一 toast。
+ * 返回 { ok: true, data } 或 { ok: false, error }，调用方用 `if (!res.ok) return` 收尾。
+ */
+export async function run(btn, fn) {
+  const el = btn instanceof Element ? btn : null
+  const wasDisabled = el && 'disabled' in el ? el.disabled : false
+  if (el) {
+    el.classList.add('is-busy')
+    el.setAttribute('aria-busy', 'true')
+    if ('disabled' in el) el.disabled = true
+  }
+  try {
+    return { ok: true, data: await fn() }
+  } catch (err) {
+    toast(err?.message || '操作失败', true)
+    return { ok: false, error: err }
+  } finally {
+    if (el) {
+      el.classList.remove('is-busy')
+      el.removeAttribute('aria-busy')
+      if ('disabled' in el) el.disabled = wasDisabled
+    }
+  }
+}
+
+/**
+ * 原生 <dialog> 弹窗：showDialog(html, { xl, label })。
  * html 为空时保留 #dlg-body 现有内容。
+ * 可访问名称优先取正文第一个标题，无标题时退回 opts.label（原生 dialog 不会自动命名）。
  */
 export function showDialog(html, opts = {}) {
   const dlg = document.getElementById('dlg')
   dlg.className = opts.xl ? 'xl' : ''
   const body = document.getElementById('dlg-body')
   if (typeof html === 'string' && html.trim()) body.innerHTML = html
+
+  const heading = body.querySelector('h2, h3, h4, h5')
+  if (heading) {
+    if (!heading.id) heading.id = 'dlg-title'
+    dlg.setAttribute('aria-labelledby', heading.id)
+    dlg.removeAttribute('aria-label')
+  } else {
+    dlg.removeAttribute('aria-labelledby')
+    if (opts.label) dlg.setAttribute('aria-label', opts.label)
+    else dlg.removeAttribute('aria-label')
+  }
+
   if (!dlg.open) dlg.showModal()
   return { close: () => dlg.close(), body }
 }
@@ -116,29 +188,47 @@ export function loadModuleOnce(src) {
   return modules.get(src)
 }
 
-/** 窄屏抽屉导航：汉堡开合 + 遮罩/Esc/跳转关闭 */
+/** 回到内容顶部：桌面滚 .mainwrap，窄屏 .mainwrap 放开 overflow 时滚 window */
+export function scrollToTop() {
+  document.getElementById('mainwrap')?.scrollTo({ top: 0 })
+  window.scrollTo({ top: 0 })
+}
+
+/** 窄屏抽屉导航：汉堡开合 + 遮罩/Esc/跳转关闭；打开时主内容 inert，焦点留在导航内 */
 export function setupDrawer() {
   const toggle = document.getElementById('nav-toggle')
   const scrim = document.getElementById('nav-scrim')
-  if (!toggle || !scrim) return
+  const sidebar = document.getElementById('sidebar')
+  if (!toggle || !scrim || !sidebar) return
+  const content = document.getElementById('mainwrap')
   const isOpen = () => document.body.classList.contains('nav-open')
+
   const open = () => {
     document.body.classList.add('nav-open')
     toggle.setAttribute('aria-expanded', 'true')
+    toggle.setAttribute('aria-label', '关闭导航')
+    if (content) content.inert = true
+    sidebar.querySelector('.navlink')?.focus()
   }
-  const close = () => {
+
+  // restoreFocus=false 用于「跳转」和「断点回到桌面」：焦点该交给新视图，不该抢回汉堡键
+  const close = (restoreFocus = true) => {
+    if (!isOpen()) return
     document.body.classList.remove('nav-open')
     toggle.setAttribute('aria-expanded', 'false')
+    toggle.setAttribute('aria-label', '打开导航')
+    if (content) content.inert = false
+    if (restoreFocus) toggle.focus()
   }
 
   toggle.addEventListener('click', () => (isOpen() ? close() : open()))
-  scrim.addEventListener('click', close)
+  scrim.addEventListener('click', () => close())
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && isOpen()) close()
   })
-  document.querySelectorAll('.navlink').forEach((a) => a.addEventListener('click', close))
+  document.querySelectorAll('.navlink').forEach((a) => a.addEventListener('click', () => close(false)))
   window.matchMedia('(min-width: 769px)').addEventListener('change', (e) => {
-    if (e.matches) close()
+    if (e.matches) close(false)
   })
 
   const skip = document.querySelector('.skip')

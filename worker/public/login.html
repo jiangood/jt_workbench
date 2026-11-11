@@ -3,7 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>登录 · Workbench</title>
+    <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32" />
+    <link rel="icon" href="/logo.png" type="image/png" sizes="80x80" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <title>登录 · 个人工作台</title>
     <script>
       // 与 index.html 共用主题键，避免登录页与主应用一深一浅
       ;(() => {
@@ -22,20 +25,23 @@
     <div class="login-wrap">
       <div class="card w-100 login-card">
         <div class="card-body">
-          <h5 class="card-title text-center mb-4" id="title">Workbench</h5>
+          <h1 class="card-title text-center mb-4" id="title">个人工作台</h1>
           <form id="f">
             <div class="mb-3">
-              <input class="field" name="username" value="admin" placeholder="用户名" autocomplete="username" required />
+              <label class="sr-only" for="username">用户名</label>
+              <input class="field" id="username" name="username" value="admin" placeholder="用户名" autocomplete="username" required />
             </div>
             <div class="mb-3">
-              <input class="field" name="password" type="password" placeholder="密码" autocomplete="current-password" required />
+              <label class="sr-only" for="password">密码</label>
+              <input class="field" id="password" name="password" type="password" placeholder="密码" autocomplete="current-password" required />
             </div>
             <div class="mb-3 d-none" id="confirm-wrap">
-              <input class="field" name="confirm" type="password" placeholder="确认密码" autocomplete="new-password" />
+              <label class="sr-only" for="confirm">确认密码</label>
+              <input class="field" id="confirm" name="confirm" type="password" placeholder="确认密码" autocomplete="new-password" />
             </div>
             <button class="btn primary w-100" id="submit" style="justify-content: center">登录</button>
             <div id="hint" class="small muted mt-2 text-center d-none"></div>
-            <div id="msg" class="danger-text small mt-3 d-none"></div>
+            <div id="msg" class="danger-text small" role="alert"></div>
           </form>
         </div>
       </div>
@@ -50,15 +56,21 @@
       let setupMode = false
       let minLen = 8
 
-      function showError(text) {
+      function showError(text, field) {
         msg.textContent = text
-        msg.classList.remove('d-none')
+        if (field) {
+          field.setAttribute('aria-invalid', 'true')
+          field.focus()
+        }
       }
 
       function clearError() {
         msg.textContent = ''
-        msg.classList.add('d-none')
+        form.querySelectorAll('[aria-invalid="true"]').forEach((el) => el.removeAttribute('aria-invalid'))
       }
+
+      // 用户一开始改动就撤下旧错误，避免「已修正却还在报错」的错觉
+      form.addEventListener('input', clearError)
 
       // 首访初始化：D1 和 wrangler secret 都没有凭据时切到「设置密码」模式
       fetch('/api/auth/status', { cache: 'no-store' })
@@ -92,8 +104,8 @@
         const username = String(data.get('username') || '').trim()
         const password = String(data.get('password') || '')
         if (setupMode) {
-          if (password.length < minLen) return showError('密码至少 ' + minLen + ' 位')
-          if (password !== data.get('confirm')) return showError('两次输入的密码不一致')
+          if (password.length < minLen) return showError('密码至少 ' + minLen + ' 位', form.password)
+          if (password !== data.get('confirm')) return showError('两次输入的密码不一致', form.confirm)
         }
 
         submit.disabled = true

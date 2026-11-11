@@ -1,4 +1,4 @@
-# 项目约定（workbench-cf）
+# 项目约定（jt_workbench）
 
 个人工作台的 Cloudflare 免费版重写：Worker（控制面 + 存储面）+ 局域网执行节点 agent。
 方案文档（唯一事实源）：`C:\Users\water\.opencode\plan\cloudflare-migration.md`。
@@ -6,6 +6,7 @@
 ## 布局
 
 - `worker/`：Cloudflare Worker（Hono + D1 + R2），静态页 + API + 节点协议
+- Cloudflare 资源统一 `jt` 前缀，避免与另一项目混淆：Worker `jt-workbench`、D1 `jt_workbench`、R2 `jt-workbench`（`zll-*` 属于另一个项目，勿混用）
 - `agent/`：局域网执行节点（Node 22 + TypeScript + esbuild 单文件，容器化部署）
 - **两棵依赖树各自独立**：`worker/package-lock.json` 与 `agent/package-lock.json` 各自提交，禁止顺手改对方的依赖版本
 - 参考旧项目：`D:\ws\workbench`（只读——Java 源码 / `application.yml` 业务参数 / `WorkbenchDataInitializer.java` 的 seed cron）
@@ -14,11 +15,20 @@
 
 - 一切在 `main` 分支直接开发，不新建分支
 
+## 生产环境（红线）
+
+- **禁止直接操作生产环境**：本地 / 终端不对线上执行任何写操作——`wrangler deploy`、`wrangler d1 execute|migrations apply --remote`、R2 写入、生产 API 的写请求、`wrangler rollback` 一律不做
+- **线上变更唯一入口 = GitHub 发布 Release**（`.github/workflows/release.yml`）；push 不部署，也没有手动触发
+- 本地只允许 `wrangler dev`（local 模式）、`npm run check`、`npm run deploy:dry`（只打包预检）；`npm run deploy` 由 `worker/scripts/guard-deploy.mjs` 拦截（要求 `CI=true`），不要绕过
+- 只读排查可以做，但不触发写；需要动生产数据时，把动作写进迁移或让用户走发布流程
+
 ## Worker 代码分层
 
 - `worker/core/` 是唯一能碰 env / D1 / R2 底层的框架层；`modules/` 业务模块只能经由 core 访问
 - API 统一返回自定义 JSON 信封 `{code, data, message}`；`onError` 统一兜底
 - D1：时间统一 epoch 毫秒 `INTEGER`；布尔 `0/1`；JSON 列 `TEXT`；多语句写入用 `batch()`（自带事务）；索引单独 `CREATE INDEX`，不写进 CREATE TABLE；建表走 `wrangler d1 migrations`
+- **参数/密钥一律存 D1，Worker 不使用 `wrangler secret`**：
+  `app_config`（参数中心，注册表在 `core/config.ts` 的 `CONFIG_FIELDS`，缺失时可自动随机生成）+ `node_registry`（已认领节点）+ `node_claim`（10 分钟待认领凭据；密钥由后台生成，一键安装脚本写进 compose）+ `auth_state`（管理员凭据）。`Bindings` 只保留 `DB` / `R2`；新增参数只加 `CONFIG_FIELDS` 条目，**不要再新增 secret/var**
 - 分工红线（决策 #14）：**Worker 只做简单计算与展示**——循环 / 批量 / 抓取 / 解析类逻辑一律放 agent；浏览器承担展示类计算（DOMPurify / music-metadata / JSZip / lunar）
 - 前端 = **零构建 SPA（hash 路由）**：`public/index.html` 只是 shell（侧栏/播放条/弹窗），
   `app.js` 管路由，`views/*.js` 是视图（ES module，各自导出 `render(main, params)` / `destroy()`）；
@@ -33,11 +43,16 @@
 
 - 哑执行器：**任务 = 数据不是代码**（type 只是查表键，不执行任何来自网络的代码）
 - 不动态安装依赖；工具箱（cheerio / music-metadata / jszip 等）编译期预装进镜像
-- env 仅 4 个：`WORKER_URL`、`NODE_ID`、`NODE_KEY` 必填，`POLL_INTERVAL=600` 可选
+- **节点身份不靠 ID，密钥由后台生成**：Worker 地址走启动参数（compose 的 `command`）；后台「添加节点」生成密钥并给出 `curl | sh` 安装命令（`GET /install/<key>.sh`，10 分钟内有效），脚本在当前目录创建 `workbench-agent/docker-compose.yml` 并把密钥写进 `NODE_KEY`；agent 首次 poll 自动写入 `node_registry`（列表只显示已认领节点）；`POLL_INTERVAL=600` 仅调试可选
+- **密钥一律不进 agent 环境变量**（节点自身的 `NODE_KEY` 除外，由安装脚本写进 compose）：与 Worker 同一条红线——第三方 token / API Key 存 D1（`app_config` + `CONFIG_FIELDS`），Worker 下发任务时注入 payload，agent 只读 `payload` 里的值（例：`zsxq_sync` 的 token）
 - 出站 fetch 一律挂 `AbortSignal.timeout(30s)`；SSRF 守卫默认拒绝内网/环回地址
 - 一次只持一个任务；本地队列已删除（v4.9 领 1 + 捎带下发）
 
-## CI
+## 发布（CI）
 
-- `deploy.yml` / `agent-image.yml` 均带 `paths` 过滤：不碰对方目录不触发
-- agent 镜像双标签（`v<sha>` 不可变 + `:latest`），自动升级的安全性由 CI 门禁保证
+- **push 不部署**：`main` 上直接开发，push 只进版本库；线上只由 `release.yml` 在 GitHub Release 发布时变更
+- `release.yml` 流程：校验 release tag 在 `main` 上 → `check` + `deploy:dry` → `wrangler d1 migrations apply --remote` → `wrangler deploy` → 仅 `agent/` 有 diff 时构建镜像
+- agent 镜像打三个标签：发布 tag（可追溯）+ `v<sha>`（不可变回滚锚点）+ `:latest`（Watchtower 轮询目标）
+- 纯 Worker 发布不重推 `latest`，避免所有节点无意义重启
+- 迁移必须向后兼容（expand/contract）：D1 只能向前，Worker 回滚不会回滚 schema
+- 首次初始化（订阅源 / 抓取任务 / 屏蔽词）在 `0013_seed_news.sql` 迁移里，不手工执行

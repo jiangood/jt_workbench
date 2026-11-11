@@ -1,4 +1,4 @@
-import { api, esc, icon, loadScriptOnce, showDialog } from '../lib.js'
+import { api, esc, icon, loadScriptOnce, rerender, run, showDialog, toast } from '../lib.js'
 
 let book = null
 let closeBound = false
@@ -30,11 +30,11 @@ export async function render(main) {
       <div class="page-actions">
         <label class="btn sm primary">
           ${icon('upload')}上传
-          <input type="file" id="up" accept=".epub,.pdf" multiple hidden>
+          <input class="sr-only" type="file" id="up" accept=".epub,.pdf" multiple>
         </label>
       </div>
     </div>
-    <div id="up-progress" class="small muted mb-2"></div>
+    <div id="up-progress" class="small muted mb-2" role="status" aria-live="polite"></div>
     <div class="row book-grid">
       ${
         data.books
@@ -61,7 +61,9 @@ export async function render(main) {
 
   main.querySelector('#up').onchange = async (e) => {
     const prog = main.querySelector('#up-progress')
-    for (const file of e.target.files) {
+    const files = [...e.target.files]
+    let failed = 0
+    for (const file of files) {
       prog.textContent = `解析 ${file.name} ...`
       let meta = {}
       if (file.name.toLowerCase().endsWith('.epub')) {
@@ -84,19 +86,22 @@ export async function render(main) {
         filename: file.name,
         ...Object.fromEntries(Object.entries(meta).filter(([, v]) => v)),
       })
-      const res = await fetch(`/api/book/upload?${qs}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/octet-stream' },
-        body: file,
-      })
-      if (!res.ok) {
-        prog.textContent = `上传失败 ${file.name}`
-        continue
+      try {
+        const res = await fetch(`/api/book/upload?${qs}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/octet-stream' },
+          body: file,
+        })
+        if (!res.ok) throw new Error(`上传失败：${file.name}（HTTP ${res.status}）`)
+      } catch (err) {
+        failed += 1
+        toast(err.message, true)
       }
-      prog.textContent = ''
     }
+    prog.textContent = ''
     e.target.value = ''
-    await render(main)
+    if (files.length > failed) toast(`已上传 ${files.length - failed} 本`)
+    await rerender(render, main)
   }
 
   main.querySelectorAll('[data-r]').forEach((a) => {
@@ -108,8 +113,10 @@ export async function render(main) {
   main.querySelectorAll('[data-d]').forEach((b) => {
     b.onclick = async () => {
       if (!confirm('删除该书（R2 文件一并删除）？')) return
-      await api(`/api/book/${b.dataset.d}`, { method: 'DELETE' })
-      await render(main)
+      const res = await run(b, () => api(`/api/book/${b.dataset.d}`, { method: 'DELETE' }))
+      if (!res.ok) return
+      toast('已删除')
+      await rerender(render, main)
     }
   })
 }
@@ -117,7 +124,7 @@ export async function render(main) {
 function openReader(id, fmt, title) {
   closeReader()
   const url = `/api/book/read/${id}`
-  const { body } = showDialog('<div id="reader-view"></div>', { xl: true })
+  const { body } = showDialog('<div id="reader-view"></div>', { xl: true, label: '阅读器' })
   const view = body.querySelector('#reader-view')
 
   if (fmt === 'pdf') {

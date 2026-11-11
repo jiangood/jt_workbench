@@ -1,4 +1,4 @@
--- 0007 · 知识星球模块表（topics 同步；评论与附件懒获取列为 backlog；图片经 Worker 懒代理入 R2）
+-- 0006 · 知识星球模块表（topics 同步；评论与附件懒获取列为 backlog；图片经 Worker 懒代理入 R2）
 
 CREATE TABLE zsxq_group (
   id TEXT PRIMARY KEY,            -- group_id
@@ -17,3 +17,4 @@ CREATE TABLE zsxq_topic (
   fetched_at INTEGER NOT NULL
 );
 CREATE INDEX idx_zsxq_topic_time ON zsxq_topic (group_id, create_time DESC);
+CREATE INDEX idx_zsxq_topic_created ON zsxq_topic (create_time DESC);  -- 未选星球时的全局列表

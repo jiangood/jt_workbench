@@ -2,12 +2,13 @@
  * 登录：盐 + 双轮 SHA-256 + JWT(HMAC-SHA256, 30 天) + auth_state 撤销
  *
  * 凭据存 D1（auth_state 单行表），后台可改密、首次访问可初始化；
- * wrangler secret（ADMIN_USER / ADMIN_PWD_SALT / ADMIN_PWD_HASH）只作一次性引导：
- * 老部署第一次登录成功时自动搬进 D1，之后改密不再需要重新写 secret。
+ * JWT 密钥也存 D1（app_config.jwt_secret，见 core/config.ts）。
+ * Worker 不使用 wrangler secret，Bindings 只有 DB / R2。
  */
 
 import { fail, ok, type Bindings, type Env } from './envelope'
 import { cacheGet, cacheSet } from './cache'
+import { getConfig } from './config'
 import type { Context, Next } from 'hono'
 import { getCookie } from 'hono/cookie'
 
@@ -41,7 +42,7 @@ export interface Credential {
   pwd_salt: string | null
 }
 
-/** 读 D1 凭据。0009 未迁移（列不存在）时按「未配置」处理，login 仍可走 secret 引导 */
+/** 读 D1 凭据。0009 未迁移（列不存在）时按「未配置」处理，走首访初始化 */
 export async function readCredential(env: Bindings): Promise<Credential | null> {
   try {
     return await env.DB.prepare('SELECT username, pwd_hash, pwd_salt FROM auth_state WHERE id = 1').first<Credential>()
@@ -52,7 +53,7 @@ export async function readCredential(env: Bindings): Promise<Credential | null> 
 
 export async function isInitialized(env: Bindings): Promise<boolean> {
   const cred = await readCredential(env)
-  return !!(cred?.pwd_hash || env.ADMIN_PWD_HASH)
+  return !!cred?.pwd_hash
 }
 
 /**
@@ -63,36 +64,11 @@ export function revocationBaseline(): number {
   return Math.floor(Date.now() / 1000) * 1000
 }
 
-async function writeCredential(env: Bindings, username: string, hash: string, salt: string): Promise<void> {
-  await env.DB
-    .prepare(
-      `INSERT INTO auth_state (id, password_changed_at, username, pwd_hash, pwd_salt)
-       VALUES (1, 0, ?, ?, ?)
-       ON CONFLICT (id) DO UPDATE SET username = excluded.username,
-         pwd_hash = excluded.pwd_hash, pwd_salt = excluded.pwd_salt`,
-    )
-    .bind(username, hash, salt)
-    .run()
-}
-
 async function verifyCredential(env: Bindings, username: string, password: string): Promise<boolean> {
   const cred = await readCredential(env)
-  if (cred?.pwd_hash && cred.pwd_salt) {
-    const user = cred.username ?? env.ADMIN_USER ?? 'admin'
-    return username === user && (await hashPassword(password, cred.pwd_salt)) === cred.pwd_hash
-  }
-
-  // 兼容老部署：secret 里的凭据校验通过后搬进 D1（幂等）
-  if (!env.ADMIN_PWD_HASH || !env.ADMIN_PWD_SALT) return false
-  const user = env.ADMIN_USER ?? 'admin'
-  if (username !== user) return false
-  if ((await hashPassword(password, env.ADMIN_PWD_SALT)) !== env.ADMIN_PWD_HASH) return false
-  try {
-    await writeCredential(env, user, env.ADMIN_PWD_HASH, env.ADMIN_PWD_SALT)
-  } catch (err) {
-    console.error('seed auth credential failed:', String(err)) // 迁移未跑：本次仍放行，下轮登录重试
-  }
-  return true
+  if (!cred?.pwd_hash || !cred.pwd_salt) return false
+  const user = cred.username ?? 'admin'
+  return username === user && (await hashPassword(password, cred.pwd_salt)) === cred.pwd_hash
 }
 
 // ---------- JWT ----------
@@ -163,7 +139,7 @@ function clearSessionCookie(c: Context<Env>): void {
 }
 
 async function startSession(c: Context<Env>, username: string): Promise<void> {
-  const { token } = await issueJwt(c.env.JWT_SECRET, username)
+  const { token } = await issueJwt(await getConfig(c.env, 'jwt_secret'), username)
   setSessionCookie(c, token)
 }
 
@@ -201,12 +177,12 @@ export async function login(c: Context<Env>): Promise<Response> {
   return c.json({ code: 0, data: { username }, message: 'ok' })
 }
 
-/** 首次访问初始化：仅在 D1 无凭据且未配置 secret 引导时可用（并发只有一个生效） */
+/** 首次访问初始化：仅在 D1 无凭据时可用（并发只有一个生效） */
 export async function setup(c: Context<Env>): Promise<Response> {
   if (await isInitialized(c.env)) return fail(409, 409, 'already initialized')
 
   const { username, password } = await readBody<{ username?: string; password?: string }>(c)
-  const name = username?.trim() || c.env.ADMIN_USER || 'admin'
+  const name = username?.trim() || 'admin'
   if (!name || !password) return fail(400, 400, 'username/password required')
   if (name.length > 32) return fail(400, 400, 'username too long')
   if (password.length < MIN_PASSWORD_LEN) return fail(400, 400, `password must be at least ${MIN_PASSWORD_LEN} chars`)
@@ -244,12 +220,12 @@ export async function changePassword(c: Context<Env>): Promise<Response> {
   if (newPassword.length < MIN_PASSWORD_LEN) return fail(400, 400, `password must be at least ${MIN_PASSWORD_LEN} chars`)
 
   const cred = await readCredential(c.env)
-  const salt = cred?.pwd_salt ?? c.env.ADMIN_PWD_SALT
-  const hash = cred?.pwd_hash ?? c.env.ADMIN_PWD_HASH
+  const salt = cred?.pwd_salt
+  const hash = cred?.pwd_hash
   if (!salt || !hash) return fail(400, 400, 'credential not initialized')
   if ((await hashPassword(oldPassword, salt)) !== hash) return fail(403, 403, 'old password incorrect')
 
-  const username = cred?.username ?? c.env.ADMIN_USER ?? 'admin'
+  const username = cred?.username ?? 'admin'
   const nextSalt = randomHex()
   const nextHash = await hashPassword(newPassword, nextSalt)
   try {
@@ -278,7 +254,8 @@ export async function logout(c: Context<Env>): Promise<Response> {
 
 /** /api/* JWT 中间件（公开端点已在 index.ts 里先注册，不会进这里）：签名 + 过期 + auth_state 撤销 */
 export async function authMiddleware(c: Context<Env>, next: Next): Promise<Response | void> {
-  const payload = await verifyJwt(c.env.JWT_SECRET, getCookie(c, COOKIE_NAME))
+  const secret = await getConfig(c.env, 'jwt_secret')
+  const payload = await verifyJwt(secret, getCookie(c, COOKIE_NAME))
   if (!payload) return fail(401, 401, 'unauthorized')
 
   const row = await c.env.DB.prepare('SELECT password_changed_at FROM auth_state WHERE id = 1').first<{

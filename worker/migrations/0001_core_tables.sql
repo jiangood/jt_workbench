@@ -7,7 +7,7 @@ CREATE TABLE job (
   payload TEXT,                   -- 参数 JSON（如 {"sourceId": 3}）
   cron TEXT,                      -- Quartz 风格原样沿用，Worker 侧 croner 解析
   enabled INTEGER NOT NULL DEFAULT 1,
-  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'leased', 'done', 'failed')),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'leased', 'done', 'failed')), -- done = 一次性任务（cron 为空）完成
   lease_until INTEGER,            -- 心跳续约；过期即节点死亡，任务回 pending
   node_id TEXT,
   attempts INTEGER NOT NULL DEFAULT 0,
@@ -16,7 +16,7 @@ CREATE TABLE job (
   last_run_at INTEGER
 );
 CREATE INDEX idx_job_due ON job (status, next_run_at);
-CREATE INDEX idx_job_lease ON job (lease_until);
+CREATE INDEX idx_job_status_lease ON job (status, lease_until);
 
 CREATE TABLE job_run (            -- 运行历史（替代原 SysJobLog；保留 90 天，过期清理顺带删）
   id INTEGER PRIMARY KEY AUTOINCREMENT,

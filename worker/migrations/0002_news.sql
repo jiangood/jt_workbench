@@ -1,4 +1,4 @@
--- 0003 · 资讯模块表（原 H2 wb_news_* 对应；正文原文入库，展示时浏览器端 DOMPurify 消毒）
+-- 0002 · 资讯模块表（原 H2 wb_news_* 对应；正文原文入库，展示时浏览器端 DOMPurify 消毒）
 
 CREATE TABLE news_source (
   id TEXT PRIMARY KEY,             -- wb-src-xxx
@@ -24,6 +24,7 @@ CREATE TABLE news_item (
 );
 CREATE INDEX idx_news_item_feed ON news_item (source_id, published_at DESC);
 CREATE INDEX idx_news_item_published ON news_item (published_at DESC);
+CREATE INDEX idx_news_item_fetched ON news_item (fetched_at);  -- 30 天保留期清理 / Dashboard 今日新增
 
 CREATE TABLE news_block_word (    -- 屏蔽词（浏览器端过滤用）
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,3 +32,4 @@ CREATE TABLE news_block_word (    -- 屏蔽词（浏览器端过滤用）
   source_id TEXT NOT NULL DEFAULT '',  -- '' = 全局
   enabled INTEGER NOT NULL DEFAULT 1
 );
+CREATE UNIQUE INDEX idx_news_block_word ON news_block_word (keyword, source_id);

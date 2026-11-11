@@ -11,16 +11,8 @@ export class ApiError extends Error {
 }
 
 export interface Bindings {
+  // 只有 binding：参数与凭据全部存 D1（app_config / auth_state），不使用 wrangler secret
   DB: D1Database
-  NODE_KEY: string
-  JWT_SECRET: string
-  // 仅作首访引导：凭据以 D1 auth_state 为准，后台改密后这三项可不再配置
-  ADMIN_USER?: string
-  ADMIN_PWD_SALT?: string
-  ADMIN_PWD_HASH?: string
-  RESEND_API_KEY: string
-  REMINDER_FROM: string
-  AGENT_LATEST_VERSION?: string
   R2: R2Bucket
 }
 
@@ -28,6 +20,8 @@ export type Env = {
   Bindings: Bindings
   Variables: {
     user: string
+    /** /node/* 鉴权中间件反查出的节点名（v4.12） */
+    node: string
   }
 }
 

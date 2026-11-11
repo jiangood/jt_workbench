@@ -1,6 +1,7 @@
 /** 资讯模块（原 wb_news_*）：列表 / 源管理 / 屏蔽词。正文消毒在浏览器端 DOMPurify（v3 决策 #9） */
 
 import { Hono } from 'hono'
+import type { Context } from 'hono'
 import { ok, ApiError, type Env } from '../core/envelope'
 
 const PAGE_SIZE = 30
@@ -12,25 +13,86 @@ export const news = new Hono<Env>()
 news.get('/items', async (c) => {
   const page = Math.max(1, Number(c.req.query('page') ?? '1') || 1)
   const sourceId = c.req.query('sourceId') || null
+  const onlyUnread = c.req.query('unread') === '1'
 
-  const where = sourceId ? 'WHERE source_id = ?' : ''
-  const bind = sourceId ? [sourceId] : []
+  // 条件按需拼，绑定值同序；只有未读筛选时走 idx_news_item_unread
+  const where: string[] = []
+  const bind: (string | number)[] = []
+  if (sourceId) {
+    where.push('source_id = ?')
+    bind.push(sourceId)
+  }
+  if (onlyUnread) where.push('read_flag = 0')
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
 
-  const items = await c.env.DB
-    .prepare(
-      `SELECT id, source_id AS sourceId, title, link, author, published_at AS publishedAt,
-              substr(content_html, 1, 300) AS preview
-       FROM news_item ${where} ORDER BY published_at DESC, id DESC LIMIT ? OFFSET ?`,
-    )
-    .bind(...bind, PAGE_SIZE, (page - 1) * PAGE_SIZE)
-    .all()
+  const [items, count, unread] = await Promise.all([
+    c.env.DB
+      .prepare(
+        `SELECT id, source_id AS sourceId, title, link, author, published_at AS publishedAt,
+                read_flag AS readFlag, substr(content_html, 1, 300) AS preview
+         FROM news_item ${whereSql} ORDER BY published_at DESC, id DESC LIMIT ? OFFSET ?`,
+      )
+      .bind(...bind, PAGE_SIZE, (page - 1) * PAGE_SIZE)
+      .all(),
+    c.env.DB
+      .prepare(`SELECT count(*) AS total FROM news_item ${whereSql}`)
+      .bind(...bind)
+      .first<{ total: number }>(),
+    c.env.DB
+      .prepare('SELECT count(*) AS n FROM news_item WHERE read_flag = 0')
+      .first<{ n: number }>(),
+  ])
 
-  const count = await c.env.DB.prepare(
-    `SELECT count(*) AS total FROM news_item ${where}`,
-  ).bind(...bind).first<{ total: number }>()
-
-  return ok({ items: items.results, total: count?.total ?? 0, page, pageSize: PAGE_SIZE })
+  return ok({
+    items: items.results,
+    total: count?.total ?? 0,
+    unread: unread?.n ?? 0,
+    page,
+    pageSize: PAGE_SIZE,
+  })
 })
+
+/** 详情（首页弹窗 / 资讯页共用）：正文原文返回，消毒仍在浏览器端 */
+news.get('/items/:id', async (c) => {
+  const item = await c.env.DB
+    .prepare(
+      `SELECT i.id, i.title, i.link, i.author, i.published_at AS publishedAt,
+              i.read_flag AS readFlag, i.content_html AS contentHtml, s.name AS sourceName
+       FROM news_item i LEFT JOIN news_source s ON s.id = i.source_id
+       WHERE i.id = ?`,
+    )
+    .bind(c.req.param('id'))
+    .first()
+  if (!item) throw new ApiError(404, 404, 'not found')
+  return ok({ item })
+})
+
+// ---------- 已读状态 ----------
+
+/** POST /read | /unread，body { ids: [1,2,3] } */
+async function setReadFlag(c: Context<Env>, read: boolean): Promise<Response> {
+  let body: { ids?: unknown } = {}
+  try {
+    body = await c.req.json<{ ids?: unknown }>()
+  } catch {
+    /* 空 body 按 ids 缺失处理 */
+  }
+  const ids = Array.isArray(body.ids)
+    ? body.ids.map(Number).filter((n) => Number.isInteger(n) && n > 0)
+    : []
+  if (!ids.length) throw new ApiError(400, 400, 'ids required')
+  if (ids.length > 200) throw new ApiError(400, 400, 'too many ids')
+
+  const marks = ids.map(() => '?').join(',')
+  const r = await c.env.DB
+    .prepare(`UPDATE news_item SET read_flag = ? WHERE id IN (${marks})`)
+    .bind(read ? 1 : 0, ...ids)
+    .run()
+  return ok({ changed: r.meta.changes, readFlag: read })
+}
+
+news.post('/read', (c) => setReadFlag(c, true))
+news.post('/unread', (c) => setReadFlag(c, false))
 
 // ---------- 订阅源 ----------
 
@@ -90,10 +152,12 @@ news.put('/sources/:id', async (c) => {
 
 news.delete('/sources/:id', async (c) => {
   const id = c.req.param('id')
+  // 同批删源 + 该源历史文章 + 抓取任务：无外键，避免留下孤儿 news_item
   await c.env.DB.batch([
     c.env.DB.prepare(
       `DELETE FROM job WHERE type = 'rss_fetch' AND payload LIKE '%' || ? || '%'`,
     ).bind(id),
+    c.env.DB.prepare('DELETE FROM news_item WHERE source_id = ?').bind(id),
     c.env.DB.prepare('DELETE FROM news_source WHERE id = ?').bind(id),
   ])
   return ok(null)
@@ -111,10 +175,20 @@ news.get('/blocks', async (c) => {
 news.post('/blocks', async (c) => {
   const b = await c.req.json<{ keyword?: string; sourceId?: string }>()
   if (!b.keyword) throw new ApiError(400, 400, 'keyword required')
+  const keyword = b.keyword.trim()
+  const sourceId = b.sourceId ?? ''
+  // (keyword, source_id) 唯一索引（0002）：重复提交不报错，直接回已有 id
   const r = await c.env.DB
-    .prepare('INSERT INTO news_block_word (keyword, source_id) VALUES (?, ?)')
-    .bind(b.keyword, b.sourceId ?? '')
+    .prepare('INSERT OR IGNORE INTO news_block_word (keyword, source_id) VALUES (?, ?)')
+    .bind(keyword, sourceId)
     .run()
+  if (r.meta.changes === 0) {
+    const row = await c.env.DB
+      .prepare('SELECT id FROM news_block_word WHERE keyword = ? AND source_id = ?')
+      .bind(keyword, sourceId)
+      .first<{ id: number }>()
+    return ok({ id: row?.id ?? 0 })
+  }
   return ok({ id: r.meta.last_row_id })
 })
 

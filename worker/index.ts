@@ -11,6 +11,7 @@ import { music } from './modules/music'
 import { book } from './modules/book'
 import { zsxq } from './modules/zsxq'
 import { admin } from './modules/admin'
+import { serveInstallScript } from './core/install'
 
 const app = new Hono<Env>()
 
@@ -37,6 +38,9 @@ app.use('*', async (c, next) => {
 })
 
 app.route('/node', node)
+
+// 节点一键安装脚本（公开：URL 里的 key 即 10 分钟待认领凭据，不依赖登录态）
+app.get('/install/:file', serveInstallScript)
 
 // ---------- 认证 ----------
 

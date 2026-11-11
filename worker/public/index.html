@@ -3,7 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Workbench</title>
+    <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32" />
+    <link rel="icon" href="/logo.png" type="image/png" sizes="80x80" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <title>个人工作台</title>
     <script>
       // 首屏定主题：localStorage 优先，其次跟随系统；必须在样式表之前执行，避免闪白
       ;(() => {
@@ -24,12 +27,12 @@
       <button class="icon-btn" id="nav-toggle" type="button" aria-expanded="false" aria-controls="sidebar" aria-label="打开导航">
         <svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
       </button>
-      <span class="brand-inline">Workbench</span>
+      <span class="brand-inline"><img class="brand-mark" src="/logo.png" alt="" width="28" height="28" />个人工作台</span>
     </header>
 
     <div class="app">
       <nav class="sidebar" id="sidebar" aria-label="主导航">
-        <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Workbench</div>
+        <div class="brand"><img class="brand-mark" src="/logo.png" alt="" width="32" height="32" />个人工作台</div>
       </nav>
       <div class="mainwrap" id="mainwrap">
         <div id="banner-slot"></div>

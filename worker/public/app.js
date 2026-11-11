@@ -3,6 +3,7 @@ import {
   closeModal,
   esc,
   icon,
+  scrollToTop,
   setupDialog,
   setupDrawer,
   setupTableScroll,
@@ -11,7 +12,7 @@ import {
 
 const ROUTES = [
   { path: '/', title: 'Dashboard', icon: 'dashboard', load: () => import('./views/dashboard.js') },
-  { path: '/news', title: 'IT 资讯', icon: 'news', load: () => import('./views/news.js') },
+  { path: '/news', title: '资讯', icon: 'news', load: () => import('./views/news.js') },
   { path: '/stock', title: '股票', icon: 'stock', load: () => import('./views/stock.js') },
   { path: '/reminder', title: '提醒', icon: 'bell', load: () => import('./views/reminder.js') },
   { path: '/note', title: '笔记', icon: 'note', load: () => import('./views/note.js') },
@@ -72,9 +73,9 @@ async function render() {
   host.innerHTML = '<main id="main" tabindex="-1"><div class="muted">加载中…</div></main>'
   const main = host.querySelector('#main')
   stopTableScroll = setupTableScroll(main)
-  document.getElementById('mainwrap').scrollTop = 0
+  scrollToTop()
   setActive(route.path)
-  document.title = `${route.title} · Workbench`
+  document.title = `${route.title} · 个人工作台`
 
   try {
     const mod = await route.load()
@@ -86,6 +87,9 @@ async function render() {
     if (seq !== ticket) return
     main.innerHTML = `<div class="alert danger">${icon('alert')}<span>${esc(err?.message || String(err))}</span></div>`
   }
+
+  // 路由切换后把焦点交给主内容：键盘用户不必从头 Tab，抽屉跳转也靠这里收尾
+  if (seq === ticket) main.focus({ preventScroll: true })
 }
 
 renderNav()
