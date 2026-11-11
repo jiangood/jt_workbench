@@ -5,11 +5,21 @@ let redirectTimer = 0
 // 弹窗里等待节点首次接入的轮询定时器（切页 / 关弹窗 / 上线都要停）
 let installPollTimer = 0
 
-export async function render(main) {
+const TABS = [
+  { id: 'nodes', label: '执行节点' },
+  { id: 'runs', label: '任务运行' },
+  { id: 'config', label: '参数与密钥' },
+  { id: 'account', label: '账号安全' },
+]
+
+export async function render(main, params = {}) {
   const [nodes, cfg] = await Promise.all([
     api('/api/admin/nodes'),
     api('/api/admin/config'),
   ])
+
+  const activeTab = TABS.some((t) => t.id === params.tab) ? params.tab : 'nodes'
+  const paneAttrs = (id) => `id="pane-${id}" role="tabpanel" aria-labelledby="tab-${id}" data-pane="${id}"${id === activeTab ? '' : ' hidden'}`
 
   main.innerHTML = `
     <div class="page-head">
@@ -19,75 +29,123 @@ export async function render(main) {
       </div>
     </div>
 
-    <div class="section-head">
-      <h2>执行节点</h2>
-      <button class="btn primary sm" id="node-add" type="button">${icon('plus')}添加节点</button>
-    </div>
-    <div class="small muted" style="max-width: 980px">
-      添加节点后立刻登记（接入前显示离线），并生成一条 <code>curl | sh</code> 接入命令（<strong>长期有效</strong>）：
-      在目标 Linux 机器的任意目录执行，会自动创建 <code>workbench-agent/docker-compose.yml</code>（仅此一个文件）并启动。
-      宿主机不需要 <code>.env</code>，密钥由后台生成并只写进 compose、页面不展示；
-      现场不能马上接入也没关系，之后随时点该行「查看接入方式」取回命令。需要换密钥点「重置密钥」。
-    </div>
-    <table style="max-width: 980px">
-      <thead><tr><th>节点</th><th>版本</th><th>状态</th><th>最后心跳</th><th>在持任务</th><th></th></tr></thead>
-      <tbody id="nodes-body"></tbody>
-    </table>
-    <div class="small mt-2" id="node-msg" role="status"></div>
-
-
-    <div class="section-head"><h2>最近任务运行（7 天）</h2></div>
-    <table style="max-width: 860px">
-      <thead><tr><th>时间</th><th>节点</th><th>版本</th><th>任务</th><th>结果</th><th>耗时</th></tr></thead>
-      <tbody>
-        ${
-          nodes.recentRuns
-            .map(
-              (r) => `
-          <tr>
-            <td class="small">${fmtTime(r.run_at)}</td>
-            <td class="mono small">${esc(r.node_id)}</td>
-            <td class="small">${esc(r.agent_version)}</td>
-            <td class="small mono">#${esc(r.job_id)}</td>
-            <td class="small">${r.ok ? '<span class="pill ok"><span class="dot"></span>OK</span>' : '<span class="pill bad"><span class="dot"></span>FAIL</span>'}
-              <span class="muted">${esc((r.message || '').slice(0, 80))}</span></td>
-            <td class="small">${r.ms != null ? esc(r.ms) + 'ms' : '—'}</td>
-          </tr>`,
-            )
-            .join('') || '<tr><td colspan="6" class="muted">暂无运行记录</td></tr>'
-        }
-      </tbody>
-    </table>
-
-    <div class="section-head"><h2>参数与密钥</h2></div>
-    <div class="small muted" style="max-width: 860px">
-      全部存 D1 <code>app_config</code>，保存即生效，不再需要 <code>wrangler secret</code>；
-      管理员密码在下方「账号安全」，节点由上面「执行节点」直接登记。
-    </div>
-    <div id="cfg-list" class="mt-2" style="max-width: 860px"></div>
-    <div id="cfg-note" class="small mt-2" role="status" style="max-width: 860px"></div>
-    <div class="small muted mt-2" style="max-width: 860px">
-      知识星球 token 也在这里维护：下发 <code>zsxq_sync</code> 任务时由 Worker 注入 payload，agent 侧无需任何环境变量。
+    <div class="tabs" role="tablist" aria-label="系统管理分区">
+      ${TABS.map(
+        (t) => `<button class="tab" id="tab-${t.id}" type="button" role="tab" data-tab="${t.id}"
+          aria-controls="pane-${t.id}" aria-selected="${t.id === activeTab}">${t.label}</button>`,
+      ).join('')}
     </div>
 
-    <div class="section-head"><h2>账号安全</h2></div>
-    <div class="card" style="max-width: 640px">
-      <div class="card-body">
-        <div>登录账号：<code>admin</code>；密码存 D1（<code>auth_state</code>），不再依赖 worker secret</div>
-        <form id="pwd" class="mt-2" style="max-width: 420px">
-          <label class="sr-only" for="pwd-old">当前密码</label>
-          <input class="field" id="pwd-old" name="oldPassword" type="password" placeholder="当前密码" autocomplete="current-password" required aria-describedby="pwd-msg" />
-          <label class="sr-only" for="pwd-new">新密码</label>
-          <input class="field mt-2" id="pwd-new" name="newPassword" type="password" placeholder="新密码（至少 8 位）" autocomplete="new-password" minlength="8" required aria-describedby="pwd-msg" />
-          <label class="sr-only" for="pwd-confirm">确认新密码</label>
-          <input class="field mt-2" id="pwd-confirm" name="confirm" type="password" placeholder="确认新密码" autocomplete="new-password" minlength="8" required aria-describedby="pwd-msg" />
-          <button class="btn primary sm mt-2" id="pwd-submit">${icon('gear')}更新密码</button>
-          <div id="pwd-msg" class="small mt-2" role="alert"></div>
-        </form>
-        <div class="small muted mt-2">改密后所有已登录会话立即失效（含当前），需用新密码重新登录。</div>
-        <button class="btn sm warn mt-2" id="rotate">${icon('gear')}撤销全部旧会话（不改密码）</button>
+    <section class="tab-pane" ${paneAttrs('nodes')}>
+      <div class="section-head" style="margin-top: 0">
+        <h2>执行节点</h2>
+        <button class="btn primary sm" id="node-add" type="button">${icon('plus')}添加节点</button>
       </div>
-    </div>`
+      <div class="small muted" style="max-width: 980px">
+        添加节点后立刻登记（接入前显示离线），并生成一条 <code>curl | sh</code> 接入命令（<strong>长期有效</strong>）：
+        在目标 Linux 机器的任意目录执行，会自动创建 <code>workbench-agent/docker-compose.yml</code>（仅此一个文件）并启动。
+        宿主机不需要 <code>.env</code>，密钥由后台生成并只写进 compose、页面不展示；
+        现场不能马上接入也没关系，之后随时点该行「查看接入方式」取回命令。需要换密钥点「重置密钥」。
+      </div>
+      <table style="max-width: 980px">
+        <thead><tr><th>节点</th><th>版本</th><th>状态</th><th>最后心跳</th><th>在持任务</th><th></th></tr></thead>
+        <tbody id="nodes-body"></tbody>
+      </table>
+      <div class="small mt-2" id="node-msg" role="status"></div>
+    </section>
+
+    <section class="tab-pane" ${paneAttrs('runs')}>
+      <div class="section-head" style="margin-top: 0"><h2>最近任务运行（7 天）</h2></div>
+      <table style="max-width: 860px">
+        <thead><tr><th>时间</th><th>节点</th><th>版本</th><th>任务</th><th>结果</th><th>耗时</th></tr></thead>
+        <tbody>
+          ${
+            nodes.recentRuns
+              .map(
+                (r) => `
+            <tr>
+              <td class="small">${fmtTime(r.run_at)}</td>
+              <td class="mono small">${esc(r.node_id)}</td>
+              <td class="small">${esc(r.agent_version)}</td>
+              <td class="small mono">#${esc(r.job_id)}</td>
+              <td class="small">${r.ok ? '<span class="pill ok"><span class="dot"></span>OK</span>' : '<span class="pill bad"><span class="dot"></span>FAIL</span>'}
+                <span class="muted">${esc((r.message || '').slice(0, 80))}</span></td>
+              <td class="small">${r.ms != null ? esc(r.ms) + 'ms' : '—'}</td>
+            </tr>`,
+              )
+              .join('') || '<tr><td colspan="6" class="muted">暂无运行记录</td></tr>'
+          }
+        </tbody>
+      </table>
+    </section>
+
+    <section class="tab-pane" ${paneAttrs('config')}>
+      <div class="section-head" style="margin-top: 0"><h2>参数与密钥</h2></div>
+      <div class="small muted" style="max-width: 860px">
+        全部存 D1 <code>app_config</code>，保存即生效，不再需要 <code>wrangler secret</code>；
+        管理员密码在「账号安全」，节点在「执行节点」直接登记。
+      </div>
+      <div id="cfg-list" class="mt-2" style="max-width: 860px"></div>
+      <div id="cfg-note" class="small mt-2" role="status" style="max-width: 860px"></div>
+      <div class="small muted mt-2" style="max-width: 860px">
+        知识星球 token 也在这里维护：下发 <code>zsxq_sync</code> 任务时由 Worker 注入 payload，agent 侧无需任何环境变量。
+      </div>
+    </section>
+
+    <section class="tab-pane" ${paneAttrs('account')}>
+      <div class="section-head" style="margin-top: 0"><h2>账号安全</h2></div>
+      <div class="card" style="max-width: 640px">
+        <div class="card-body">
+          <div>登录账号：<code>admin</code>；密码存 D1（<code>auth_state</code>），不再依赖 worker secret</div>
+          <form id="pwd" class="mt-2" style="max-width: 420px">
+            <label class="sr-only" for="pwd-old">当前密码</label>
+            <input class="field" id="pwd-old" name="oldPassword" type="password" placeholder="当前密码" autocomplete="current-password" required aria-describedby="pwd-msg" />
+            <label class="sr-only" for="pwd-new">新密码</label>
+            <input class="field mt-2" id="pwd-new" name="newPassword" type="password" placeholder="新密码（至少 8 位）" autocomplete="new-password" minlength="8" required aria-describedby="pwd-msg" />
+            <label class="sr-only" for="pwd-confirm">确认新密码</label>
+            <input class="field mt-2" id="pwd-confirm" name="confirm" type="password" placeholder="确认新密码" autocomplete="new-password" minlength="8" required aria-describedby="pwd-msg" />
+            <button class="btn primary sm mt-2" id="pwd-submit">${icon('gear')}更新密码</button>
+            <div id="pwd-msg" class="small mt-2" role="alert"></div>
+          </form>
+          <div class="small muted mt-2">改密后所有已登录会话立即失效（含当前），需用新密码重新登录。</div>
+          <button class="btn sm warn mt-2" id="rotate">${icon('gear')}撤销全部旧会话（不改密码）</button>
+        </div>
+      </div>
+    </section>`
+
+  // ---------- 分区 tab（hash 带 ?tab=，刷新 / 直达保持当前分区） ----------
+  const tabButtons = [...main.querySelectorAll('[role="tab"]')]
+  const panes = [...main.querySelectorAll('[data-pane]')]
+  const setTab = (id, focus = false) => {
+    if (!TABS.some((t) => t.id === id)) return
+    for (const btn of tabButtons) {
+      const on = btn.dataset.tab === id
+      btn.setAttribute('aria-selected', String(on))
+      btn.tabIndex = on ? 0 : -1
+      if (on && focus) btn.focus()
+    }
+    for (const pane of panes) pane.hidden = pane.dataset.pane !== id
+    // 只改 hash 查询串：replaceState 不触发 hashchange，避免整页重渲染
+    history.replaceState(null, '', id === 'nodes' ? '#/admin' : `#/admin?tab=${id}`)
+  }
+  main.querySelector('.tabs').onclick = (e) => {
+    const btn = e.target.closest('[role="tab"]')
+    if (btn) setTab(btn.dataset.tab)
+  }
+  // 方向键 / Home / End 在 tab 间移动（WAI-ARIA tabs 模式）
+  main.querySelector('.tabs').onkeydown = (e) => {
+    const i = tabButtons.indexOf(document.activeElement)
+    if (i < 0) return
+    let next
+    if (e.key === 'ArrowRight') next = (i + 1) % tabButtons.length
+    else if (e.key === 'ArrowLeft') next = (i - 1 + tabButtons.length) % tabButtons.length
+    else if (e.key === 'Home') next = 0
+    else if (e.key === 'End') next = tabButtons.length - 1
+    else return
+    e.preventDefault()
+    setTab(tabButtons[next].dataset.tab, true)
+  }
+  setTab(activeTab)
 
   // ---------- 节点登记（添加即入库 + 长期有效的接入方式，v4.13） ----------
   let nodeList = nodes.nodes ?? []
