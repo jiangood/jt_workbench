@@ -13,12 +13,24 @@ import {
 const ROUTES = [
   { path: '/', title: 'Dashboard', icon: 'dashboard', load: () => import('./views/dashboard.js') },
   { path: '/news', title: '资讯', icon: 'news', load: () => import('./views/news.js') },
-  { path: '/stock', title: '股票', icon: 'stock', load: () => import('./views/stock.js') },
-  { path: '/reminder', title: '提醒', icon: 'bell', load: () => import('./views/reminder.js') },
-  { path: '/note', title: '笔记', icon: 'note', load: () => import('./views/note.js') },
-  { path: '/music', title: '音乐', icon: 'music', load: () => import('./views/music.js') },
-  { path: '/book', title: '书架', icon: 'book', load: () => import('./views/book.js') },
-  { path: '/zsxq', title: '知识星球', icon: 'star', load: () => import('./views/zsxq.js') },
+  // wide: true → 容器放宽到 --container-max-wide（多栏 / 表格 / 图表 / 网格页）；
+  // 阅读类页面（首页、资讯、系统）保持 1200px 的舒适行宽
+  { path: '/stock', title: '股票', icon: 'stock', wide: true, load: () => import('./views/stock.js') },
+  { path: '/reminder', title: '提醒', icon: 'bell', wide: true, load: () => import('./views/reminder.js') },
+  { path: '/note', title: '笔记', icon: 'note', wide: true, load: () => import('./views/note.js') },
+  { path: '/music', title: '音乐', icon: 'music', wide: true, load: () => import('./views/music.js') },
+  { path: '/book', title: '书架', icon: 'book', wide: true, load: () => import('./views/book.js') },
+  // 阅读页：独立路由不进侧栏，入口是书架卡片的「阅读」；activePath 让侧栏继续高亮「书架」
+  {
+    path: '/reader',
+    title: '阅读',
+    icon: 'book',
+    wide: true,
+    hidden: true,
+    activePath: '/book',
+    load: () => import('./views/reader.js'),
+  },
+  { path: '/zsxq', title: '知识星球', icon: 'star', wide: true, load: () => import('./views/zsxq.js') },
   { path: '/admin', title: '系统', icon: 'gear', load: () => import('./views/admin.js') },
 ]
 
@@ -35,10 +47,9 @@ function parseHash() {
 function renderNav() {
   document.getElementById('sidebar').insertAdjacentHTML(
     'beforeend',
-    ROUTES.map(
-      (r) =>
-        `<a class="navlink" data-path="${r.path}" href="#${r.path}">${icon(r.icon)}<span>${r.title}</span></a>`,
-    ).join(''),
+    ROUTES.filter((r) => !r.hidden)
+      .map((r) => `<a class="navlink" data-path="${r.path}" href="#${r.path}">${icon(r.icon)}<span>${r.title}</span></a>`)
+      .join(''),
   )
 }
 
@@ -74,11 +85,13 @@ async function render() {
 
   // 每次换一个全新的 <main>：已销毁视图的异步回调写到游离节点上，不会污染新视图
   const host = document.getElementById('view-host')
+  // 路由级宽度：只有标记 wide 的页面放宽，其余保持阅读宽度
+  host.classList.toggle('container-wide', route.wide === true)
   host.innerHTML = '<main id="main" tabindex="-1"><div class="muted">加载中…</div></main>'
   const main = host.querySelector('#main')
   stopTableScroll = setupTableScroll(main)
   scrollToTop()
-  setActive(route.path)
+  setActive(route.activePath || route.path)
   document.title = `${route.title} · 个人工作台`
 
   try {

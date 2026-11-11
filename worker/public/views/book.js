@@ -1,7 +1,5 @@
 import { api, esc, icon, loadScriptOnce, rerender, run, showDialog, toast } from '../lib.js'
 
-let epubBook = null
-let closeBound = false
 let filterStatus = 'all'
 let filterCategory = ''
 
@@ -17,22 +15,9 @@ const statusBadge = (s) => `<span class="badge ${STATUS[s]?.cls ?? 'muted'}">${s
 /** 豆瓣图床带 Referer 防盗链，封面统一走 Worker 代理 */
 const coverUrl = (url) => (url ? `/api/book/cover?url=${encodeURIComponent(url)}` : '')
 
-function closeReader() {
-  try {
-    epubBook?.destroy()
-  } catch {
-    /* 已释放 */
-  }
-  epubBook = null
-}
-
 export async function render(main) {
+  // 上传时用 JSZip 读 epub 元数据；阅读器已独立成 #/reader 页，按需自己加载 epub.js
   await loadScriptOnce('/vendor/jszip.min.js')
-  await loadScriptOnce('/vendor/epub.min.js')
-  if (!closeBound) {
-    document.getElementById('dlg').addEventListener('close', closeReader)
-    closeBound = true
-  }
 
   const data = await api('/api/book/list')
   const books = data.books ?? []
@@ -55,13 +40,13 @@ export async function render(main) {
     <div class="page-head">
       <div>
         <h1 class="page-title">书架</h1>
-        <p class="page-sub">豆瓣索引先建条目，有文件后再上传 · 区分待读 / 阅读中 / 已读</p>
+        <p class="page-sub">豆瓣索引先建条目，有文件后再上传 · 上传后自动匹配豆瓣信息 · 区分待读 / 阅读中 / 已读</p>
       </div>
       <div class="page-actions">
         <button class="btn primary" id="add-book">${icon('plus')}添加图书</button>
         <label class="btn">
           ${icon('upload')}上传文件
-          <input class="sr-only" type="file" id="up" accept=".epub,.pdf" multiple>
+          <input class="sr-only" type="file" id="up" accept=".epub,.pdf,.txt" multiple>
         </label>
       </div>
     </div>
@@ -97,37 +82,48 @@ export async function render(main) {
         shown
           .map((b) => {
             const cover = coverUrl(b.cover)
+            const title = b.title || b.filename
             const meta = [b.author || '未知作者', b.pubYear].filter(Boolean).join(' · ')
+            const label = esc(title)
             return `
         <article class="book-card">
           <div class="book-cover${cover ? '' : ' no-cover'}">
-            <span class="book-cover-ph">${icon('book', 34)}</span>
+            <span class="book-cover-ph">${icon('book', 36)}</span>
             ${cover ? `<img src="${esc(cover)}" alt="" loading="lazy">` : ''}
             ${statusBadge(b.status)}
           </div>
           <div class="book-body">
-            <div class="book-title" title="${esc(b.title || b.filename)}">${esc(b.title || b.filename)}</div>
-            <div class="small muted">${esc(meta)}</div>
+            <h2 class="book-title" title="${label}">${esc(title)}</h2>
+            <p class="book-by small muted" title="${esc(meta)}">${esc(meta)}</p>
             <div class="book-meta">
               ${b.category ? `<span class="badge">${esc(b.category)}</span>` : '<span class="badge muted">未分类</span>'}
-              ${b.rating ? `<span class="small muted">★ ${esc(b.rating)}</span>` : ''}
+              ${b.rating ? `<span class="book-rating small muted">${icon('star', 12)}${esc(b.rating)}</span>` : ''}
               ${b.hasFile ? `<span class="badge muted">${esc((b.fmt || '').toUpperCase())}</span>` : '<span class="badge warn">待上传</span>'}
             </div>
             <div class="book-actions">
               ${
                 b.hasFile
-                  ? `<button class="btn sm primary" data-r="${esc(b.id)}">${icon('book', 14)}阅读</button>`
+                  ? `<a class="btn sm primary" href="#/reader?id=${esc(b.id)}"
+                       title="阅读《${label}》" aria-label="阅读《${label}》">${icon('book', 14)}阅读</a>`
                   : `<button class="btn sm primary" data-upload="${esc(b.id)}">${icon('upload', 14)}上传文件</button>`
               }
-              <button class="btn sm" data-e="${esc(b.id)}">编辑</button>
-              <button class="btn sm" data-sync="${esc(b.id)}" title="用豆瓣信息更新书名/作者/封面/简介/评分">${icon('refresh', 14)}同步</button>
-              ${b.hasFile ? `<a class="btn sm" href="/api/book/read/${esc(b.id)}" target="_blank" rel="noopener">原文件</a>` : ''}
-              <button class="btn sm danger" data-d="${esc(b.id)}" aria-label="删除">${icon('trash', 14)}</button>
+              <div class="book-tools">
+                <button class="btn sm" data-e="${esc(b.id)}" title="编辑" aria-label="编辑《${label}》">${icon('edit', 14)}</button>
+                <button class="btn sm" data-sync="${esc(b.id)}" title="用豆瓣信息更新书名 / 作者 / 封面 / 简介 / 评分"
+                        aria-label="同步豆瓣信息《${label}》">${icon('refresh', 14)}</button>
+                ${
+                  b.hasFile
+                    ? `<a class="btn sm" href="/api/book/read/${esc(b.id)}" target="_blank" rel="noopener"
+                          title="打开原文件" aria-label="打开原文件《${label}》">${icon('external', 14)}</a>`
+                    : ''
+                }
+                <button class="btn sm danger" data-d="${esc(b.id)}" title="删除" aria-label="删除《${label}》">${icon('trash', 14)}</button>
+              </div>
             </div>
           </div>
         </article>`
           })
-          .join('') || `<div class="empty">${books.length ? '当前筛选下还没有书' : '书架空空如也，点「添加图书」从豆瓣建条目，或直接上传 epub / pdf'}</div>`
+          .join('') || `<div class="empty">${books.length ? '当前筛选下还没有书' : '书架空空如也，点「添加图书」从豆瓣建条目，或直接上传 epub / pdf / txt'}</div>`
       }
     </div>`
 
@@ -155,12 +151,14 @@ export async function render(main) {
     const prog = main.querySelector('#up-progress')
     const files = [...e.target.files]
     let failed = 0
+    let synced = 0
     for (const file of files) {
       prog.textContent = `解析 ${file.name} ...`
       const meta = await parseEpubMeta(file)
-      prog.textContent = `上传 ${file.name} ...`
+      prog.textContent = `上传并匹配豆瓣 ${file.name} ...`
       try {
-        await uploadFile(file, { ...meta, category: filterCategory })
+        const data = await uploadFile(file, { ...meta, category: filterCategory })
+        if (data?.douban) synced += 1
       } catch (err) {
         failed += 1
         toast(err.message, true)
@@ -168,23 +166,12 @@ export async function render(main) {
     }
     prog.textContent = ''
     e.target.value = ''
-    if (files.length > failed) toast(`已上传 ${files.length - failed} 本`)
+    if (files.length > failed) {
+      toast(`已上传 ${files.length - failed} 本${synced ? `，其中 ${synced} 本已同步豆瓣信息` : ''}`)
+    }
     await rerender(render, main)
   }
 
-  main.querySelectorAll('[data-r]').forEach((a) => {
-    a.onclick = () => {
-      const b = books.find((x) => String(x.id) === a.dataset.r)
-      if (!b) return
-      openReader(b.id, b.fmt, b.title || b.filename)
-      // 开卷即视为阅读中（已读不倒退；失败静默，不挡阅读）
-      if (b.status === 'unread') {
-        api(`/api/book/${b.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'reading' }) })
-          .then(() => rerender(render, main))
-          .catch(() => {})
-      }
-    }
-  })
   main.querySelectorAll('[data-upload]').forEach((b) => {
     b.onclick = () => pickFile(b.dataset.upload, main)
   })
@@ -588,13 +575,13 @@ function openEditDialog(row, main, categories) {
 function pickFile(bookId, main) {
   const input = document.createElement('input')
   input.type = 'file'
-  input.accept = '.epub,.pdf'
+  input.accept = '.epub,.pdf,.txt'
   input.onchange = async () => {
     const file = input.files?.[0]
     if (!file) return
     try {
-      await uploadFile(file, { bookId })
-      toast(`已上传：${file.name}`)
+      const data = await uploadFile(file, { bookId })
+      toast(data?.douban ? `已上传：${file.name}（已同步豆瓣信息）` : `已上传：${file.name}`)
       await rerender(render, main)
     } catch (err) {
       toast(err.message, true)
@@ -613,11 +600,11 @@ async function uploadFile(file, extra = {}) {
     headers: { 'content-type': 'application/octet-stream' },
     body: file,
   })
-  if (!res.ok) {
-    const env = await res.json().catch(() => null)
+  const env = await res.json().catch(() => null)
+  if (!res.ok || env?.code !== 0) {
     throw new Error(env?.message || `上传失败：${file.name}（HTTP ${res.status}）`)
   }
-  return res.json()
+  return env.data
 }
 
 /** epub 元数据：浏览器端 JSZip 读 OPF（v3 决策 #9）；失败返回空对象，用文件名兜底 */
@@ -637,42 +624,6 @@ async function parseEpubMeta(file) {
   }
 }
 
-/* ---------------- 阅读器 ---------------- */
-
-function openReader(id, fmt, title) {
-  closeReader()
-  const url = `/api/book/read/${id}`
-  const { body } = showDialog('<div id="reader-view"></div>', { xl: true, label: '阅读器' })
-  const view = body.querySelector('#reader-view')
-
-  if (fmt === 'pdf') {
-    view.innerHTML = `<iframe src="${url}" style="width: 100%; height: 80vh; border: 0" title="${esc(title)}"></iframe>`
-    return
-  }
-
-  // 直接把整本 epub 读成 ArrayBuffer 交给 epub.js：避免它按 URL 末段当目录去解析
-  // （/api/book/read/9 没有 .epub 后缀，否则会去请求 /read/META-INF/container.xml）
-  fetch(url)
-    .then((res) => {
-      if (!res.ok) throw new Error(`打开失败：HTTP ${res.status}`)
-      return res.arrayBuffer()
-    })
-    .then((buf) => {
-      if (!view.isConnected) return // 弹窗已关闭/切页
-      epubBook = window.ePub(buf)
-      const rendition = epubBook.renderTo(view, { width: '100%', height: '100%', spread: 'none' })
-      rendition.display()
-      rendition.on('keydown', (e) => {
-        if (e.key === 'ArrowLeft') rendition.prev()
-        if (e.key === 'ArrowRight') rendition.next()
-      })
-    })
-    .catch((err) => {
-      if (view.isConnected) view.innerHTML = `<div class="alert danger">${esc(err.message)}</div>`
-    })
-}
-
 export function destroy() {
-  closeReader()
   document.getElementById('dlg-body').innerHTML = ''
 }

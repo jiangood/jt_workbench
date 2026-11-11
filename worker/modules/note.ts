@@ -148,6 +148,16 @@ async function validFolderId(db: D1Database, folderId: number | null | undefined
   return row ? folderId : null
 }
 
+/** 只改归属：不动 title/content/updated_at，免得移动笔记在列表里顶到最前 */
+note.post('/:id/move', async (c) => {
+  const id = Number(c.req.param('id'))
+  const b = await c.req.json<{ folderId?: number | null }>()
+  const folderId = await validFolderId(c.env.DB, b.folderId)
+  const r = await c.env.DB.prepare('UPDATE note SET folder_id = ? WHERE id = ?').bind(folderId, id).run()
+  if (!r.meta.changes) throw new ApiError(404, 404, 'not found')
+  return ok({ id, folderId })
+})
+
 note.delete('/:id', async (c) => {
   const id = Number(c.req.param('id'))
   const row = await c.env.DB.prepare('SELECT attachments FROM note WHERE id = ?').bind(id).first<{ attachments: string }>()

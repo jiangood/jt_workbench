@@ -448,7 +448,7 @@ function openFolderManager(main) {
     }
     edit = null
     await refreshAll(main)
-    syncFolderSelect(main)
+    syncFolderLabel(main)
     draw()
     toast(id ? '目录已重命名' : '已创建目录')
     return true
@@ -519,7 +519,7 @@ function openFolderManager(main) {
       if (selectedFolder === String(folder.id)) selectedFolder = folder.parentId != null ? String(folder.parentId) : 'none'
       expanded.delete(folder.id)
       await refreshAll(main)
-      syncFolderSelect(main, folder.parentId ?? null)
+      syncFolderLabel(main, folder.parentId ?? null)
       draw()
       toast('已删除目录')
     }
@@ -570,14 +570,36 @@ function folderOptions(selectedId) {
   return rows.join('')
 }
 
-/** 目录增删后同步编辑器里的目录下拉：失效的值退到 fallback（通常是父目录） */
-function syncFolderSelect(main, fallback = null) {
-  const select = main.querySelector('#e-folder')
-  if (!select) return
-  const prev = select.value
-  const exists = foldersCache.some((f) => String(f.id) === prev)
-  const next = exists ? prev : fallback != null ? String(fallback) : ''
-  select.innerHTML = folderOptions(next)
+/** 目录 id → 完整路径（根 / 子 / 孙）；null 表示未分类。Set 防脏数据成环 */
+function folderPathName(id) {
+  if (id == null) return '未分类'
+  const names = []
+  const seen = new Set()
+  let cur = folderById.get(Number(id))
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id)
+    names.unshift(cur.name)
+    cur = cur.parentId != null ? folderById.get(cur.parentId) : null
+  }
+  return names.join(' / ') || '未分类'
+}
+
+/** 第 3 栏的归属只读展示：id 记在 data-folder-id 上，保存 / 移动都读这里 */
+function renderFolderLabel(label, id) {
+  const folderId = id ?? null
+  const name = folderPathName(folderId)
+  label.dataset.folderId = folderId != null ? String(folderId) : ''
+  label.title = name
+  const nameEl = label.querySelector('.editor-folder-name')
+  if (nameEl) nameEl.textContent = name
+}
+
+/** 目录增删后同步第 3 栏显示：失效的 id 退到 fallback（通常是父目录） */
+function syncFolderLabel(main, fallback = null) {
+  const label = main.querySelector('#e-folder-label')
+  if (!label) return
+  const prev = label.dataset.folderId ? Number(label.dataset.folderId) : null
+  renderFolderLabel(label, prev != null && folderById.has(prev) ? prev : fallback)
 }
 
 function openEditor(main, n) {
@@ -595,6 +617,9 @@ function openEditor(main, n) {
           <button class="icon-btn" id="e-more" type="button" aria-haspopup="menu" aria-expanded="false"
                   aria-controls="e-more-menu" aria-label="更多操作">${icon('more', 18)}</button>
           <div class="more-menu" id="e-more-menu" role="menu" hidden>
+            <button class="more-item" type="button" role="menuitem" id="e-move">
+              ${icon('folder', 14)}移动到目录…
+            </button>
             <button class="more-item danger" type="button" role="menuitem" id="e-del" ${n ? '' : 'disabled'}>
               ${icon('trash', 14)}删除笔记
             </button>
@@ -604,8 +629,10 @@ function openEditor(main, n) {
     </div>
     <div class="field-error" id="e-msg" role="alert"></div>
     <div class="editor-meta">
-      <label class="muted" for="e-folder">目录</label>
-      <select class="field field-sm" id="e-folder" aria-label="所在目录">${folderOptions(folderId)}</select>
+      <span class="muted">目录</span>
+      <span class="editor-folder" id="e-folder-label" data-folder-id="${folderId ?? ''}" title="${esc(folderPathName(folderId))}">
+        ${icon('folder', 14)}<span class="editor-folder-name">${esc(folderPathName(folderId))}</span>
+      </span>
     </div>
     <label class="sr-only" for="e-content">正文</label>
     <textarea class="field" id="e-content" rows="14" placeholder="正文（原文存储，展示即所见）">${esc(n?.content ?? '')}</textarea>
@@ -619,6 +646,7 @@ function openEditor(main, n) {
 
   const titleEl = editor.querySelector('#e-title')
   const msgEl = editor.querySelector('#e-msg')
+  const labelEl = editor.querySelector('#e-folder-label')
   titleEl.addEventListener('input', () => {
     msgEl.textContent = ''
     titleEl.removeAttribute('aria-invalid')
@@ -655,6 +683,46 @@ function openEditor(main, n) {
     menu.querySelector('.more-item:not([disabled])')?.focus()
   }
 
+  // 「移动到目录」：只改归属，不动正文；未保存的新笔记先记在本地，保存时一起落库
+  editor.querySelector('#e-move').onclick = () => {
+    closeMenu()
+    const cur = labelEl.dataset.folderId ? Number(labelEl.dataset.folderId) : null
+    const { close, body } = showDialog(
+      `<h2>移动到目录</h2>
+       <p class="muted small">当前：${esc(folderPathName(cur))}</p>
+       <label class="form-label" for="mv-folder">目标目录</label>
+       <select class="field" id="mv-folder">${folderOptions(cur)}</select>
+       <div class="flex between mt-3">
+         <button class="btn sm" type="button" id="mv-cancel">取消</button>
+         <button class="btn sm primary" type="button" id="mv-ok">移动</button>
+       </div>`,
+      { label: '移动到目录' },
+    )
+    const select = body.querySelector('#mv-folder')
+    const okBtn = body.querySelector('#mv-ok')
+    body.querySelector('#mv-cancel').onclick = close
+    okBtn.onclick = async () => {
+      const pick = select.value ? Number(select.value) : null
+      if (pick === cur) {
+        close()
+        return
+      }
+      if (n) {
+        const res = await run(okBtn, () =>
+          api(`/api/note/${n.id}/move`, { method: 'POST', body: JSON.stringify({ folderId: pick }) }),
+        )
+        if (!res.ok) return
+        n.folder_id = res.data.folderId ?? null
+      }
+      close()
+      renderFolderLabel(labelEl, pick)
+      toast(n ? `已移动到「${folderPathName(pick)}」` : `保存后归入「${folderPathName(pick)}」`)
+      // 目录计数与列表跟着变；正文不动，免得光标跳走
+      if (n) await rerender(refreshAll, main)
+    }
+    select.focus()
+  }
+
   editor.querySelector('#e-save').onclick = async () => {
     const btn = editor.querySelector('#e-save')
     const title = titleEl.value.trim()
@@ -666,7 +734,7 @@ function openEditor(main, n) {
     }
     msgEl.textContent = ''
     titleEl.removeAttribute('aria-invalid')
-    const pick = editor.querySelector('#e-folder').value
+    const pick = labelEl.dataset.folderId
     const body = JSON.stringify({
       id: n?.id,
       title,

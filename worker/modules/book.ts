@@ -1,5 +1,5 @@
 /**
- * 书架：豆瓣索引建条目（可先不传文件，有资源后再上传）+ epub/pdf 上传 + 分类 / 阅读状态
+ * 书架：豆瓣索引建条目（可先不传文件，有资源后再上传）+ epub/pdf/txt 上传 + 分类 / 阅读状态
  * 封面经 Worker 代理（豆瓣图床带 Referer 防盗链，直连 418）
  */
 
@@ -177,43 +177,7 @@ book.patch('/:id', async (c) => {
 book.post('/:id/sync', async (c) => {
   const row = await c.env.DB.prepare('SELECT * FROM book WHERE id = ?').bind(c.req.param('id')).first<BookRow>()
   if (!row) throw new ApiError(404, 404, '书不存在')
-
-  let doubanId = row.douban_id
-  if (!doubanId) {
-    const items = await doubanSuggest(c.env.DB, row.title)
-    doubanId = items[0]?.doubanId ?? null
-    if (!doubanId) throw new ApiError(404, 404, '豆瓣没有找到匹配条目，可先编辑书名再试')
-  }
-
-  const dup = await c.env.DB
-    .prepare('SELECT id FROM book WHERE douban_id = ? AND id <> ?')
-    .bind(doubanId, row.id)
-    .first<{ id: number }>()
-  if (dup) throw new ApiError(409, 409, '该豆瓣条目已关联到另一本书')
-
-  const info = await doubanSubject(c.env.DB, doubanId)
-  if (!info?.title) throw new ApiError(502, 502, '豆瓣信息获取失败，请稍后再试')
-
-  await c.env.DB
-    .prepare(
-      `UPDATE book SET title = ?, author = ?, cover = ?, summary = ?, rating = ?, pub_year = ?,
-                       douban_id = ?, douban_url = ?, updated_at = ?
-        WHERE id = ?`,
-    )
-    .bind(
-      info.title,
-      info.author ?? row.author,
-      info.cover ?? row.cover,
-      info.summary ?? row.summary,
-      info.rating ?? row.rating,
-      info.pubYear ?? row.pub_year,
-      doubanId,
-      info.url,
-      Date.now(),
-      row.id,
-    )
-    .run()
-  return ok({ title: info.title, doubanId })
+  return ok(await doubanSync(c.env.DB, row, false))
 })
 
 // ---------- 上传 / 阅读 / 删除 ----------
@@ -223,8 +187,14 @@ book.post('/upload', async (c) => {
   if (!filename) throw new ApiError(400, 400, 'filename required')
   if (!c.req.raw.body) throw new ApiError(400, 400, 'empty body')
 
-  const fmt = /\.pdf$/i.test(filename) ? 'pdf' : /\.epub$/i.test(filename) ? 'epub' : null
-  if (!fmt) throw new ApiError(400, 400, '仅支持 epub / pdf')
+  const fmt = /\.pdf$/i.test(filename)
+    ? 'pdf'
+    : /\.epub$/i.test(filename)
+      ? 'epub'
+      : /\.txt$/i.test(filename)
+        ? 'txt'
+        : null
+  if (!fmt) throw new ApiError(400, 400, '仅支持 epub / pdf / txt')
 
   const bookId = c.req.query('bookId')
   const existing = bookId
@@ -234,14 +204,16 @@ book.post('/upload', async (c) => {
 
   const now = Date.now()
   const stored = await putFile(c.env, 'book', filename, c.req.raw.headers.get('content-type'), c.req.raw.body)
+  let id: number
   try {
     if (existing) {
       await c.env.DB
         .prepare('UPDATE book SET fmt = ?, r2_key = ?, filename = ?, size = ?, updated_at = ? WHERE id = ?')
         .bind(fmt, stored.key, filename, stored.size, now, existing.id)
         .run()
+      id = existing.id
     } else {
-      const title = c.req.query('title')?.trim() || filename.replace(/\.[^.]+$/, '')
+      const title = titleFromFilename(filename, c.req.query('title'))
       const author = c.req.query('author')?.trim() || null
       const category = c.req.query('category')?.trim() || null
       const status = normalizeStatus(c.req.query('status'))
@@ -265,7 +237,7 @@ book.post('/upload', async (c) => {
           status === 'read' ? now : null,
         )
         .run()
-      return ok({ id: r.meta.last_row_id, size: stored.size })
+      id = Number(r.meta.last_row_id)
     }
   } catch (err) {
     // 入库失败：清掉刚写的 R2，避免孤儿文件
@@ -275,7 +247,15 @@ book.post('/upload', async (c) => {
 
   // 覆盖旧文件：新文件入库成功后再删旧 key
   if (existing?.r2_key) await deleteFile(c.env, existing.r2_key).catch(() => {})
-  return ok({ id: existing!.id, size: stored.size })
+
+  // 上传完成即补豆瓣信息（还没关联豆瓣条目时自动匹一次；匹配不到不影响上传结果）
+  let douban: { title: string; doubanId: string } | null = null
+  if (!existing?.douban_id) {
+    const row = await c.env.DB.prepare('SELECT * FROM book WHERE id = ?').bind(id).first<BookRow>()
+    if (row) douban = await autoSyncDouban(c.env.DB, row)
+  }
+
+  return ok({ id, size: stored.size, douban })
 })
 
 /** 阅读/下载（Range 透传：epub.js 分段读、浏览器 PDF 渐进加载） */
@@ -320,6 +300,26 @@ book.get('/cover', async (c) => {
   return new Response(res.body, { headers: out })
 })
 
+// ---------- 单本详情 ----------
+
+/** 阅读页按 id 取单本：字段与 /list 对齐，避免为打开一本书下发整张书架 */
+// 注册在 /list、/search、/cover 之后：GET /:id 不会抢先命中这些具体路径
+book.get('/:id', async (c) => {
+  const row = await c.env.DB
+    .prepare(
+      `SELECT id, title, author, category, status, cover, summary, rating, pub_year AS pubYear,
+              douban_id AS doubanId, douban_url AS doubanUrl, fmt, filename, size,
+              CASE WHEN r2_key IS NOT NULL THEN 1 ELSE 0 END AS hasFile,
+              created_at AS createdAt, updated_at AS updatedAt, finished_at AS finishedAt
+         FROM book
+        WHERE id = ?`,
+    )
+    .bind(c.req.param('id'))
+    .first()
+  if (!row) throw new ApiError(404, 404, '书不存在')
+  return ok({ book: row })
+})
+
 // ---------- 辅助 ----------
 
 async function readJson(c: Context<Env>): Promise<Record<string, unknown>> {
@@ -350,6 +350,94 @@ interface DoubanInfo {
   summary: string | null
   pubYear: string | null
   url: string
+}
+
+/**
+ * 豆瓣同步核心：已关联按 ID 拉取，未关联按书名搜；`auto` 时只认标题能对上的首条结果（上传后自动匹配，
+ * 宁可留空也不挂错条目）。分类与阅读状态不动；找不到 / 已被别的书占用一律抛 ApiError。
+ */
+async function doubanSync(
+  db: D1Database,
+  row: BookRow,
+  auto: boolean,
+): Promise<{ title: string; doubanId: string }> {
+  let doubanId = row.douban_id
+  if (!doubanId) {
+    const items = await doubanSuggest(db, row.title)
+    const hit = auto ? (titleMatches(items[0]?.title ?? '', row.title) ? items[0] : null) : items[0]
+    doubanId = hit?.doubanId ?? null
+    if (!doubanId) {
+      throw new ApiError(404, 404, auto ? '豆瓣没有匹配到同名条目' : '豆瓣没有找到匹配条目，可先编辑书名再试')
+    }
+  }
+
+  const dup = await db
+    .prepare('SELECT id FROM book WHERE douban_id = ? AND id <> ?')
+    .bind(doubanId, row.id)
+    .first<{ id: number }>()
+  if (dup) throw new ApiError(409, 409, '该豆瓣条目已关联到另一本书')
+
+  const info = await doubanSubject(db, doubanId)
+  if (!info?.title) throw new ApiError(502, 502, '豆瓣信息获取失败，请稍后再试')
+
+  await db
+    .prepare(
+      `UPDATE book SET title = ?, author = ?, cover = ?, summary = ?, rating = ?, pub_year = ?,
+                       douban_id = ?, douban_url = ?, updated_at = ?
+        WHERE id = ?`,
+    )
+    .bind(
+      info.title,
+      info.author ?? row.author,
+      info.cover ?? row.cover,
+      info.summary ?? row.summary,
+      info.rating ?? row.rating,
+      info.pubYear ?? row.pub_year,
+      doubanId,
+      info.url,
+      Date.now(),
+      row.id,
+    )
+    .run()
+  return { title: info.title, doubanId }
+}
+
+/** 上传后自动匹配：匹配不到 / 出错 / 豆瓣太慢（15s 上限）都只当没有，不拖住上传响应 */
+async function autoSyncDouban(
+  db: D1Database,
+  row: BookRow,
+): Promise<{ title: string; doubanId: string } | null> {
+  const task = doubanSync(db, row, true).catch(() => null)
+  const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 15_000))
+  return Promise.race([task, timeout])
+}
+
+/** 自动匹配的书名比对：归一化后相等，或短标题在分隔符处结束的包含关系（epub 带副标题 / 版次） */
+function titleMatches(doubanTitle: string, localTitle: string): boolean {
+  const a = normalizeTitle(doubanTitle)
+  const b = normalizeTitle(localTitle)
+  if (!a || !b) return false
+  if (a === b) return true
+  return separatedPrefix(doubanTitle, localTitle) || separatedPrefix(localTitle, doubanTitle)
+}
+
+/** short 是 long 的开头一段，且 long 里紧跟分隔符（：/ （/ · 等），避免「三体」误配「三体Ⅱ·黑暗森林」 */
+function separatedPrefix(short: string, long: string): boolean {
+  const s = softTitle(short)
+  if (s.length < 2) return false
+  const l = softTitle(long)
+  if (!l.startsWith(s)) return false
+  return /^[\s:·•,，.。、;；/|\\\-–—_+~([【《<「『"'“‘]/.test(l.slice(s.length))
+}
+
+/** 只统一全半角 / 大小写 / 空白，保留分隔符与括号内容（比对用） */
+function softTitle(value: string): string {
+  return value.normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim()
+}
+
+/** 去掉空白 / 标点 / 符号后比对（忽略“全集”“精装”之类标点差异） */
+function normalizeTitle(value: string): string {
+  return value.normalize('NFKC').toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '')
 }
 
 /** 豆瓣联想搜索（30 分钟缓存）；搜索失败抛 502，由页面提示 */
@@ -427,6 +515,16 @@ function parseDoubanSubject(html: string, id: string): DoubanInfo {
     pubYear: pubdate ? pubdate.slice(0, 20) : null,
     url: `https://book.douban.com/subject/${id}/`,
   }
+}
+
+/**
+ * 上传建条目时的书名：文件名里带《书名》就以书名号内容为准（下载来的文件常带站点前缀 / 作者后缀），
+ * 否则用标签里读到的标题（epub OPF），再退回去掉扩展名的文件名。
+ */
+function titleFromFilename(filename: string, explicit?: string): string {
+  const inner = /《([^》]+)》/.exec(filename)?.[1]?.trim()
+  const fallback = explicit?.trim() || filename.replace(/\.[^.]+$/, '').trim()
+  return (inner || fallback || filename).slice(0, MAX_TITLE)
 }
 
 function text(value: unknown, max: number): string | null {

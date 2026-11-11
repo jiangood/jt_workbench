@@ -198,7 +198,10 @@
   --btn-h-sm: 28px;
   --card-pad: var(--sp-4);
   --sidebar-w: 200px;
+  /* 默认阅读宽度；工具类页面（笔记 / 表格 / 图表 / 书架）改用 --container-max-wide，
+   * 避免宽屏上左右各留几百像素空白 */
   --container-max: 1200px;
+  --container-max-wide: 1680px;
   --table-row-h: 36px;
   --playerbar-h: 56px;
 }
@@ -372,6 +375,8 @@ textarea:focus-visible {
   margin-inline: auto;
   padding: var(--sp-5) var(--sp-6) var(--sp-7);
 }
+/* 宽容器：由路由切换（app.js 里 ROUTES[].wide），单页按内容密度选择宽度 */
+.container.container-wide { max-width: var(--container-max-wide) }
 
 .topbar { display: none }
 .scrim { display: none }
@@ -826,7 +831,9 @@ textarea[aria-invalid="true"] { border-color: var(--danger) }
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
+  transition: border-color var(--dur-fast) ease, box-shadow var(--dur-fast) ease;
 }
+.book-card:hover { border-color: var(--border-strong); box-shadow: var(--shadow-sm) }
 .book-cover {
   position: relative;
   display: flex;
@@ -835,6 +842,12 @@ textarea[aria-invalid="true"] { border-color: var(--danger) }
   aspect-ratio: 3 / 4;
   background: var(--surface-2);
   color: var(--muted-fg);
+}
+.book-cover-ph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: .55;
 }
 .book-cover img {
   display: block;
@@ -847,35 +860,81 @@ textarea[aria-invalid="true"] { border-color: var(--danger) }
   position: absolute;
   top: 8px;
   left: 8px;
+  box-shadow: var(--shadow-sm);
 }
 .book-body {
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: 4px;
-  padding: 10px 12px 12px;
+  gap: 6px;
+  padding: 12px 12px 14px;
 }
 .book-title {
   display: -webkit-box;
   overflow: hidden;
   min-height: 2.7em;
+  margin: 0;
+  font-size: var(--fs-md);
   font-weight: 600;
   line-height: 1.35;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
+.book-by {
+  overflow: hidden;
+  margin: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .book-meta {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
+  gap: 4px 6px;
+  min-width: 0;
 }
+.book-meta .badge { max-width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis }
+.book-rating {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+.book-rating .ico { color: var(--accent) }
 .book-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 6px;
   margin-top: auto;
   padding-top: 8px;
+}
+.book-actions > .btn { width: 100% }
+.book-tools {
+  display: flex;
+  gap: 4px;
+}
+.book-tools .btn {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0;
+}
+.book-tools .btn .ico { margin: 0 }
+/* 次级操作默认幽灵样式：整排图标不抢主按钮，悬停才显形 */
+.book-tools .btn,
+.book-tools .btn.danger {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted-fg);
+}
+.book-tools .btn:hover {
+  border-color: var(--border);
+  background: var(--surface-2);
+  color: var(--fg);
+}
+.book-tools .btn.danger:hover {
+  border-color: transparent;
+  background: var(--danger-wash);
+  color: var(--danger);
 }
 .book-opt-cover {
   flex: 0 0 auto;
@@ -1086,13 +1145,23 @@ body:has(.playerbar:not([hidden])) .note-split {
   gap: var(--sp-2);
   padding: var(--sp-2) var(--sp-3) 0;
 }
-.editor-meta > label { flex: 0 0 auto; font-size: var(--fs-sm) }
-.editor-meta > select {
-  flex: 1 1 auto;
+.editor-meta > .muted { flex: 0 0 auto; font-size: var(--fs-sm) }
+/* 归属只读展示：完整路径，超长省略（title 给全文）；改归属走右上角「更多」 */
+.editor-meta > .editor-folder {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
   min-width: 0;
   max-width: 340px;
-  height: var(--btn-h-sm);
-  padding: 0 8px;
+  color: var(--muted-fg);
+  font-size: var(--fs-sm);
+}
+.editor-meta .editor-folder-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .note-pane-editor > #e-msg { padding: 0 var(--sp-3) }
@@ -1453,6 +1522,77 @@ dialog.xl { max-width: 1100px; width: 94% }
 dialog::backdrop { background: rgba(15, 23, 42, .45) }
 dialog h2, dialog h5 { font-size: var(--fs-lg); font-weight: 650; margin-bottom: var(--sp-3) }
 
+/* 阅读页（#/reader?id=）：独立路由，正文区落在首屏内，长内容只在内部滚动 */
+.reader-bar { display: flex; align-items: center; gap: var(--sp-3); margin-bottom: var(--sp-3); min-width: 0 }
+.reader-bar .reader-title { flex: 1 1 auto; min-width: 0 }
+.reader-bar .page-title {
+  margin: 0;
+  font-size: var(--fs-lg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.reader-bar .page-sub { margin: 2px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.reader-actions { display: flex; flex: 0 0 auto; gap: var(--sp-2) }
+.reader-stage {
+  display: flex;
+  flex-direction: column;
+  height: clamp(420px, calc(100dvh - 160px), 1600px);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+/* 播放条占掉底部一条时同步压缩，免得整页跟着多出滚动 */
+body:has(.playerbar:not([hidden])) .reader-stage {
+  height: clamp(420px, calc(100dvh - 160px - var(--playerbar-h)), 1600px);
+}
+.reader-loading,
+.reader-stage > .empty { padding: var(--sp-5) }
+.reader-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+}
+.reader-view { flex: 1 1 auto; min-height: 0 }
+.reader-view iframe { border: 0 }
+.reader-frame { flex: 1 1 auto; min-height: 0; width: 100%; border: 0 }
+
+/* TXT 阅读器：编码在浏览器端识别，只渲染当前章节（大文件不卡） */
+.reader-stage > .txt-reader { flex: 1 1 auto; min-height: 0; padding: var(--sp-3) }
+.txt-reader { display: flex; flex-direction: column; gap: var(--sp-2) }
+.txt-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  width: 100%;
+  max-width: 60rem;
+  margin-inline: auto;
+}
+.txt-toolbar .txt-toc { width: auto; min-width: 180px; max-width: 46%; height: 32px; padding-top: 0; padding-bottom: 0 }
+.txt-toolbar [data-stat] { white-space: nowrap }
+.txt-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  max-width: 60rem;
+  margin-inline: auto;
+  overflow-y: auto;
+  padding: var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  font-size: 17px;
+  line-height: 1.9;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 2;
+}
+.txt-body:focus-visible { outline: 2px solid var(--border-strong); outline-offset: 2px }
+
 /* 图表容器：固定高度，Chart.js 在弹窗里撑满而不按宽度比例撑高 */
 .chart-box { position: relative; height: min(360px, 60vh) }
 .dlg-foot {
@@ -1670,6 +1810,13 @@ hr.sep { border: 0; border-top: 1px solid var(--border); margin: var(--sp-5) 0 }
   .note-pane-folders, .note-pane-list { max-height: 320px }
 }
 
+/* 宽容器下笔记三栏各放宽一档，剩余空间全给编辑器（窄屏仍走上面的收窄规则） */
+@media (min-width: 1400px) {
+  .container-wide .note-split {
+    grid-template-columns: minmax(180px, 240px) minmax(260px, 380px) minmax(0, 1fr);
+  }
+}
+
 @media (max-width: 640px) {
   /* 书架窄屏两列，封面比例固定，避免整宽翻页过长 */
   .book-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-2) }
@@ -1724,6 +1871,11 @@ hr.sep { border: 0; border-top: 1px solid var(--border); margin: var(--sp-5) 0 }
 
   .mainwrap { overflow: visible }
   .container { padding: var(--sp-4) var(--sp-4) var(--sp-6) }
+  /* 阅读页：手机顶栏 52px 参与文档流，stage 高度把顶栏 / 页头 / 内边距一起扣掉 */
+  .reader-stage { height: max(320px, calc(100dvh - 190px)) }
+  body:has(.playerbar:not([hidden])) .reader-stage {
+    height: max(320px, calc(100dvh - 190px - var(--playerbar-h)));
+  }
 
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)) }
   .stat { padding: var(--sp-3) }
