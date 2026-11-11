@@ -87,6 +87,8 @@ export const zsxqHandler: JobHandler = async (payload, ctx) => {
 export const zsxqGroupsHandler: JobHandler = async (payload, ctx) => {
   const { token } = groupsPayloadSchema.parse(payload)
   const client = new ZsxqClient(token)
+  // 页面保存 token 后会自动触发一次，先随机停顿再打接口，降低撞上 1059 限流的概率
+  await sleep(500 + Math.random() * 1500)
   const data = await client.listGroups(ctx.signal)
   const items = (data.groups ?? []).map((g) => ({ groupId: String(g.group_id), name: g.name ?? null }))
   return { items, summary: `zsxq groups: ${items.length}` }

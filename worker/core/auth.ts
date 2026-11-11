@@ -64,6 +64,28 @@ export function revocationBaseline(): number {
   return Math.floor(Date.now() / 1000) * 1000
 }
 
+/**
+ * 撤销基线的 isolate 内存缓存：鉴权是每个 /api/* 请求的必经路径（含 Range 分段请求），
+ * 每次都查一次 D1 太贵。30s 陈旧 = 改密/重登最多 30s 后生效（本 isolate 内立即失效）。
+ */
+const REVOCATION_TTL_MS = 30_000
+let revocationCache: { at: number; value: number | null } | null = null
+
+async function readRevocation(env: Bindings): Promise<number | null> {
+  const now = Date.now()
+  if (revocationCache && now - revocationCache.at < REVOCATION_TTL_MS) return revocationCache.value
+  try {
+    const row = await env.DB.prepare('SELECT password_changed_at FROM auth_state WHERE id = 1').first<{
+      password_changed_at: number | null
+    }>()
+    const value = row?.password_changed_at ?? null
+    revocationCache = { at: now, value }
+    return value
+  } catch {
+    return null
+  }
+}
+
 async function verifyCredential(env: Bindings, username: string, password: string): Promise<boolean> {
   const cred = await readCredential(env)
   if (!cred?.pwd_hash || !cred.pwd_salt) return false
@@ -228,6 +250,7 @@ export async function changePassword(c: Context<Env>): Promise<Response> {
   const username = cred?.username ?? 'admin'
   const nextSalt = randomHex()
   const nextHash = await hashPassword(newPassword, nextSalt)
+  const baseline = revocationBaseline()
   try {
     await c.env.DB
       .prepare(
@@ -236,8 +259,10 @@ export async function changePassword(c: Context<Env>): Promise<Response> {
          ON CONFLICT (id) DO UPDATE SET password_changed_at = excluded.password_changed_at,
            username = excluded.username, pwd_hash = excluded.pwd_hash, pwd_salt = excluded.pwd_salt`,
       )
-      .bind(revocationBaseline(), username, nextHash, nextSalt)
+      .bind(baseline, username, nextHash, nextSalt)
       .run()
+    // 本 isolate 立即用新基线；其他 isolate 最多 30s 后跟上
+    revocationCache = { at: Date.now(), value: baseline }
   } catch (err) {
     console.error('change password failed:', String(err))
     return fail(500, 500, 'auth schema not ready (run d1 migrations)')
@@ -258,11 +283,9 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
   const payload = await verifyJwt(secret, getCookie(c, COOKIE_NAME))
   if (!payload) return fail(401, 401, 'unauthorized')
 
-  const row = await c.env.DB.prepare('SELECT password_changed_at FROM auth_state WHERE id = 1').first<{
-    password_changed_at: number | null
-  }>()
+  const row = await readRevocation(c.env)
   // 单位统一：iat（秒）× 1000 vs password_changed_at（毫秒）
-  if (row?.password_changed_at && payload.iat * 1000 < row.password_changed_at) {
+  if (row && payload.iat * 1000 < row) {
     return fail(401, 401, 'session revoked')
   }
 

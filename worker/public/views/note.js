@@ -1,6 +1,9 @@
 import { api, esc, icon, rerender, run, showDialog, toast } from '../lib.js'
+import { enqueue } from '../upload.js'
 
 let currentId = null
+/** 视图是否还是当前页：切页后附件上传完成别再刷旧视图 */
+let alive = true
 /** 当前选中的目录：'all' | 'none'（未分类）| 数字字符串 */
 let selectedFolder = 'all'
 /** 展开的目录 id（刷新后保留） */
@@ -21,6 +24,7 @@ let searchTimer = 0
 let closeMoreMenu = null
 
 export async function render(main, params = {}) {
+  alive = true
   searchQuery = ''
   searchResults = []
   searchSeq += 1
@@ -637,10 +641,10 @@ function openEditor(main, n) {
     <label class="sr-only" for="e-content">正文</label>
     <textarea class="field" id="e-content" rows="14" placeholder="正文（原文存储，展示即所见）">${esc(n?.content ?? '')}</textarea>
     <div class="editor-foot">
-      <label class="btn sm mb-0">
+      <button class="btn sm mb-0" type="button" id="e-file-btn" ${n ? '' : 'disabled title="先保存笔记再传附件"'}>
         ${icon('upload')}附件
-        <input class="sr-only" type="file" id="e-file" multiple>
-      </label>
+      </button>
+      <input class="sr-only" type="file" id="e-file" multiple tabindex="-1" aria-label="选择附件">
       <div class="editor-attaches" id="e-attaches">${renderAttaches(n)}</div>
     </div>`
 
@@ -760,32 +764,29 @@ function openEditor(main, n) {
     }
   }
 
-  editor.querySelector('#e-file').onchange = async (e) => {
+  // 附件走公共上传队列：面板在 shell 里，切页 / 重绘编辑器都不影响已发出的请求
+  const fileInput = editor.querySelector('#e-file')
+  editor.querySelector('#e-file-btn').onclick = () => fileInput.click()
+  fileInput.onchange = (e) => {
+    const files = [...e.target.files]
+    e.target.value = ''
+    if (!files.length) return
     if (!n) {
       toast('先保存笔记再传附件', true)
-      e.target.value = ''
       return
     }
-    const files = [...e.target.files]
-    let failed = 0
-    for (const file of files) {
-      try {
-        const r = await fetch(`/api/note/attach?noteId=${n.id}&filename=${encodeURIComponent(file.name)}`, {
-          method: 'POST',
-          headers: { 'content-type': file.type },
-          body: file,
-        })
-        if (!r.ok) throw new Error(`附件上传失败：${file.name}（HTTP ${r.status}）`)
-      } catch (err) {
-        failed += 1
-        toast(err.message, true)
-      }
-    }
-    e.target.value = ''
-    if (!failed) toast(`已上传 ${files.length} 个附件`)
-    await rerender(refreshAll, main)
-    const loaded = await run(null, () => api(`/api/note/${n.id}`))
-    if (loaded.ok) openEditor(main, loaded.data.note)
+    enqueue(files, {
+      title: '上传附件',
+      params: { noteId: n.id },
+      url: (qs) => `/api/note/attach?${qs}`,
+      contentType: (file) => file.type || 'application/octet-stream',
+      onSettled: async (summary) => {
+        if (!alive || !summary.ok) return
+        await rerender(refreshAll, main)
+        const loaded = await run(null, () => api(`/api/note/${n.id}`))
+        if (loaded.ok) openEditor(main, loaded.data.note)
+      },
+    })
   }
 
   editor.querySelector('#e-del').onclick = async () => {
@@ -802,6 +803,7 @@ function openEditor(main, n) {
 }
 
 export function destroy() {
+  alive = false
   closeMoreMenu?.()
   clearTimeout(searchTimer)
   searchSeq += 1

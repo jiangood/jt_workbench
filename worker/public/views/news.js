@@ -1,4 +1,5 @@
-import { api, esc, icon, loadScriptOnce, rerender, run, scrollToTop, showDialog, toast } from '../lib.js'
+import { api, esc, icon, loadScriptOnce, rerender, rerenderKeepingFocus, run, scrollToTop, showDialog, toast } from '../lib.js'
+import { emptyState } from '../ui.js'
 
 const PAGE_SIZE = 30
 let page = 1
@@ -47,7 +48,7 @@ export async function render(main) {
         <p class="page-sub">共 ${esc(itemData.total)} 条 · <span id="unread-count">未读 ${unreadCount}</span> · 正文在浏览器端消毒后展示</p>
       </div>
       <div class="page-actions">
-        <button class="btn sm" id="btn-unread" aria-pressed="${onlyUnread}">${onlyUnread ? '显示全部' : '只看未读'}</button>
+        <button class="btn sm" id="btn-unread" data-focus-key="unread" aria-pressed="${onlyUnread}">${onlyUnread ? '显示全部' : '只看未读'}</button>
         <button class="btn sm" id="btn-sources">${icon('news')}订阅源</button>
         <button class="btn sm" id="btn-blocks">${icon('close')}屏蔽词</button>
       </div>
@@ -75,13 +76,13 @@ export async function render(main) {
           <div class="small item-preview mt-1" data-id="${esc(i.id)}"></div>
         </div>`,
           )
-          .join('') || `<div class="empty">${onlyUnread ? '没有未读资讯' : '暂无内容（等待抓取任务执行）'}</div>`
+          .join('') || emptyState(onlyUnread ? '没有未读资讯' : '暂无内容（等待抓取任务执行）')
       }
     </div>
     <nav class="mt-3 flex center">
-      <button class="btn sm" id="prev" ${page <= 1 ? 'disabled' : ''}>上一页</button>
+      <button class="btn sm" id="prev" data-focus-key="prev" ${page <= 1 ? 'disabled' : ''}>上一页</button>
       <span class="small muted">第 ${page} 页</span>
-      <button class="btn sm" id="next" ${page * PAGE_SIZE >= itemData.total ? 'disabled' : ''}>下一页</button>
+      <button class="btn sm" id="next" data-focus-key="next" ${page * PAGE_SIZE >= itemData.total ? 'disabled' : ''}>下一页</button>
     </nav>`
 
   // 正文预览：原文已在列表返回，浏览器端 DOMPurify 消毒后注入
@@ -93,7 +94,7 @@ export async function render(main) {
   // 翻页后回顶：否则列表重新渲染时用户还停在上一页的底部
   const go = async (delta) => {
     page += delta
-    await rerender(render, main)
+    await rerenderKeepingFocus(render, main)
     scrollToTop()
   }
   main.querySelector('#prev').onclick = () => go(-1)
@@ -101,7 +102,7 @@ export async function render(main) {
   main.querySelector('#btn-unread').onclick = async () => {
     onlyUnread = !onlyUnread
     page = 1
-    await rerender(render, main)
+    await rerenderKeepingFocus(render, main)
     scrollToTop()
   }
   main.querySelector('#btn-sources').onclick = () => showSources(main)

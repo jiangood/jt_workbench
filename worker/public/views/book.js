@@ -1,7 +1,18 @@
-import { api, esc, icon, loadScriptOnce, rerender, run, showDialog, toast } from '../lib.js'
+import { api, esc, icon, loadScriptOnce, rerender, rerenderKeepingFocus, run, showDialog, toast } from '../lib.js'
+// 组件叫 filterGroup，和「分组」业务概念无关：本页只用它渲染阅读状态筛选条
+import { emptyState, filterGroup as filterButtons, setupFilter } from '../ui.js'
+import { enqueue } from '../upload.js'
 
 let filterStatus = 'all'
-let filterCategory = ''
+/** 视图是否还是当前页：切页后不要再用旧视图的 main 去刷接口 */
+let alive = true
+
+const STATUS_TABS = [
+  { value: 'all', label: '全部' },
+  { value: 'unread', label: '待读' },
+  { value: 'reading', label: '阅读中' },
+  { value: 'read', label: '已读' },
+]
 
 const STATUS = {
   unread: { label: '待读', cls: 'muted' },
@@ -15,77 +26,13 @@ const statusBadge = (s) => `<span class="badge ${STATUS[s]?.cls ?? 'muted'}">${s
 /** 豆瓣图床带 Referer 防盗链，封面统一走 Worker 代理 */
 const coverUrl = (url) => (url ? `/api/book/cover?url=${encodeURIComponent(url)}` : '')
 
-export async function render(main) {
-  // 上传时用 JSZip 读 epub 元数据；阅读器已独立成 #/reader 页，按需自己加载 epub.js
-  await loadScriptOnce('/vendor/jszip.min.js')
-
-  const data = await api('/api/book/list')
-  const books = data.books ?? []
-
-  const counts = { all: books.length, unread: 0, reading: 0, read: 0 }
-  const catCounts = new Map()
-  for (const b of books) {
-    counts[b.status] = (counts[b.status] ?? 0) + 1
-    if (b.category) catCounts.set(b.category, (catCounts.get(b.category) ?? 0) + 1)
-  }
-  const categories = [...catCounts.keys()].sort((a, b) => a.localeCompare(b, 'zh'))
-  if (filterCategory && !catCounts.has(filterCategory)) filterCategory = ''
-  if (filterStatus !== 'all' && !counts[filterStatus]) filterStatus = 'all'
-
-  const shown = books.filter(
-    (b) => (filterStatus === 'all' || b.status === filterStatus) && (!filterCategory || b.category === filterCategory),
-  )
-
-  main.innerHTML = `
-    <div class="page-head">
-      <div>
-        <h1 class="page-title">书架</h1>
-        <p class="page-sub">豆瓣索引先建条目，有文件后再上传 · 上传后自动匹配豆瓣信息 · 区分待读 / 阅读中 / 已读</p>
-      </div>
-      <div class="page-actions">
-        <button class="btn primary" id="add-book">${icon('plus')}添加图书</button>
-        <label class="btn">
-          ${icon('upload')}上传文件
-          <input class="sr-only" type="file" id="up" accept=".epub,.pdf,.txt" multiple>
-        </label>
-      </div>
-    </div>
-    <div id="up-progress" class="small muted mb-2" role="status" aria-live="polite"></div>
-    <div class="tabs" role="tablist" aria-label="阅读状态">
-      ${[
-        ['all', '全部'],
-        ['unread', '待读'],
-        ['reading', '阅读中'],
-        ['read', '已读'],
-      ]
-        .map(
-          ([value, label]) => `<button class="tab" type="button" role="tab" data-status="${value}"
-            aria-selected="${filterStatus === value}">${label} <span class="muted">${counts[value] ?? 0}</span></button>`,
-        )
-        .join('')}
-    </div>
-    ${
-      categories.length
-        ? `<div class="category-chips" aria-label="分类筛选">
-            <button class="pill" type="button" data-cat="" aria-pressed="${!filterCategory}">全部分类</button>
-            ${categories
-              .map(
-                (c) => `<button class="pill" type="button" data-cat="${esc(c)}"
-                  aria-pressed="${filterCategory === c}">${esc(c)} <span class="muted">${catCounts.get(c)}</span></button>`,
-              )
-              .join('')}
-          </div>`
-        : ''
-    }
-    <div class="book-grid">
-      ${
-        shown
-          .map((b) => {
-            const cover = coverUrl(b.cover)
-            const title = b.title || b.filename
-            const meta = [b.author || '未知作者', b.pubYear].filter(Boolean).join(' · ')
-            const label = esc(title)
-            return `
+/** 单张书卡：分组由外层 section 表达，卡片内不再重复分组徽标 */
+function bookCard(b) {
+  const cover = coverUrl(b.cover)
+  const title = b.title || b.filename
+  const meta = [b.author || '未知作者', b.pubYear].filter(Boolean).join(' · ')
+  const label = esc(title)
+  return `
         <article class="book-card">
           <div class="book-cover${cover ? '' : ' no-cover'}">
             <span class="book-cover-ph">${icon('book', 36)}</span>
@@ -93,12 +40,15 @@ export async function render(main) {
             ${statusBadge(b.status)}
           </div>
           <div class="book-body">
-            <h2 class="book-title" title="${label}">${esc(title)}</h2>
+            <h3 class="book-title" title="${label}">${esc(title)}</h3>
             <p class="book-by small muted" title="${esc(meta)}">${esc(meta)}</p>
             <div class="book-meta">
-              ${b.category ? `<span class="badge">${esc(b.category)}</span>` : '<span class="badge muted">未分类</span>'}
               ${b.rating ? `<span class="book-rating small muted">${icon('star', 12)}${esc(b.rating)}</span>` : ''}
-              ${b.hasFile ? `<span class="badge muted">${esc((b.fmt || '').toUpperCase())}</span>` : '<span class="badge warn">待上传</span>'}
+              ${
+                b.hasFile
+                  ? `<span class="badge muted">${esc((b.fmt || '').toUpperCase())}</span>`
+                  : '<span class="badge warn">待上传</span>'
+              }
             </div>
             <div class="book-actions">
               ${
@@ -113,8 +63,8 @@ export async function render(main) {
                         aria-label="同步豆瓣信息《${label}》">${icon('refresh', 14)}</button>
                 ${
                   b.hasFile
-                    ? `<a class="btn sm" href="/api/book/read/${esc(b.id)}" target="_blank" rel="noopener"
-                          title="打开原文件" aria-label="打开原文件《${label}》">${icon('external', 14)}</a>`
+                    ? `<a class="btn sm" href="/api/book/read/${esc(b.id)}?v=${esc(b.fileVersion ?? b.updatedAt)}" download
+                          title="下载原文件" aria-label="下载原文件《${label}》">${icon('download', 14)}</a>`
                     : ''
                 }
                 <button class="btn sm danger" data-d="${esc(b.id)}" title="删除" aria-label="删除《${label}》">${icon('trash', 14)}</button>
@@ -122,54 +72,97 @@ export async function render(main) {
             </div>
           </div>
         </article>`
-          })
-          .join('') || `<div class="empty">${books.length ? '当前筛选下还没有书' : '书架空空如也，点「添加图书」从豆瓣建条目，或直接上传 epub / pdf / txt'}</div>`
-      }
-    </div>`
+}
+
+export async function render(main) {
+  alive = true
+  // jszip 只有「上传 epub 读元数据」用得到，改到 parseEpubMeta 里按需加载：
+  // 之前它挡在书架首次渲染前面，跨境链路上白等 1 秒多
+  const data = await api('/api/book/list')
+  const books = data.books ?? []
+
+  const counts = { all: books.length, unread: 0, reading: 0, read: 0 }
+  for (const b of books) counts[b.status] = (counts[b.status] ?? 0) + 1
+  if (filterStatus !== 'all' && !counts[filterStatus]) filterStatus = 'all'
+
+  // 分组候选：添加 / 编辑弹窗的 datalist 与展示分区共用同一份名字（NULL = 未分组，不算一组）
+  const groups = [...new Set(books.map((b) => b.category).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh'))
+
+  // 先按阅读状态筛，再按分组归堆：同名分组排在一起，未分组固定放最后，空分区不渲染
+  const shown = books.filter((b) => filterStatus === 'all' || b.status === filterStatus)
+  const sections = [
+    ...groups.map((name) => ({ name, books: shown.filter((b) => b.category === name) })),
+    { name: '', books: shown.filter((b) => !b.category) },
+  ].filter((section) => section.books.length)
+  // 只有「未分组」一堆时不显示分区标题，避免一条孤零零的分组名
+  const showGroupHead = !(sections.length === 1 && !sections[0].name)
+
+  main.innerHTML = `
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">书架</h1>
+        <p class="page-sub">豆瓣索引先建条目，有文件后再上传 · 上传后自动匹配豆瓣信息 · 按分组归架，区分待读 / 阅读中 / 已读</p>
+      </div>
+      <div class="page-actions">
+        <button class="btn primary" id="add-book">${icon('plus')}添加图书</button>
+        <label class="btn">
+          ${icon('upload')}上传文件
+          <input class="sr-only" type="file" id="up" accept=".epub,.pdf,.txt" multiple>
+        </label>
+      </div>
+    </div>
+    ${filterButtons({
+      name: 'status',
+      label: '阅读状态',
+      active: filterStatus,
+      items: STATUS_TABS.map((s) => ({ ...s, count: counts[s.value] ?? 0 })),
+    })}
+    ${
+      shown.length
+        ? `<div class="book-groups">
+            ${sections
+              .map(
+                (section, i) => `<section class="book-group"${
+                  showGroupHead ? ` aria-labelledby="book-group-${i}"` : ''
+                }>
+              ${
+                showGroupHead
+                  ? `<div class="book-group-head">
+                <h2 class="book-group-title" id="book-group-${i}">${section.name ? esc(section.name) : '未分组'}</h2>
+                <span class="tab-count">${section.books.length}</span>
+              </div>`
+                  : ''
+              }
+              <div class="book-grid">${section.books.map(bookCard).join('')}</div>
+            </section>`,
+              )
+              .join('')}
+          </div>`
+        : emptyState(
+            books.length
+              ? '当前筛选下还没有书'
+              : '书架空空如也，点「添加图书」从豆瓣建条目，或直接上传 epub / pdf / txt',
+          )
+    }`
 
   // 封面加载失败（豆瓣限流 / 下架）时退回占位图标
   main.querySelectorAll('.book-cover img').forEach((img) => {
     img.addEventListener('error', () => img.closest('.book-cover')?.classList.add('no-cover'))
   })
 
-  main.querySelectorAll('[data-status]').forEach((b) => {
-    b.onclick = () => {
-      filterStatus = b.dataset.status
-      rerender(render, main)
-    }
-  })
-  main.querySelectorAll('[data-cat]').forEach((b) => {
-    b.onclick = () => {
-      filterCategory = b.dataset.cat
-      rerender(render, main)
-    }
+  // 状态筛选：重绘整页，但焦点要留在刚点的按钮上（data-focus-key）
+  setupFilter(main.querySelector('[data-filter-group="status"]'), (value) => {
+    filterStatus = value
+    rerenderKeepingFocus(render, main)
   })
 
-  main.querySelector('#add-book').onclick = () => openAddDialog(main, categories)
+  main.querySelector('#add-book').onclick = () => openAddDialog(main, groups)
 
-  main.querySelector('#up').onchange = async (e) => {
-    const prog = main.querySelector('#up-progress')
+  main.querySelector('#up').onchange = (e) => {
     const files = [...e.target.files]
-    let failed = 0
-    let synced = 0
-    for (const file of files) {
-      prog.textContent = `解析 ${file.name} ...`
-      const meta = await parseEpubMeta(file)
-      prog.textContent = `上传并匹配豆瓣 ${file.name} ...`
-      try {
-        const data = await uploadFile(file, { ...meta, category: filterCategory })
-        if (data?.douban) synced += 1
-      } catch (err) {
-        failed += 1
-        toast(err.message, true)
-      }
-    }
-    prog.textContent = ''
     e.target.value = ''
-    if (files.length > failed) {
-      toast(`已上传 ${files.length - failed} 本${synced ? `，其中 ${synced} 本已同步豆瓣信息` : ''}`)
-    }
-    await rerender(render, main)
+    if (!files.length) return
+    enqueue(files, uploadOptions(main))
   }
 
   main.querySelectorAll('[data-upload]').forEach((b) => {
@@ -178,12 +171,12 @@ export async function render(main) {
   main.querySelectorAll('[data-e]').forEach((b) => {
     b.onclick = () => {
       const row = books.find((x) => String(x.id) === b.dataset.e)
-      if (row) openEditDialog(row, main, categories)
+      if (row) openEditDialog(row, main, groups)
     }
   })
   main.querySelectorAll('[data-sync]').forEach((b) => {
     b.onclick = async () => {
-      if (!confirm('用豆瓣信息覆盖书名、作者、封面、简介和评分？分类与阅读状态不受影响。')) return
+      if (!confirm('用豆瓣信息覆盖书名、作者、封面、简介和评分？分组与阅读状态不受影响。')) return
       const res = await run(b, () => api(`/api/book/${b.dataset.sync}/sync`, { method: 'POST' }))
       if (!res.ok) return
       toast(`已同步：${res.data?.title || '豆瓣信息'}`)
@@ -203,7 +196,7 @@ export async function render(main) {
 
 /* ---------------- 豆瓣索引：添加 ---------------- */
 
-function openAddDialog(main, categories) {
+function openAddDialog(main, groups) {
   const { close, body } = showDialog(
     `<h2>添加图书</h2>
      <label class="form-label" for="book-q">豆瓣搜索</label>
@@ -231,10 +224,10 @@ function openAddDialog(main, categories) {
        <img class="cover-preview" id="book-cover-preview" alt="" hidden>
        <div class="row g-2 mt-2">
          <div>
-           <label class="form-label" for="book-category">分类</label>
-           <input class="field" id="book-category" list="book-cat-list" maxlength="50"
+           <label class="form-label" for="book-group">分组</label>
+           <input class="field" id="book-group" list="book-group-list" maxlength="50"
                   placeholder="如 小说 / 技术 / 历史" autocomplete="off">
-           <datalist id="book-cat-list">${categories.map((c) => `<option value="${esc(c)}"></option>`).join('')}</datalist>
+           <datalist id="book-group-list">${groups.map((c) => `<option value="${esc(c)}"></option>`).join('')}</datalist>
          </div>
          <div>
            <label class="form-label" for="book-status">阅读状态</label>
@@ -262,7 +255,7 @@ function openAddDialog(main, categories) {
   const authorEl = body.querySelector('#book-author')
   const coverEl = body.querySelector('#book-cover')
   const coverPreview = body.querySelector('#book-cover-preview')
-  const categoryEl = body.querySelector('#book-category')
+  const groupEl = body.querySelector('#book-group')
   const statusEl = body.querySelector('#book-status')
   const picked = body.querySelector('#book-picked')
   watchCoverInput(coverEl, coverPreview)
@@ -353,7 +346,7 @@ function openAddDialog(main, categories) {
     say('')
     closeList()
     paintPicked()
-    categoryEl.focus()
+    groupEl.focus()
 
     const my = ++detailSeq
     api(`/api/book/douban/${o.doubanId}`)
@@ -464,7 +457,7 @@ function openAddDialog(main, categories) {
     const payload = {
       title,
       author: authorEl.value.trim() || null,
-      category: categoryEl.value.trim() || null,
+      category: groupEl.value.trim() || null,
       status: statusEl.value,
       cover: coverEl.value.trim() || null,
       summary: selected?.summary || null,
@@ -508,7 +501,7 @@ function watchCoverInput(input, img) {
   paint()
 }
 
-function openEditDialog(row, main, categories) {
+function openEditDialog(row, main, groups) {
   const { close, body } = showDialog(
     `<h2>编辑图书</h2>
      <form id="book-edit-form" novalidate>
@@ -522,10 +515,10 @@ function openEditDialog(row, main, categories) {
        <img class="cover-preview" id="edit-cover-preview" alt="" hidden>
        <div class="row g-2 mt-2">
          <div>
-           <label class="form-label" for="edit-category">分类</label>
-           <input class="field" id="edit-category" list="edit-cat-list" maxlength="50"
-                  placeholder="未分类" value="${esc(row.category || '')}">
-           <datalist id="edit-cat-list">${categories.map((c) => `<option value="${esc(c)}"></option>`).join('')}</datalist>
+           <label class="form-label" for="edit-group">分组</label>
+           <input class="field" id="edit-group" list="edit-group-list" maxlength="50"
+                  placeholder="未分组" value="${esc(row.category || '')}">
+           <datalist id="edit-group-list">${groups.map((c) => `<option value="${esc(c)}"></option>`).join('')}</datalist>
          </div>
          <div>
            <label class="form-label" for="edit-status">阅读状态</label>
@@ -557,7 +550,7 @@ function openEditDialog(row, main, categories) {
       title,
       author: body.querySelector('#edit-author').value.trim() || null,
       cover: body.querySelector('#edit-cover').value.trim() || null,
-      category: body.querySelector('#edit-category').value.trim() || null,
+      category: body.querySelector('#edit-group').value.trim() || null,
       status: body.querySelector('#edit-status').value,
     }
     const res = await run(form.querySelector('button[type="submit"]'), () =>
@@ -572,45 +565,40 @@ function openEditDialog(row, main, categories) {
   body.querySelector('#edit-title').focus()
 }
 
+/** 书架上传的公共选项：批量选文件与单本补传走同一个队列 */
+function uploadOptions(main, params = {}) {
+  return {
+    title: '上传图书文件',
+    params,
+    prepare: (file) => parseEpubMeta(file),
+    url: (qs) => `/api/book/upload?${qs}`,
+    // 后端给 epub/pdf/txt 统一按字节流处理，不信任浏览器猜的 MIME
+    contentType: () => 'application/octet-stream',
+    // 字节发完后 Worker 还要同步豆瓣，进度条会停在 100%，必须显式告诉用户还在处理
+    processingLabel: '处理中（匹配豆瓣信息…）',
+    onSettled: (summary) => {
+      if (alive && summary.ok) rerender(render, main)
+    },
+  }
+}
+
 function pickFile(bookId, main) {
   const input = document.createElement('input')
   input.type = 'file'
   input.accept = '.epub,.pdf,.txt'
-  input.onchange = async () => {
+  input.onchange = () => {
     const file = input.files?.[0]
     if (!file) return
-    try {
-      const data = await uploadFile(file, { bookId })
-      toast(data?.douban ? `已上传：${file.name}（已同步豆瓣信息）` : `已上传：${file.name}`)
-      await rerender(render, main)
-    } catch (err) {
-      toast(err.message, true)
-    }
+    enqueue([file], uploadOptions(main, { bookId }))
   }
   input.click()
-}
-
-async function uploadFile(file, extra = {}) {
-  const qs = new URLSearchParams({ filename: file.name })
-  for (const [key, value] of Object.entries(extra)) {
-    if (value !== null && value !== undefined && value !== '') qs.set(key, value)
-  }
-  const res = await fetch(`/api/book/upload?${qs}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/octet-stream' },
-    body: file,
-  })
-  const env = await res.json().catch(() => null)
-  if (!res.ok || env?.code !== 0) {
-    throw new Error(env?.message || `上传失败：${file.name}（HTTP ${res.status}）`)
-  }
-  return env.data
 }
 
 /** epub 元数据：浏览器端 JSZip 读 OPF（v3 决策 #9）；失败返回空对象，用文件名兜底 */
 async function parseEpubMeta(file) {
   if (!file.name.toLowerCase().endsWith('.epub')) return {}
   try {
+    await loadScriptOnce('/vendor/jszip.min.js')
     const zip = await window.JSZip.loadAsync(file)
     const containerXml = await zip.file('META-INF/container.xml')?.async('text')
     const opfPath = containerXml?.match(/full-path="([^"]+)"/)?.[1]
@@ -625,5 +613,6 @@ async function parseEpubMeta(file) {
 }
 
 export function destroy() {
+  alive = false
   document.getElementById('dlg-body').innerHTML = ''
 }

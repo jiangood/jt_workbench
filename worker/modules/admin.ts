@@ -21,6 +21,31 @@ import { parseOffsets } from '../core/recurrence'
 import { findField, getConfigs, listConfig, resetConfig, setConfig, validateConfig } from '../core/config'
 
 const ONLINE_MS = 30 * 60_000 // 3× poll 间隔容错（v4.6）
+const EXPORT_WINDOW_MS = 7 * 86400_000 // 与「任务运行」页一致：最近 7 天
+const EXPORT_LIMIT = 300 // 失败记录上限（防止一次导出过大）
+
+const SECRET_FIELD = /token|secret|passw|api[-_]?key|authorization|cookie/i
+
+/** payload 脱敏：导出文件可能被拿去给 AI 分析，密钥类字段一律打码 */
+function redactPayload(raw: string | null): unknown {
+  if (!raw) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return raw
+  }
+  const walk = (value: unknown, depth = 0): unknown => {
+    if (depth > 5 || value === null || typeof value !== 'object') return value
+    if (Array.isArray(value)) return value.map((item) => walk(item, depth + 1))
+    const out: Record<string, unknown> = {}
+    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = SECRET_FIELD.test(key) ? '***' : walk(val, depth + 1)
+    }
+    return out
+  }
+  return walk(parsed)
+}
 
 async function readBody<T>(c: Context<Env>): Promise<T> {
   try {
@@ -60,6 +85,20 @@ async function nodesPayload(env: Env['Bindings']) {
       heldJobs: heldMap.get(r.node_id) ?? 0,
     }
   })
+}
+
+/** 任务类型 → 可读名称：运行列表只显示 #id 不便于追踪，未知类型回落原始 type */
+const JOB_TYPE_LABEL: Record<string, string> = {
+  rss_fetch: '资讯抓取',
+  stock_eod: '收盘行情',
+  zsxq_sync: '星球同步',
+  zsxq_groups: '星球列表',
+}
+
+function jobDisplayName(jobId: number, type: string | null, sourceName: string | null): string {
+  const label = (type && JOB_TYPE_LABEL[type]) || type || `任务 #${jobId}`
+  // RSS 任务按源一行，带上源名才能区分同类型的多个任务
+  return sourceName ? `${label} · ${sourceName}` : label
 }
 
 export const admin = new Hono<Env>()
@@ -175,13 +214,85 @@ admin.get('/nodes', async (c) => {
   const [nodes, runs] = await Promise.all([
     nodesPayload(c.env),
     c.env.DB.prepare(
-      `SELECT r.job_id, r.ok, r.message, r.ms, r.run_at, r.node_id, r.agent_version
-       FROM job_run r WHERE r.run_at > ? ORDER BY r.run_at DESC LIMIT 50`,
+      `SELECT r.job_id, r.ok, r.message, r.ms, r.run_at, r.node_id, r.agent_version,
+              j.type AS job_type, s.name AS source_name
+       FROM job_run r
+       LEFT JOIN job j ON j.id = r.job_id
+       LEFT JOIN news_source s
+         ON j.type = 'rss_fetch'
+        AND s.id = json_extract(CASE WHEN json_valid(j.payload) THEN j.payload ELSE '{}' END, '$.sourceId')
+       WHERE r.run_at > ? ORDER BY r.run_at DESC LIMIT 50`,
     )
       .bind(now - 7 * 86400_000)
-      .all(),
+      .all<{
+        job_id: number
+        ok: number
+        message: string | null
+        ms: number | null
+        run_at: number
+        node_id: string | null
+        agent_version: string | null
+        job_type: string | null
+        source_name: string | null
+      }>(),
   ])
-  return ok({ nodes, recentRuns: runs.results ?? [] })
+  return ok({
+    nodes,
+    recentRuns: (runs.results ?? []).map((r) => ({
+      ...r,
+      job_name: jobDisplayName(r.job_id, r.job_type, r.source_name),
+    })),
+  })
+})
+
+/**
+ * 任务失败导出（「任务运行」页按钮）：最近 7 天失败记录 + 对应任务当前配置。
+ * 只读、仅管理员；payload 里 token/密钥字段脱敏后返回，前端拼成 Markdown 下载。
+ */
+admin.get('/runs/export', async (c) => {
+  const now = Date.now()
+  const since = now - EXPORT_WINDOW_MS
+  const [runs, jobs] = await Promise.all([
+    c.env.DB.prepare(
+      `SELECT job_id, message, ms, run_at, node_id, agent_version
+       FROM job_run WHERE ok = 0 AND run_at > ? ORDER BY run_at DESC LIMIT ${EXPORT_LIMIT}`,
+    )
+      .bind(since)
+      .all<{
+        job_id: number
+        message: string | null
+        ms: number | null
+        run_at: number
+        node_id: string | null
+        agent_version: string | null
+      }>(),
+    c.env.DB.prepare(
+      `SELECT id, type, payload, cron, enabled, status, attempts, next_run_at, last_run_at
+       FROM job WHERE id IN (SELECT job_id FROM job_run WHERE ok = 0 AND run_at > ?)`,
+    )
+      .bind(since)
+      .all<{
+        id: number
+        type: string
+        payload: string | null
+        cron: string | null
+        enabled: number
+        status: string
+        attempts: number
+        next_run_at: number | null
+        last_run_at: number | null
+      }>(),
+  ])
+
+  const failures = runs.results ?? []
+  return ok({
+    exportedAt: now,
+    windowFrom: since,
+    limit: EXPORT_LIMIT,
+    truncated: failures.length === EXPORT_LIMIT,
+    failures,
+    jobs: (jobs.results ?? []).map((job) => ({ ...job, payload: redactPayload(job.payload) })),
+  })
 })
 
 /** 参数中心（D1 app_config，决策 #23）：列表 / 保存 / 随机重置；明文只给已登录管理员 */

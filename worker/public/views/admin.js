@@ -1,9 +1,12 @@
-import { api, closeModal, esc, fmtTime, icon, showDialog } from '../lib.js'
+import { api, closeModal, downloadText, esc, fmtTime, icon, run, showDialog, toast } from '../lib.js'
+import { setupTabs, tablist } from '../ui.js'
 
 // 重置 JWT 密钥后跳登录页的定时器：切页要清掉，避免 destroy 之后还跳转
 let redirectTimer = 0
 // 弹窗里等待节点首次接入的轮询定时器（切页 / 关弹窗 / 上线都要停）
 let installPollTimer = 0
+// tab 接线（方向键 / ?tab= 同步）的拆除函数
+let stopTabs = null
 
 const TABS = [
   { id: 'nodes', label: '计算节点' },
@@ -11,6 +14,99 @@ const TABS = [
   { id: 'config', label: '参数与密钥' },
   { id: 'account', label: '账号安全' },
 ]
+
+const pad2 = (n) => String(n).padStart(2, '0')
+
+/** 导出用绝对本地时间：比 toLocaleString 更明确，方便 AI 对齐时间线 */
+function stamp(ts) {
+  if (!ts) return '—'
+  const d = new Date(ts)
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
+}
+
+const mdCell = (value) => String(value ?? '—').replace(/\|/g, '\\|')
+
+/** 代码块：正文里已有 ``` 时加长围栏，避免把导出文档截断 */
+function mdCode(text, lang = '') {
+  const body = String(text ?? '').replace(/\r\n/g, '\n')
+  const fence = body.includes('```') ? '````' : '```'
+  return `${fence}${lang}\n${body}\n${fence}`
+}
+
+function payloadText(payload) {
+  if (payload === null || payload === undefined) return '（无 payload）'
+  if (typeof payload === 'string') return payload || '（空）'
+  try {
+    return JSON.stringify(payload, null, 2)
+  } catch {
+    return String(payload)
+  }
+}
+
+/** 把 /api/admin/runs/export 的数据拼成一份可直接交给 AI 的 Markdown */
+function buildErrorReport(data) {
+  const jobMap = new Map((data.jobs ?? []).map((job) => [job.id, job]))
+  const counts = new Map()
+  for (const f of data.failures) {
+    const type = jobMap.get(f.job_id)?.type || `job #${f.job_id}`
+    counts.set(type, (counts.get(type) ?? 0) + 1)
+  }
+
+  const out = [
+    '# jt-workbench 任务失败导出',
+    '',
+    `- 导出时间：${stamp(data.exportedAt)}（Asia/Shanghai）`,
+    `- 统计窗口：${stamp(data.windowFrom)} ~ ${stamp(data.exportedAt)}（最近 7 天）`,
+    `- 失败次数：${data.failures.length}${data.truncated ? `（达到上限 ${data.limit} 条，仅含最近的记录）` : ''}`,
+    `- 涉及任务：${[...counts].map(([type, n]) => `${type} × ${n}`).join('、') || '无'}`,
+    '',
+    '> 错误信息由计算节点上报（最多 500 字）；payload 中的 token / 密钥字段已脱敏为 ***。',
+    '',
+    '## 失败明细（按时间倒序）',
+    '',
+  ]
+
+  data.failures.forEach((f, i) => {
+    const job = jobMap.get(f.job_id) ?? {}
+    out.push(`### ${i + 1}. ${stamp(f.run_at)} · ${job.type ?? `job #${f.job_id}`} · #${f.job_id}`)
+    out.push('')
+    out.push(`- 节点：${f.node_id || '—'}（agent ${f.agent_version || '—'}）`)
+    out.push(`- 耗时：${f.ms !== null && f.ms !== undefined ? `${f.ms}ms` : '—'}`)
+    out.push(
+      `- 调度：${job.cron ? `\`${job.cron}\`（周期任务）` : '一次性任务'}；当前状态：${job.status ?? '—'}${job.enabled === 0 ? '（已停用）' : ''}`,
+    )
+    out.push(
+      `- 累计尝试：${job.attempts ?? '—'}；上次运行：${stamp(job.last_run_at)}；下次运行：${stamp(job.next_run_at)}`,
+    )
+    out.push('')
+    out.push('payload：')
+    out.push(mdCode(payloadText(job.payload), job.payload && typeof job.payload !== 'string' ? 'json' : ''))
+    out.push('')
+    out.push('错误：')
+    out.push(mdCode(f.message || '（节点未上报错误信息）'))
+    out.push('')
+  })
+
+  if (jobMap.size) {
+    out.push('## 失败任务现状', '')
+    out.push('| 任务 | 类型 | 状态 | 启用 | cron | 尝试 | 上次运行 | 下次运行 |')
+    out.push('| --- | --- | --- | --- | --- | --- | --- | --- |')
+    const jobs = [...jobMap.values()].sort((a, b) => (counts.get(b.type) ?? 0) - (counts.get(a.type) ?? 0))
+    for (const job of jobs) {
+      out.push(
+        `| #${job.id} | ${job.type} | ${job.status} | ${job.enabled ? '是' : '否'} | ${mdCell(job.cron)} | ${job.attempts} | ${stamp(job.last_run_at)} | ${stamp(job.next_run_at)} |`,
+      )
+    }
+    out.push('')
+  }
+
+  return out.join('\n')
+}
+
+function errorReportName(ts) {
+  const d = new Date(ts)
+  return `workbench-task-errors-${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}-${pad2(d.getHours())}${pad2(d.getMinutes())}.md`
+}
 
 export async function render(main, params = {}) {
   const [nodes, cfg] = await Promise.all([
@@ -29,12 +125,7 @@ export async function render(main, params = {}) {
       </div>
     </div>
 
-    <div class="tabs" role="tablist" aria-label="系统管理分区">
-      ${TABS.map(
-        (t) => `<button class="tab" id="tab-${t.id}" type="button" role="tab" data-tab="${t.id}"
-          aria-controls="pane-${t.id}" aria-selected="${t.id === activeTab}">${t.label}</button>`,
-      ).join('')}
-    </div>
+    ${tablist({ items: TABS, active: activeTab, label: '系统管理分区' })}
 
     <section class="tab-pane" ${paneAttrs('nodes')}>
       <div class="section-head" style="margin-top: 0">
@@ -47,17 +138,30 @@ export async function render(main, params = {}) {
         宿主机不需要 <code>.env</code>，密钥由后台生成并只写进 compose、页面不展示；
         现场不能马上接入也没关系，之后随时点该行「查看接入方式」取回命令。需要换密钥点「重置密钥」。
       </div>
-      <table style="max-width: 980px">
+      <table>
         <thead><tr><th>节点</th><th>版本</th><th>状态</th><th>最后心跳</th><th>在持任务</th><th></th></tr></thead>
         <tbody id="nodes-body"></tbody>
       </table>
       <div class="small mt-2" id="node-msg" role="status"></div>
+
+      <div class="section-head"><h2>agent 版本</h2></div>
+      <div class="small muted" style="max-width: 980px">
+        发布流水线在 agent 有变更时自动写入最新版本号（发布 tag 去掉前缀 v）；节点空闲时按它触发 Watchtower 即时升级。
+        在线节点的版本落后于这里时，会在上表版本列标出「可升级」。
+      </div>
+      <div id="node-cfg" class="mt-2" style="max-width: 860px"></div>
     </section>
 
     <section class="tab-pane" ${paneAttrs('runs')}>
-      <div class="section-head" style="margin-top: 0"><h2>最近任务运行（7 天）</h2></div>
-      <table style="max-width: 860px">
-        <thead><tr><th>时间</th><th>节点</th><th>版本</th><th>任务</th><th>结果</th><th>耗时</th></tr></thead>
+      <div class="section-head" style="margin-top: 0">
+        <h2>最近任务运行（7 天）</h2>
+        <button class="btn sm" id="runs-export" type="button">${icon('download', 14)}导出错误信息</button>
+      </div>
+      <div class="small muted" style="max-width: 860px">
+        导出最近 7 天全部失败记录（任务类型、payload、错误原文、节点版本），Markdown 文件可直接交给 AI 分析。
+      </div>
+      <table>
+        <thead><tr><th>时间</th><th>节点</th><th>版本</th><th>任务名称</th><th>结果</th><th>耗时</th></tr></thead>
         <tbody>
           ${
             nodes.recentRuns
@@ -67,7 +171,8 @@ export async function render(main, params = {}) {
               <td class="small">${fmtTime(r.run_at)}</td>
               <td class="mono small">${esc(r.node_id)}</td>
               <td class="small">${esc(r.agent_version)}</td>
-              <td class="small mono">#${esc(r.job_id)}</td>
+              <td class="small">${esc(r.job_name || `任务 #${r.job_id}`)}
+                <span class="muted mono">#${esc(r.job_id)}</span></td>
               <td class="small">${r.ok ? '<span class="pill ok"><span class="dot"></span>OK</span>' : '<span class="pill bad"><span class="dot"></span>FAIL</span>'}
                 <span class="muted">${esc((r.message || '').slice(0, 80))}</span></td>
               <td class="small">${r.ms != null ? esc(r.ms) + 'ms' : '—'}</td>
@@ -83,7 +188,7 @@ export async function render(main, params = {}) {
       <div class="section-head" style="margin-top: 0"><h2>参数与密钥</h2></div>
       <div class="small muted" style="max-width: 860px">
         全部存 D1 <code>app_config</code>，保存即生效，不再需要 <code>wrangler secret</code>；
-        管理员密码在「账号安全」，节点在「计算节点」直接登记。
+        管理员密码在「账号安全」，节点在「计算节点」直接登记，agent 版本也在「计算节点」维护。
       </div>
       <div id="cfg-list" class="mt-2" style="max-width: 860px"></div>
       <div id="cfg-note" class="small mt-2" role="status" style="max-width: 860px"></div>
@@ -113,42 +218,26 @@ export async function render(main, params = {}) {
       </div>
     </section>`
 
-  // ---------- 分区 tab（hash 带 ?tab=，刷新 / 直达保持当前分区） ----------
-  const tabButtons = [...main.querySelectorAll('[role="tab"]')]
-  const panes = [...main.querySelectorAll('[data-pane]')]
-  const setTab = (id, focus = false) => {
-    if (!TABS.some((t) => t.id === id)) return
-    for (const btn of tabButtons) {
-      const on = btn.dataset.tab === id
-      btn.setAttribute('aria-selected', String(on))
-      btn.tabIndex = on ? 0 : -1
-      if (on && focus) btn.focus()
-    }
-    for (const pane of panes) pane.hidden = pane.dataset.pane !== id
-    // 只改 hash 查询串：replaceState 不触发 hashchange，避免整页重渲染
-    history.replaceState(null, '', id === 'nodes' ? '#/admin' : `#/admin?tab=${id}`)
-  }
-  main.querySelector('.tabs').onclick = (e) => {
-    const btn = e.target.closest('[role="tab"]')
-    if (btn) setTab(btn.dataset.tab)
-  }
-  // 方向键 / Home / End 在 tab 间移动（WAI-ARIA tabs 模式）
-  main.querySelector('.tabs').onkeydown = (e) => {
-    const i = tabButtons.indexOf(document.activeElement)
-    if (i < 0) return
-    let next
-    if (e.key === 'ArrowRight') next = (i + 1) % tabButtons.length
-    else if (e.key === 'ArrowLeft') next = (i - 1 + tabButtons.length) % tabButtons.length
-    else if (e.key === 'Home') next = 0
-    else if (e.key === 'End') next = tabButtons.length - 1
-    else return
-    e.preventDefault()
-    setTab(tabButtons[next].dataset.tab, true)
-  }
-  setTab(activeTab)
+  // ---------- 分区 tab（ui.js 的 setupTabs：方向键 / roving tabindex / ?tab= 同步） ----------
+  stopTabs?.()
+  stopTabs = setupTabs(main, { active: activeTab, urlKey: 'tab', defaultId: 'nodes' })
+
+  // ---------- 任务运行：导出失败记录（只读，交给 AI 分析） ----------
+  main.querySelector('#runs-export').onclick = (e) =>
+    run(e.currentTarget, async () => {
+      const data = await api('/api/admin/runs/export')
+      if (!data.failures?.length) {
+        toast('最近 7 天没有任务失败记录')
+        return
+      }
+      downloadText(errorReportName(data.exportedAt), buildErrorReport(data), 'text/markdown;charset=utf-8')
+      toast(`已导出 ${data.failures.length} 条失败记录`)
+    })
 
   // ---------- 节点登记（添加即入库 + 长期有效的接入方式，v4.13） ----------
   let nodeList = nodes.nodes ?? []
+  // 版本比对基准在「参数与密钥」的同一份 cfg 里（agent_latest_version），保存后同步更新
+  let latestVersion = (cfg.fields ?? []).find((f) => f.key === 'agent_latest_version')?.value ?? ''
   const nodeBody = main.querySelector('#nodes-body')
   const nodeMsg = main.querySelector('#node-msg')
   let currentInstall = null
@@ -165,7 +254,11 @@ export async function render(main, params = {}) {
           (n) => `
           <tr>
             <td class="mono">${esc(n.node_id)}</td>
-            <td>${esc(n.agent_version || '—')}</td>
+            <td>${esc(n.agent_version || '—')}${
+              n.online && n.agent_version && latestVersion && n.agent_version !== latestVersion
+                ? ' <span class="pill warn"><span class="dot"></span>可升级</span>'
+                : ''
+            }</td>
             <td>${
               n.online
                 ? `<span class="pill ok"><span class="dot"></span>在线</span>`
@@ -282,15 +375,11 @@ docker compose up -d</pre>
     if (!node) return
 
     if (btn.dataset.act === 'install') {
-      btn.disabled = true
-      try {
-        const res = await api(`/api/admin/nodes/${encodeURIComponent(node.node_id)}/install`)
-        showInstall(res.install)
-      } catch (err) {
-        nodeSay(err.message, true)
-      } finally {
-        btn.disabled = false
-      }
+      const res = await run(btn, () => api(`/api/admin/nodes/${encodeURIComponent(node.node_id)}/install`), {
+        silent: true,
+      })
+      if (res.ok) showInstall(res.data.install)
+      else nodeSay(res.error.message, true)
       return
     }
 
@@ -301,31 +390,27 @@ docker compose up -d</pre>
         )
       )
         return
-      btn.disabled = true
-      try {
-        const res = await api(`/api/admin/nodes/${encodeURIComponent(node.node_id)}/rotate-key`, { method: 'POST' })
-        nodeList = res.nodes
-        paintNodes()
-        nodeSay(`已重置 ${node.node_id} 的密钥：旧密钥立即失效，点「查看接入方式」取新命令重新部署`)
-      } catch (err) {
-        nodeSay(err.message, true)
-        btn.disabled = false
-      }
+      const res = await run(
+        btn,
+        () => api(`/api/admin/nodes/${encodeURIComponent(node.node_id)}/rotate-key`, { method: 'POST' }),
+        { silent: true },
+      )
+      if (!res.ok) return nodeSay(res.error.message, true)
+      nodeList = res.data.nodes
+      paintNodes()
+      nodeSay(`已重置 ${node.node_id} 的密钥：旧密钥立即失效，点「查看接入方式」取新命令重新部署`)
       return
     }
 
     if (btn.dataset.act === 'del') {
       if (!confirm(`注销节点 ${node.node_id}？密钥与接入命令立即失效，该 agent 会持续 401 直到重新添加。`)) return
-      btn.disabled = true
-      try {
-        const res = await api(`/api/admin/nodes/${encodeURIComponent(node.node_id)}`, { method: 'DELETE' })
-        nodeList = res.nodes
-        paintNodes()
-        nodeSay(`已注销 ${node.node_id}`)
-      } catch (err) {
-        nodeSay(err.message, true)
-        btn.disabled = false
-      }
+      const res = await run(btn, () => api(`/api/admin/nodes/${encodeURIComponent(node.node_id)}`, { method: 'DELETE' }), {
+        silent: true,
+      })
+      if (!res.ok) return nodeSay(res.error.message, true)
+      nodeList = res.data.nodes
+      paintNodes()
+      nodeSay(`已注销 ${node.node_id}`)
     }
   }
 
@@ -367,29 +452,32 @@ docker compose up -d</pre>
         return
       }
       const submit = form.querySelector('button[type="submit"]')
-      submit.disabled = true
       msg.textContent = ''
-      try {
-        const res = await api('/api/admin/nodes', { method: 'POST', body: JSON.stringify({ name }) })
-        nodeList = res.nodes
-        paintNodes()
-        nodeSay(`已添加 ${name}：接入前显示离线，之后随时点该行「查看接入方式」取命令`)
-        showInstall(res.install)
-      } catch (err) {
-        msg.textContent = err.message
-        submit.disabled = false
+      const res = await run(submit, () => api('/api/admin/nodes', { method: 'POST', body: JSON.stringify({ name }) }), {
+        silent: true,
+      })
+      if (!res.ok) {
+        msg.textContent = res.error.message
+        return
       }
+      nodeList = res.data.nodes
+      paintNodes()
+      nodeSay(`已添加 ${name}：接入前显示离线，之后随时点该行「查看接入方式」取命令`)
+      showInstall(res.data.install)
     }
   }
 
   // ---------- 参数与密钥（D1 app_config，决策 #23） ----------
   const cfgList = main.querySelector('#cfg-list')
+  const nodeCfg = main.querySelector('#node-cfg')
   const cfgNote = main.querySelector('#cfg-note')
   let cfgFields = cfg.fields
   const cfgState = new Map(cfgFields.map((f) => [f.key, f]))
   const cfgShown = new Set()
   // 邮件卡片最多一张：group 相同的字段合并进来（模板 / 账号 / 授权码 + 高级折叠区）
   const MAIL_GROUP = 'mail'
+  // 节点页的 agent 版本：字段仍存 app_config，但渲染在「计算节点」页
+  const NODE_GROUP = 'node'
   const MAIL_KEYS = ['mail_provider', 'smtp_user', 'smtp_pass', 'reminder_to', 'smtp_host', 'smtp_port', 'smtp_secure', 'reminder_from', 'resend_api_key']
   // 卡片里的状态行：保存后整块重绘，提示要跟着重绘一起保留
   let mailNote = null
@@ -553,19 +641,22 @@ docker compose up -d</pre>
       sayMail('')
       const changes = mailChanges(form)
       if (!changes.length) return sayMail('没有改动')
-      submit.disabled = true
       let applied = 0
-      try {
-        for (const { key, value } of changes) {
-          await api('/api/admin/config', { method: 'POST', body: JSON.stringify({ key, value }) })
-          applied++
-        }
-      } catch (err) {
+      const res = await run(
+        submit,
+        async () => {
+          for (const { key, value } of changes) {
+            await api('/api/admin/config', { method: 'POST', body: JSON.stringify({ key, value }) })
+            applied += 1
+          }
+        },
+        { silent: true },
+      )
+      if (!res.ok) {
         // 前几项已落库：重拉一次，避免卡片继续显示旧值
-        mailNote = { text: err.message, bad: true }
+        mailNote = { text: res.error.message, bad: true }
         if (applied) await reloadCfg().catch(() => {})
-        else sayMail(err.message, true)
-        submit.disabled = false
+        else sayMail(res.error.message, true)
         return
       }
       mailNote = { text: `已保存（${applied} 项）` } // 重绘会整块替换，先把提示写上
@@ -574,16 +665,10 @@ docker compose up -d</pre>
 
     testBtn.onclick = async () => {
       if (mailChanges(form).length) return sayMail('有未保存的改动，请先点「保存」', true)
-      testBtn.disabled = true
       sayMail('正在发送测试邮件…')
-      try {
-        await api('/api/admin/mail/test', { method: 'POST' })
-        sayMail('测试邮件已发送，请检查收件邮箱')
-      } catch (err) {
-        sayMail(err.message, true)
-      } finally {
-        testBtn.disabled = false
-      }
+      const res = await run(testBtn, () => api('/api/admin/mail/test', { method: 'POST' }), { silent: true })
+      if (res.ok) sayMail('测试邮件已发送，请检查收件邮箱')
+      else sayMail(res.error.message, true)
     }
   }
 
@@ -642,16 +727,21 @@ docker compose up -d</pre>
     form.onsubmit = async (e) => {
       e.preventDefault()
       const submit = form.querySelector('button[type="submit"]')
-      submit.disabled = true
-      try {
-        cfgState.set(key, await api('/api/admin/config', { method: 'POST', body: JSON.stringify({ key, value: input.value }) }))
-        cfgShown.add(key)
-        cfgSayNote('')
-        repaint()
-        say('已保存')
-      } catch (err) {
-        say(err.message, true)
-        submit.disabled = false
+      const res = await run(
+        submit,
+        () => api('/api/admin/config', { method: 'POST', body: JSON.stringify({ key, value: input.value }) }),
+        { silent: true },
+      )
+      if (!res.ok) return say(res.error.message, true)
+      cfgState.set(key, res.data)
+      cfgShown.add(key)
+      cfgSayNote('')
+      repaint()
+      say('已保存')
+      // 最新版本变了：节点表的「可升级」标记跟着刷新
+      if (key === 'agent_latest_version') {
+        latestVersion = res.data.value
+        paintNodes()
       }
     }
 
@@ -663,24 +753,29 @@ docker compose up -d</pre>
             ? '重新生成 JWT 密钥？所有已登录会话（含当前页面）立即失效，需重新登录。'
             : `随机生成新的「${field().label}」？旧值立即失效。`
         if (!confirm(hint)) return
-        rotate.disabled = true
-        try {
-          cfgState.set(key, await api(`/api/admin/config/${key}/rotate`, { method: 'POST' }))
-          cfgShown.add(key)
-          repaint()
-          say('已生成新值')
-          if (key === 'jwt_secret') redirectTimer = setTimeout(() => (location.href = '/login'), 1200)
-        } catch (err) {
-          say(err.message, true)
-          rotate.disabled = false
-        }
+        const res = await run(rotate, () => api(`/api/admin/config/${key}/rotate`, { method: 'POST' }), {
+          silent: true,
+        })
+        if (!res.ok) return say(res.error.message, true)
+        cfgState.set(key, res.data)
+        cfgShown.add(key)
+        repaint()
+        say('已生成新值')
+        if (key === 'jwt_secret') redirectTimer = setTimeout(() => (location.href = '/login'), 1200)
       }
     }
   }
 
+  /** 计算节点页的 agent 版本卡片（group=node，字段仍存 app_config） */
+  const paintNodeCfg = () => {
+    const fields = cfgFields.filter((f) => f.group === NODE_GROUP)
+    nodeCfg.innerHTML = fields.map((f) => `<div data-cfg="${esc(f.key)}">${cfgHtml(f)}</div>`).join('')
+    for (const f of fields) bindCfg(nodeCfg.querySelector(`[data-cfg="${f.key}"]`), f.key)
+  }
+
   const paintCfgList = () => {
-    // 邮件相关字段全部收进第一张卡片；其余字段各占一张
-    const others = cfgFields.filter((f) => f.group !== MAIL_GROUP)
+    // 邮件相关字段全部收进第一张卡片；节点相关字段渲染在「计算节点」页；其余各占一张
+    const others = cfgFields.filter((f) => f.group !== MAIL_GROUP && f.group !== NODE_GROUP)
     cfgList.innerHTML =
       `<div data-cfg="${MAIL_GROUP}">${mailCardHtml()}</div>` +
       others.map((f) => `<div data-cfg="${esc(f.key)}">${cfgHtml(f)}</div>`).join('')
@@ -688,6 +783,7 @@ docker compose up -d</pre>
     cfgList.querySelectorAll('[data-cfg]').forEach((wrap) => {
       if (wrap.dataset.cfg !== MAIL_GROUP) bindCfg(wrap, wrap.dataset.cfg)
     })
+    paintNodeCfg()
   }
 
   /** 保存后重新拉全量参数（套模板会连带改主机 / 端口 / 加密方式） */
@@ -734,21 +830,26 @@ docker compose up -d</pre>
     if (newPassword !== data.get('confirm')) {
       return pwdFail(pwdForm.elements.namedItem('confirm'), '两次输入的新密码不一致')
     }
-    pwdSubmit.disabled = true
-    try {
-      await api('/api/admin/password', {
-        method: 'POST',
-        body: JSON.stringify({ oldPassword: data.get('oldPassword'), newPassword }),
-      })
-      pwdMsg.textContent = '密码已更新，请重新登录…'
-      setTimeout(() => {
-        location.href = '/login'
-      }, 700)
-    } catch (err) {
+    const res = await run(
+      pwdSubmit,
+      () =>
+        api('/api/admin/password', {
+          method: 'POST',
+          body: JSON.stringify({ oldPassword: data.get('oldPassword'), newPassword }),
+        }),
+      { silent: true },
+    )
+    if (!res.ok) {
       pwdMsg.className = 'small mt-2 danger-text'
-      pwdMsg.textContent = err.message
-      pwdSubmit.disabled = false
+      pwdMsg.textContent = res.error.message
+      return
     }
+    // 成功后不再允许改：下面 700ms 后就跳登录页，防止重复提交
+    pwdSubmit.disabled = true
+    pwdMsg.textContent = '密码已更新，请重新登录…'
+    setTimeout(() => {
+      location.href = '/login'
+    }, 700)
   }
 
   main.querySelector('#rotate').onclick = async () => {
@@ -759,6 +860,8 @@ docker compose up -d</pre>
 }
 
 export function destroy() {
+  stopTabs?.()
+  stopTabs = null
   clearTimeout(redirectTimer)
   redirectTimer = 0
   if (installPollTimer) clearInterval(installPollTimer)

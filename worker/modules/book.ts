@@ -1,5 +1,6 @@
 /**
- * 书架：豆瓣索引建条目（可先不传文件，有资源后再上传）+ epub/pdf/txt 上传 + 分类 / 阅读状态
+ * 书架：豆瓣索引建条目（可先不传文件，有资源后再上传）+ epub/pdf/txt 上传 + 分组 / 阅读状态
+ * 分组沿用 category 列（自由文本，NULL = 未分组），与自选股 group_name 同语义
  * 封面经 Worker 代理（豆瓣图床带 Referer 防盗链，直连 418）
  */
 
@@ -52,6 +53,8 @@ book.get('/list', async (c) => {
       `SELECT id, title, author, category, status, cover, summary, rating, pub_year AS pubYear,
               douban_id AS doubanId, douban_url AS doubanUrl, fmt, filename, size,
               CASE WHEN r2_key IS NOT NULL THEN 1 ELSE 0 END AS hasFile,
+              -- 文件版本 = R2 key 里的 uuid：只有换文件才变（改书名 / 阅读状态不动），缓存才不会被无谓作废
+              substr(r2_key, 6, 36) AS fileVersion,
               created_at AS createdAt, updated_at AS updatedAt, finished_at AS finishedAt
          FROM book
         ORDER BY CASE status WHEN 'reading' THEN 0 WHEN 'unread' THEN 1 ELSE 2 END, updated_at DESC`,
@@ -173,7 +176,7 @@ book.patch('/:id', async (c) => {
   return ok(null)
 })
 
-/** 单本手动同步豆瓣信息：已关联按 ID 拉取，未关联按书名搜第一条；分类与阅读状态不动 */
+/** 单本手动同步豆瓣信息：已关联按 ID 拉取，未关联按书名搜第一条；分组与阅读状态不动 */
 book.post('/:id/sync', async (c) => {
   const row = await c.env.DB.prepare('SELECT * FROM book WHERE id = ?').bind(c.req.param('id')).first<BookRow>()
   if (!row) throw new ApiError(404, 404, '书不存在')
@@ -258,15 +261,18 @@ book.post('/upload', async (c) => {
   return ok({ id, size: stored.size, douban })
 })
 
-/** 阅读/下载（Range 透传：epub.js 分段读、浏览器 PDF 渐进加载） */
+/** 阅读/下载（Range 透传：epub.js 分段读、浏览器 PDF 渐进加载）；带上原始文件名，下载不走 /read/:id */
 book.get('/read/:id', async (c) => {
+  const started = performance.now()
   const row = await c.env.DB
-    .prepare('SELECT r2_key FROM book WHERE id = ?')
+    .prepare('SELECT r2_key, filename, fmt FROM book WHERE id = ?')
     .bind(c.req.param('id'))
-    .first<{ r2_key: string | null }>()
+    .first<{ r2_key: string | null; filename: string | null; fmt: string | null }>()
   if (!row) throw new ApiError(404, 404, 'not found')
   if (!row.r2_key) throw new ApiError(404, 404, '这本书还没有上传文件')
-  return serveFile(c.env, row.r2_key, c.req.raw)
+  return serveFile(c.env, row.r2_key, c.req.raw, downloadName(row.filename, row.fmt), {
+    timings: [['db', performance.now() - started]],
+  })
 })
 
 book.delete('/:id', async (c) => {
@@ -310,6 +316,7 @@ book.get('/:id', async (c) => {
       `SELECT id, title, author, category, status, cover, summary, rating, pub_year AS pubYear,
               douban_id AS doubanId, douban_url AS doubanUrl, fmt, filename, size,
               CASE WHEN r2_key IS NOT NULL THEN 1 ELSE 0 END AS hasFile,
+              substr(r2_key, 6, 36) AS fileVersion,
               created_at AS createdAt, updated_at AS updatedAt, finished_at AS finishedAt
          FROM book
         WHERE id = ?`,
@@ -354,7 +361,7 @@ interface DoubanInfo {
 
 /**
  * 豆瓣同步核心：已关联按 ID 拉取，未关联按书名搜；`auto` 时只认标题能对上的首条结果（上传后自动匹配，
- * 宁可留空也不挂错条目）。分类与阅读状态不动；找不到 / 已被别的书占用一律抛 ApiError。
+ * 宁可留空也不挂错条目）。分组与阅读状态不动；找不到 / 已被别的书占用一律抛 ApiError。
  */
 async function doubanSync(
   db: D1Database,
@@ -525,6 +532,14 @@ function titleFromFilename(filename: string, explicit?: string): string {
   const inner = /《([^》]+)》/.exec(filename)?.[1]?.trim()
   const fallback = explicit?.trim() || filename.replace(/\.[^.]+$/, '').trim()
   return (inner || fallback || filename).slice(0, MAX_TITLE)
+}
+
+/** 下载名：老记录的 filename 可能缺后缀（或为空），用 fmt 补上 */
+function downloadName(filename: string | null, fmt: string | null): string | null {
+  if (!filename) return null
+  const ext = (fmt || '').toLowerCase()
+  if (!ext) return filename
+  return new RegExp(`\\.${ext}$`, 'i').test(filename) ? filename : `${filename}.${ext}`
 }
 
 function text(value: unknown, max: number): string | null {

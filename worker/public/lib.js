@@ -31,6 +31,15 @@ const ICONS = {
   paperclip: '<path d="m20.5 11.6-8.2 8.2a4.7 4.7 0 0 1-6.6-6.6l8.5-8.5a3.1 3.1 0 0 1 4.4 4.4l-8.5 8.5a1.6 1.6 0 0 1-2.2-2.2l7.7-7.7"/>',
   chevron: '<path d="m9 6 6 6-6 6"/>',
   more: '<circle cx="12" cy="5" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="12" cy="19" r="1.3"/>',
+  download: '<path d="M12 4v12"/><path d="m7 11 5 5 5-5"/><path d="M4 20h16"/>',
+  play: '<path d="M7 4.5v15l12-7.5-12-7.5Z"/>',
+  prev: '<path d="M18 5v14L8 12l10-7Z"/><path d="M6 5v14"/>',
+  next: '<path d="M6 5v14l10-7L6 5Z"/><path d="M18 5v14"/>',
+  order: '<path d="M4 6h11M4 12h11M4 18h7"/><path d="M18 9v9"/><path d="m15 15 3 3 3-3"/>',
+  repeat: '<path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/>',
+  repeatOne: '<path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/><path d="M11.5 10.5h1V14"/>',
+  shuffle: '<path d="M16 3h5v5"/><path d="M4 20 21 3"/><path d="M21 16v5h-5"/><path d="m15 15 6 6"/><path d="m4 4 5 5"/>',
+  queue: '<path d="M9 6h12M9 12h12M9 18h12"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/>',
 }
 
 /** icon('news', 16) → 内联 SVG 字符串（装饰性，aria-hidden） */
@@ -40,13 +49,27 @@ export function icon(name, size = 16, cls = '') {
   return `<svg class="ico ${cls}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${body}</svg>`
 }
 
-/** 信封 API 调用：401 → 跳登录；非 0 code → 抛错（message 为服务端文案） */
+/** 默认超时：网络挂起时宁可报错给「重试」，也不要永久停在「加载中」 */
+const API_TIMEOUT = 30_000
+
+/**
+ * 信封 API 调用：401 → 跳登录；非 0 code → 抛错（message 为服务端文案）。
+ * 默认 30s 超时，可用 { timeout: ms } 单独放宽（如豆瓣同步这类慢接口）。
+ */
 export async function api(path, options = {}) {
-  const res = await fetch(path, {
-    cache: 'no-store',
-    headers: { 'content-type': 'application/json' },
-    ...options,
-  })
+  const { timeout = API_TIMEOUT, signal, ...rest } = options
+  let res
+  try {
+    res = await fetch(path, {
+      cache: 'no-store',
+      headers: { 'content-type': 'application/json' },
+      ...rest,
+      signal: signal ?? AbortSignal.timeout(timeout),
+    })
+  } catch (err) {
+    if (err?.name === 'TimeoutError') throw new Error(`请求超时（${Math.round(timeout / 1000)}s），请稍后重试`)
+    throw err
+  }
   if (res.status === 401) {
     location.href = '/login'
     throw new Error('未登录')
@@ -99,10 +122,24 @@ export function rerender(renderFn, main) {
 }
 
 /**
+ * 重绘后把焦点还给同一个元素（用 data-focus-key 标记）：
+ * 筛选 / 翻页这类「原地换数据」的交互，焦点不该掉回 <body>。
+ */
+export function rerenderKeepingFocus(renderFn, main) {
+  const key = document.activeElement?.closest?.('[data-focus-key]')?.getAttribute('data-focus-key')
+  return rerender(renderFn, main).then(() => {
+    if (!key) return
+    const next = [...main.querySelectorAll('[data-focus-key]')].find((el) => el.dataset.focusKey === key)
+    next?.focus({ preventScroll: true })
+  })
+}
+
+/**
  * 包一层异步动作：按钮进 loading（不变宽、不丢图标）+ 失败统一 toast。
+ * opts.silent：失败不 toast（调用方自己用行内提示，避免重复报错）。
  * 返回 { ok: true, data } 或 { ok: false, error }，调用方用 `if (!res.ok) return` 收尾。
  */
-export async function run(btn, fn) {
+export async function run(btn, fn, opts = {}) {
   const el = btn instanceof Element ? btn : null
   const wasDisabled = el && 'disabled' in el ? el.disabled : false
   if (el) {
@@ -113,7 +150,7 @@ export async function run(btn, fn) {
   try {
     return { ok: true, data: await fn() }
   } catch (err) {
-    toast(err?.message || '操作失败', true)
+    if (!opts.silent) toast(err?.message || '操作失败', true)
     return { ok: false, error: err }
   } finally {
     if (el) {
@@ -154,6 +191,20 @@ export function closeModal() {
   const dlg = document.getElementById('dlg')
   dlg.className = ''
   if (dlg.open) dlg.close()
+}
+
+/** 触发浏览器下载内存中的文本（Markdown / CSV / JSON 等导出） */
+export function downloadText(filename, text, mime = 'text/plain;charset=utf-8') {
+  const url = URL.createObjectURL(new Blob([text], { type: mime }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.rel = 'noopener'
+  a.style.display = 'none'
+  document.body.append(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }
 
 const scripts = new Map()
@@ -320,7 +371,35 @@ export function setupTableScroll(root) {
   return () => observer.disconnect()
 }
 
+/* ---------------- 常驻播放器：队列 / 播放模式 / 播放列表 ---------------- */
+
+/** localStorage：队列 + 模式跨刷新保留（参考主流音乐平台的「上次队列」） */
+const QUEUE_KEY = 'wb-player'
+
+/** 播放模式：顺序（播完即停）→ 列表循环 → 单曲循环 → 随机 */
+const PLAY_MODES = [
+  { key: 'order', label: '顺序播放', icon: 'order' },
+  { key: 'list', label: '列表循环', icon: 'repeat' },
+  { key: 'one', label: '单曲循环', icon: 'repeatOne' },
+  { key: 'shuffle', label: '随机播放', icon: 'shuffle' },
+]
+
 const playerListeners = new Set()
+/** 播放队列：[{ id, title, artist, duration }] */
+let queue = []
+let index = -1
+let modeKey = 'order'
+let playerReady = false
+
+const audioEl = () => document.getElementById('player')
+const modeDef = (key = modeKey) => PLAY_MODES.find((m) => m.key === key) ?? PLAY_MODES[0]
+
+/** 秒 → m:ss；无效值留给调用方显示占位符 */
+export function fmtDuration(seconds) {
+  const s = Math.round(Number(seconds))
+  if (!Number.isFinite(s) || s <= 0) return ''
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+}
 
 function notifyPlayer() {
   playerListeners.forEach((fn) => {
@@ -332,36 +411,350 @@ function notifyPlayer() {
   })
 }
 
-/** 常驻播放器：audio 与播放条在 shell 里，跨视图不断播 */
+function persist() {
+  try {
+    localStorage.setItem(QUEUE_KEY, JSON.stringify({ mode: modeKey, index, queue }))
+  } catch {
+    /* 隐私模式 / 配额满：缓存失败不影响播放 */
+  }
+}
+
+function readPersisted() {
+  try {
+    return JSON.parse(localStorage.getItem(QUEUE_KEY) || 'null')
+  } catch {
+    return null
+  }
+}
+
+/** 统一队列条目结构：接口与缓存都可能是旧字段（filename / 缺 duration） */
+function normalizeTrack(t) {
+  const id = Number(t?.id)
+  if (!Number.isFinite(id)) return null
+  const duration = Number(t.duration)
+  return {
+    id,
+    title: String(t.title || t.filename || '未命名曲目'),
+    artist: String(t.artist || ''),
+    duration: Number.isFinite(duration) && duration > 0 ? Math.round(duration) : null,
+  }
+}
+
+function setNowPlaying(t) {
+  const title = document.getElementById('np-title')
+  const sub = document.getElementById('np-sub')
+  if (title) title.textContent = t?.title || ''
+  if (sub) sub.textContent = t?.artist || ''
+}
+
+function syncModeButton() {
+  const btn = document.getElementById('np-mode')
+  if (!btn) return
+  const def = modeDef()
+  btn.innerHTML = icon(def.icon, 18)
+  btn.title = def.label
+  btn.setAttribute('aria-label', `播放模式：${def.label}`)
+}
+
+function renderQueue() {
+  const list = document.getElementById('pl-items')
+  const panel = document.getElementById('playlist')
+  if (!list) return
+  const count = document.getElementById('pl-count')
+  if (count) count.textContent = queue.length ? `共 ${queue.length} 首` : ''
+  const badge = document.getElementById('np-count')
+  if (badge) {
+    badge.textContent = queue.length ? String(Math.min(queue.length, 99)) : ''
+    badge.hidden = !queue.length
+  }
+
+  if (!queue.length) {
+    list.innerHTML = '<li class="pl-empty small muted">播放列表是空的</li>'
+    return
+  }
+  list.innerHTML = queue
+    .map(
+      (t, i) => `
+      <li class="pl-item${i === index ? ' active' : ''}">
+        <button class="pl-pick" type="button" data-pl="${i}" title="${esc(t.title)}">
+          <span class="pl-no">${i + 1}</span>
+          <span class="pl-meta">
+            <span class="pl-title truncate">${esc(t.title)}</span>
+            ${t.artist ? `<span class="pl-sub small truncate">${esc(t.artist)}</span>` : ''}
+          </span>
+          <span class="pl-dur small muted">${fmtDuration(t.duration)}</span>
+        </button>
+        <button class="icon-btn pl-x" type="button" data-pl-remove="${i}" aria-label="移出播放列表" title="移出播放列表">${icon('close', 14)}</button>
+      </li>`,
+    )
+    .join('')
+
+  // 面板开着时跟着当前曲目滚动，但不要打断用户手动浏览
+  if (panel && !panel.hidden) list.querySelector('.pl-item.active')?.scrollIntoView({ block: 'nearest' })
+}
+
+function playIndex(i, { autoplay = true } = {}) {
+  if (i < 0 || i >= queue.length) return
+  const audio = audioEl()
+  if (!audio) return
+  index = i
+  const t = queue[i]
+  audio.src = `/api/music/play/${t.id}`
+  audio.dataset.id = String(t.id)
+  const bar = document.getElementById('player-bar')
+  if (bar) bar.hidden = false
+  setNowPlaying(t)
+  if (autoplay) audio.play().catch(() => {})
+  persist()
+  renderQueue()
+  notifyPlayer()
+}
+
+/** 下一首：auto=true 表示自然播完（单曲循环重放；顺序播放到末尾停止） */
+function nextTrack(auto = false) {
+  if (!queue.length) return
+  if (modeKey === 'one' && auto) return playIndex(index)
+  if (modeKey === 'shuffle' && queue.length > 1) {
+    let n = index
+    while (n === index) n = Math.floor(Math.random() * queue.length)
+    return playIndex(n)
+  }
+  if (index + 1 < queue.length) return playIndex(index + 1)
+  if (modeKey === 'list' || !auto) return playIndex(0)
+  stopPlayback()
+}
+
+/** 上一首：播过 3 秒先回到本曲开头（主流播放器习惯） */
+function prevTrack() {
+  if (!queue.length) return
+  const audio = audioEl()
+  if (audio && audio.currentTime > 3) {
+    audio.currentTime = 0
+    if (audio.paused) audio.play().catch(() => {})
+    return
+  }
+  if (index > 0) playIndex(index - 1)
+  else playIndex(modeKey === 'list' ? queue.length - 1 : 0)
+}
+
+function stopPlayback() {
+  const audio = audioEl()
+  if (audio) {
+    audio.pause()
+    audio.removeAttribute('src')
+    audio.load()
+    delete audio.dataset.id
+  }
+  const bar = document.getElementById('player-bar')
+  if (bar) bar.hidden = true
+  setNowPlaying(null)
+  queue = []
+  index = -1
+  closeQueuePanel()
+  persist()
+  renderQueue()
+  notifyPlayer()
+}
+
+/** 移出队列：删的是当前曲目就顺势播放下一首 */
+function removeAt(i) {
+  if (i < 0 || i >= queue.length) return
+  const wasCurrent = i === index
+  queue.splice(i, 1)
+  if (!queue.length) return stopPlayback()
+  if (i < index) index--
+  else if (wasCurrent) index = Math.min(index, queue.length - 1)
+  persist()
+  renderQueue()
+  notifyPlayer()
+  if (wasCurrent) playIndex(index)
+}
+
+/** 追加到播放列表；队列空时直接开始播放。返回 'added' | 'exists' | 'playing' */
+function enqueue(track) {
+  const t = normalizeTrack(track)
+  if (!t) return 'invalid'
+  if (queue.some((x) => x.id === t.id)) return 'exists'
+  if (index < 0) {
+    queue = [t]
+    playIndex(0)
+    return 'playing'
+  }
+  queue.push(t)
+  persist()
+  renderQueue()
+  notifyPlayer()
+  return 'added'
+}
+
+/** 整体替换队列并开始播放（播放全部 / 随机播放） */
+function playQueue(tracks, startAt = 0, opts = {}) {
+  const list = (tracks || []).map(normalizeTrack).filter(Boolean)
+  if (!list.length) return
+  if (opts.mode && PLAY_MODES.some((m) => m.key === opts.mode)) {
+    modeKey = opts.mode
+    syncModeButton()
+  }
+  queue = list
+  const start = opts.random ? Math.floor(Math.random() * list.length) : startAt
+  playIndex(Math.min(Math.max(start, 0), list.length - 1))
+}
+
+function setMode(key) {
+  if (!PLAY_MODES.some((m) => m.key === key)) return
+  modeKey = key
+  syncModeButton()
+  persist()
+  notifyPlayer()
+  toast(`播放模式：${modeDef().label}`)
+}
+
+function cycleMode() {
+  const i = PLAY_MODES.findIndex((m) => m.key === modeKey)
+  setMode(PLAY_MODES[(i + 1) % PLAY_MODES.length].key)
+}
+
+function updateTrack(id, patch) {
+  const target = Number(id)
+  let changed = false
+  queue = queue.map((t) => {
+    if (t.id !== target) return t
+    changed = true
+    return normalizeTrack({ ...t, ...patch }) ?? t
+  })
+  if (!changed) return
+  if (queue[index]?.id === target) setNowPlaying(queue[index])
+  persist()
+  renderQueue()
+  notifyPlayer()
+}
+
+function queuePanelOpen() {
+  const panel = document.getElementById('playlist')
+  return !!panel && !panel.hidden
+}
+
+function openQueuePanel() {
+  const panel = document.getElementById('playlist')
+  const btn = document.getElementById('np-queue')
+  if (!panel) return
+  panel.hidden = false
+  btn?.setAttribute('aria-expanded', 'true')
+  renderQueue()
+}
+
+function closeQueuePanel() {
+  const panel = document.getElementById('playlist')
+  const btn = document.getElementById('np-queue')
+  if (!panel) return
+  panel.hidden = true
+  btn?.setAttribute('aria-expanded', 'false')
+}
+
+function toggleQueuePanel() {
+  if (queuePanelOpen()) closeQueuePanel()
+  else openQueuePanel()
+}
+
+/**
+ * 播放器初始化（在 shell 上调用一次）：绑定控件 + 恢复上次队列。
+ * 视图层只通过下面的 player 对象操作，不直接碰 audio。
+ */
+export function initPlayer() {
+  if (playerReady) return
+  playerReady = true
+  const audio = audioEl()
+  const prevBtn = document.getElementById('np-prev')
+  const nextBtn = document.getElementById('np-next')
+  const queueBtn = document.getElementById('np-queue')
+  const items = document.getElementById('pl-items')
+  if (!audio || !prevBtn || !nextBtn || !queueBtn || !items) return
+
+  prevBtn.innerHTML = icon('prev', 18)
+  nextBtn.innerHTML = icon('next', 18)
+  queueBtn.innerHTML = `${icon('queue', 18)}<span class="np-count" id="np-count" hidden></span>`
+  syncModeButton()
+
+  prevBtn.onclick = () => prevTrack()
+  nextBtn.onclick = () => nextTrack(false)
+  document.getElementById('np-mode').onclick = () => cycleMode()
+  queueBtn.onclick = () => toggleQueuePanel()
+  document.getElementById('pl-close').onclick = () => closeQueuePanel()
+  document.getElementById('pl-clear').onclick = () => {
+    if (queue.length && confirm('清空播放列表并停止播放？')) stopPlayback()
+  }
+
+  items.onclick = (e) => {
+    const rm = e.target.closest('[data-pl-remove]')
+    if (rm) return removeAt(Number(rm.dataset.plRemove))
+    const pick = e.target.closest('[data-pl]')
+    if (pick) playIndex(Number(pick.dataset.pl))
+  }
+
+  // 播完自动下一首（顺序播放到末尾即停）
+  audio.addEventListener('ended', () => nextTrack(true))
+  audio.addEventListener('error', () => {
+    if (audio.dataset.id) toast('无法播放该曲目，文件可能已被删除', true)
+  })
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && queuePanelOpen()) closeQueuePanel()
+  })
+
+  // 恢复上次队列：只摆好播放条与进度，不自动播放（浏览器也禁止无声自动播放）
+  const saved = readPersisted()
+  if (saved && Array.isArray(saved.queue) && saved.queue.length) {
+    queue = saved.queue.map(normalizeTrack).filter(Boolean)
+    if (PLAY_MODES.some((m) => m.key === saved.mode)) modeKey = saved.mode
+    index =
+      Number.isInteger(saved.index) && saved.index >= 0 && saved.index < queue.length ? saved.index : 0
+    syncModeButton()
+    const t = queue[index]
+    audio.src = `/api/music/play/${t.id}`
+    audio.dataset.id = String(t.id)
+    setNowPlaying(t)
+    const bar = document.getElementById('player-bar')
+    if (bar) bar.hidden = false
+  }
+  renderQueue()
+  notifyPlayer()
+}
+
+/** 常驻播放器：audio 与播放条在 shell 里，跨视图不断播；队列存 localStorage */
 export const player = {
   get currentId() {
     const id = document.getElementById('player')?.dataset.id
     return id ? Number(id) : null
   },
+  get queue() {
+    return queue.slice()
+  },
+  get mode() {
+    return modeKey
+  },
 
+  /** 单曲播放：已在队列里就跳过去，否则用单曲队列替换（兼容旧调用） */
   play(id, title) {
-    const audio = document.getElementById('player')
-    audio.src = `/api/music/play/${id}`
-    audio.dataset.id = String(id)
-    document.getElementById('np-title').textContent = title || ''
-    document.getElementById('player-bar').hidden = false
-    audio.play().catch(() => {})
-    notifyPlayer()
+    const pos = queue.findIndex((t) => t.id === Number(id))
+    if (pos >= 0) return playIndex(pos)
+    const t = normalizeTrack({ id, title })
+    if (!t) return
+    queue = [t]
+    playIndex(0)
   },
-
-  stop() {
-    const audio = document.getElementById('player')
-    if (!audio) return
-    audio.pause()
-    audio.removeAttribute('src')
-    audio.load()
-    delete audio.dataset.id
-    document.getElementById('player-bar').hidden = true
-    document.getElementById('np-title').textContent = ''
-    notifyPlayer()
+  playQueue,
+  enqueue,
+  next() {
+    nextTrack(false)
   },
+  prev: prevTrack,
+  setMode,
+  cycleMode,
+  removeAt,
+  updateTrack,
+  stop: stopPlayback,
 
-  /** 订阅播放状态变化（切歌/停止），返回取消订阅函数 */
+  /** 订阅播放状态变化（切歌/队列变化/停止），返回取消订阅函数 */
   onChange(fn) {
     playerListeners.add(fn)
     return () => playerListeners.delete(fn)

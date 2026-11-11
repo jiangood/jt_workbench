@@ -29,7 +29,7 @@ export interface ConfigField {
   maxLen?: number
   /** 有值时后台渲染成下拉框（如邮件服务商模板） */
   options?: ConfigOption[]
-  /** 后台分组：同 group 的字段合并渲染成一张卡片（目前只有 mail） */
+  /** 后台分组：mail 合并渲染成一张卡片，node 渲染在「计算节点」页 */
   group?: string
   /** 值缺失时自动随机生成（首次读取即落库） */
   generate?: () => string
@@ -128,7 +128,8 @@ export const CONFIG_FIELDS: ConfigField[] = [
     label: 'agent 最新版本',
     kind: 'text',
     maxLen: 64,
-    hint: '发布流水线在 agent 有变更时自动写入（发布 tag 去掉前缀 v，如 4.15）；节点版本落后时后台显黄条，节点空闲即触发 Watchtower 即时升级；留空不校验',
+    group: 'node',
+    hint: '发布流水线在 agent 有变更时自动写入（发布 tag 去掉前缀 v，如 4.15）；节点版本落后时首页显黄条，节点空闲即触发 Watchtower 即时升级；留空不校验',
   },
   {
     key: 'zsxq_token',
@@ -177,12 +178,29 @@ export interface ConfigItem {
 
 /** 0009 未迁移时返回 null（调用方退回临时值） */
 async function readRows(env: Bindings): Promise<Map<string, ConfigRow> | null> {
+  const now = Date.now()
+  if (rowsCache && now - rowsCache.at < ROWS_TTL_MS) return rowsCache.rows
   try {
     const res = await env.DB.prepare('SELECT k, v, updated_at FROM app_config').all<ConfigRow>()
-    return new Map((res.results ?? []).map((r) => [r.k, r]))
+    const rows = new Map((res.results ?? []).map((r) => [r.k, r]))
+    rowsCache = { at: now, rows }
+    return rows
   } catch {
+    // 表未迁移：不缓存失败结果，迁移后下一次请求立刻恢复
     return null
   }
+}
+
+/**
+ * isolate 内存缓存：每个 /api/* 请求鉴权都要读整张 app_config（jwt_secret），
+ * 一次 D1 往返 ~0.3s，阅读器按章请求会被放大成几十次。
+ * 参数是低频配置，30s 陈旧可接受；写入（后台保存 / 首次生成）时本 isolate 立即失效。
+ */
+const ROWS_TTL_MS = 30_000
+let rowsCache: { at: number; rows: Map<string, ConfigRow> | null } | null = null
+
+function invalidateRows(): void {
+  rowsCache = null
 }
 
 /** ON CONFLICT upsert 语句（单写与批量套模板共用） */
@@ -197,6 +215,7 @@ function upsertStatement(env: Bindings, key: string, value: string): D1PreparedS
 
 async function writeRow(env: Bindings, key: string, value: string): Promise<void> {
   await upsertStatement(env, key, value).run()
+  invalidateRows()
 }
 
 /** 首次落库：并发只留一个值（先写者胜，后到者读回），避免两头签发不同 JWT 密钥 */
@@ -206,6 +225,7 @@ async function seedRow(env: Bindings, key: string, value: string): Promise<strin
     .bind(key, value, Date.now())
     .run()
   const row = await env.DB.prepare('SELECT v FROM app_config WHERE k = ?').bind(key).first<{ v: string }>()
+  invalidateRows()
   return row?.v ?? value
 }
 
@@ -298,6 +318,7 @@ export async function setConfig(env: Bindings, key: string, raw: string): Promis
       upsertStatement(env, 'smtp_port', String(preset.port)),
       upsertStatement(env, 'smtp_secure', preset.secure),
     ])
+    invalidateRows()
   } else {
     await writeRow(env, field.key, value)
   }

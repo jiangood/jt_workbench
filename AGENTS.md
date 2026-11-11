@@ -36,6 +36,7 @@
 - 视图生命周期红线：切页前 router 先关弹窗再调 `destroy()`——Chart 实例、epub book、定时器、事件监听必须在 `destroy()` 里释放
 - 旧素材引用（`/news.html` 等）由 `index.ts` 的 `LEGACY_PAGES` 301 到 `/#/news`；新增视图记得同步路由表与旧链接映射
 - 样式 = 自写 `public/app.css`（design tokens + dark 主题 + 移动端抽屉，无 bootstrap）；弹窗用原生 `<dialog>`（`lib.js` 的 `showDialog/closeModal`），窄屏表格由 `setupTableScroll` 自动包 `.table-scroll`
+- **低频配置收进弹窗**：页面只留高频操作（浏览 / 立即执行），token、订阅源、屏蔽词、星球勾选这类设置项一律折叠为「配置」按钮 → `showDialog()` 打开（参考 `views/zsxq.js` 的「同步配置」、`views/news.js` 的订阅源/屏蔽词），避免每次进页都先看到一堆设置
 - 第三方库来源：**npmmirror CDN**（`registry.npmmirror.com/<pkg>/<ver>/files/...`，国内快）；仅 music-metadata / epub.js 无 CDN 产物，自托管于 `public/vendor/`（esbuild 从 agent 依赖打包），视图里用 `loadScriptOnce()` 按需加载；**禁用 jsdelivr（国内慢）与 bootcdn/staticfile（2024 投毒事件）**
 - **编码红线：改 public/ 下的 HTML/JS/CSS 一律用编辑工具或 Node 脚本（readFileSync/writeFileSync utf8）；严禁 PowerShell Get-Content/Set-Content**——中文 Windows 默认 GBK 会把 UTF-8 中文写成乱码（已踩坑并污染过一次提交）
 
