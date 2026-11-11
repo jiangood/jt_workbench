@@ -323,9 +323,13 @@ function renderNotes(main) {
   })
 
   if (searching) rows.unshift(`<div class="note-search-meta muted" role="status">全库搜索「${esc(searchQuery)}」· ${notes.length} 条</div>`)
-  list.innerHTML =
-    rows.join('') ||
-    `<div class="empty">${searching ? `没有匹配「${esc(searchQuery)}」的笔记` : selectedFolder === 'all' ? '暂无笔记' : '此目录暂无笔记'}</div>`
+  // 空目录不提示（目录刚建、还没放笔记时保持干净）；全库为空或搜索无结果才给说明
+  const empty = searching
+    ? `<div class="empty">没有匹配「${esc(searchQuery)}」的笔记</div>`
+    : selectedFolder === 'all'
+      ? '<div class="empty">暂无笔记</div>'
+      : ''
+  list.innerHTML = rows.join('') || empty
 
   list.querySelectorAll('[data-id]').forEach((a) => {
     a.onclick = async (e) => {
