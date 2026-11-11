@@ -9,14 +9,18 @@
  * - epub：库不支持 Range，仍是整本 ArrayBuffer，但脚本与文件并行下载 + 显示进度
  *   （/api/book/read/:id 没有 .epub 后缀，交给库按 URL 找目录会 404）
  * - pdf：浏览器原生查看器（Worker 透传 Range，渐进加载）
+ *
+ * 版式：顶栏只放书名 + 当前章，翻页 / 目录 / 字号 / 进度全部下沉到页脚，
+ * 正文列宽固定（epub 单页 760px），宽屏上不把文字与插图拉满整屏。
  * 位置 / 字号存 localStorage：只影响记忆，不影响阅读；销毁时释放 epub 实例与定时器。
  */
-import { api, esc, icon, loadScriptOnce } from '../lib.js'
+import { api, esc, icon, loadScriptOnce, showDialog } from '../lib.js'
 import { loadingBlock } from '../ui.js'
 
 const TXT_FONT_KEY = 'book:txt:font'
 const txtPosKey = (id) => `book:txt:pos:${id}`
 const txtIdxKey = (id) => `book:txt:idx:${id}`
+const epubPosKey = (id) => `book:epub:pos:${id}`
 
 /** 首块 256KB：84KB/s 下约 3s 出正文；后续每块 512KB，翻章时不够再续 */
 const TXT_CHUNK = 256 * 1024
@@ -33,8 +37,8 @@ const TXT_HEADING_SEP = /^第\s*[0-9零一二三四五六七八九十百千万�
 
 let epubBook = null
 let txtReader = null
-/** epub 的整页键盘翻页监听（focus 在页面壳上时也生效；iframe 内由 epub.js 自己处理） */
-let detachKeys = null
+/** epub 的键盘 / 滚轮监听与存位定时器，切页时必须释放（iframe 会被 epub.js 一起销毁） */
+let epubDispose = null
 
 export async function render(main, params) {
   const id = Number(params.id)
@@ -53,25 +57,35 @@ export async function render(main, params) {
   }
 
   const title = book.title || book.filename || '未命名'
-  const meta = [book.author || '未知作者', book.category, book.pubYear].filter(Boolean).join(' · ')
+  const meta = [book.author || '未知作者', book.category, book.pubYear, (book.fmt || '').toUpperCase()]
+    .filter(Boolean)
+    .join(' · ')
   // 版本号 = 文件自身的 uuid（换文件才变；改书名 / 阅读状态不影响缓存）
   const version = String(book.fileVersion ?? book.updatedAt ?? 0)
   const fileUrl = `/api/book/read/${id}?v=${encodeURIComponent(version)}`
 
   main.innerHTML = `
     <div class="reader-bar">
-      <a class="btn sm" href="#/book" title="返回书架">${icon('book', 14)}书架</a>
       <div class="reader-title">
-        <h1 class="page-title">${esc(title)}</h1>
-        <p class="page-sub">${esc(meta)}</p>
-      </div>
-      <div class="reader-actions">
-        <a class="btn sm" href="${fileUrl}" download title="下载原文件">${icon('download', 14)}下载</a>
+        <h1 class="page-title" title="${esc(title)}">${esc(title)}</h1>
+        <p class="page-sub">
+          <span class="reader-chapter" data-chapter hidden></span>
+          <span data-meta>${esc(meta)}</span>
+        </p>
       </div>
     </div>
     <div class="reader-stage" id="reader-stage"></div>`
 
-  document.title = `${title} · 个人工作台`
+  // 当前章：顶栏副标题与浏览器标签页同步（切章时由各阅读器回调）
+  const chapterEl = main.querySelector('[data-chapter]')
+  const setChapter = (label) => {
+    // 异步下载 / epub relocated 可能在切页后才回调：页面已经换掉就别再改标题
+    if (!chapterEl.isConnected) return
+    const text = String(label || '').replace(/\s+/g, ' ').trim()
+    chapterEl.textContent = text
+    chapterEl.hidden = !text
+    document.title = text ? `${text} · ${title}` : `${title} · 个人工作台`
+  }
 
   // 翻开的书从「待读」前进到「阅读中」（已读不倒退；失败静默，不挡阅读）
   if (book.status === 'unread') {
@@ -85,19 +99,93 @@ export async function render(main, params) {
   }
 
   if (book.fmt === 'pdf') {
-    stage.innerHTML = `<iframe class="reader-frame" src="${fileUrl}" title="${esc(title)}"></iframe>`
+    // PDF 交给浏览器原生查看器：自带缩放 / 页码 / 目录，不再叠加一层页脚
+    stage.innerHTML = `<iframe class="reader-frame" src="${esc(fileUrl)}" title="${esc(title)}"></iframe>`
     return
   }
   if (book.fmt === 'txt') {
-    openTxtReader(id, title, version, fileUrl, book.size, stage)
+    openTxtReader(id, title, version, fileUrl, book.size, stage, setChapter)
     return
   }
-  await openEpubReader(fileUrl, stage)
+  await openEpubReader(id, version, fileUrl, stage, setChapter)
 }
 
 function message(text) {
   return `<div class="alert danger">${icon('alert')}<span>${esc(text)}</span></div>
     <p class="mt-3"><a class="btn sm" href="#/book">返回书架</a></p>`
+}
+
+/* ---------------- 通用：页脚 / 进度 / 目录 ---------------- */
+
+/** 页脚控制条：上一章/页 …… 进度 …… 字号 / 目录 / 下一章/页 */
+function footerHtml({ prev = '上一页', next = '下一页', font = false, stat = false } = {}) {
+  return `<footer class="reader-controls">
+    <div class="reader-controls-inner">
+      <button class="btn sm reader-nav" type="button" data-prev aria-label="${esc(prev)}">
+        ${icon('chevron', 14, 'flip')}<span>${esc(prev)}</span>
+      </button>
+      <div class="reader-progress" data-progress role="progressbar" aria-label="阅读进度"
+           aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <span class="reader-track"><i data-bar></i></span>
+        <span class="reader-progress-text" data-progress-text>0%</span>
+        ${stat ? '<span class="reader-stat small muted" data-stat></span>' : ''}
+      </div>
+      <div class="reader-foot-acts">
+        ${
+          font
+            ? `<button class="btn sm" type="button" data-font="-1" aria-label="缩小字号" title="缩小字号">A−</button>
+        <button class="btn sm" type="button" data-font="1" aria-label="放大字号" title="放大字号">A+</button>`
+            : ''
+        }
+        <button class="btn sm" type="button" data-toc aria-haspopup="dialog" aria-label="目录" title="目录">
+          ${icon('queue', 14)}<span>目录</span>
+        </button>
+        <button class="btn sm reader-nav" type="button" data-next aria-label="${esc(next)}">
+          <span>${esc(next)}</span>${icon('chevron', 14)}
+        </button>
+      </div>
+    </div>
+  </footer>`
+}
+
+/** 进度条 / 百分比统一入口（ratio 0–1；text 缺省时显示百分比） */
+function setProgress(root, ratio, text, valuetext = '') {
+  const safe = Number.isFinite(ratio) ? Math.max(0, Math.min(1, ratio)) : 0
+  const pct = Math.round(safe * 100)
+  const bar = root.querySelector('[data-bar]')
+  const box = root.querySelector('[data-progress]')
+  const label = root.querySelector('[data-progress-text]')
+  if (bar) bar.style.width = `${pct}%`
+  if (box) {
+    box.setAttribute('aria-valuenow', String(pct))
+    if (valuetext) box.setAttribute('aria-valuetext', `${valuetext} ${pct}%`)
+  }
+  if (label) label.textContent = text ?? `${pct}%`
+}
+
+/** 目录弹窗：rows = [{ label, depth?, attrs }]，点击回调由调用方接在 data-toc-i 上 */
+function openTocDialog(rows, { empty = '这本书没有目录信息。', hint = '', current = -1 } = {}) {
+  if (!rows.length) {
+    showDialog(`<h2>目录</h2><p class="small muted">${esc(empty)}</p>`, { label: '目录' })
+    return null
+  }
+  const html = `<h2>目录</h2>
+    <ol class="reader-toc">
+      ${rows
+        .map(
+          (row, i) => `<li class="reader-toc-item" data-depth="${Math.min(row.depth ?? 0, 3)}">
+            <button class="reader-toc-btn" type="button" data-toc-i="${i}"${
+              i === current ? ' aria-current="true"' : ''
+            }>${row.no ? `<span class="reader-toc-no">${esc(row.no)}</span>` : ''}${esc(row.label)}</button>
+          </li>`,
+        )
+        .join('')}
+    </ol>
+    ${hint ? `<p class="reader-toc-hint small muted">${esc(hint)}</p>` : ''}`
+
+  const dlg = showDialog(html, { label: '目录' })
+  dlg.body.querySelector('[aria-current="true"]')?.scrollIntoView({ block: 'nearest' })
+  return dlg
 }
 
 /* ---------------- 通用：进度显示 / 带进度读取 ---------------- */
@@ -153,7 +241,17 @@ async function readBodyWithProgress(res, onProgress) {
 
 /* ---------------- epub ---------------- */
 
-async function openEpubReader(fileUrl, stage) {
+/** epub 目录可能是多层：拍平成 [{ label, href, depth }] */
+function flattenToc(items, depth = 0, out = []) {
+  for (const item of items || []) {
+    const label = String(item?.label ?? '').replace(/\s+/g, ' ').trim()
+    if (label && item.href) out.push({ label, href: item.href, depth })
+    if (item?.subitems?.length) flattenToc(item.subitems, depth + 1, out)
+  }
+  return out
+}
+
+async function openEpubReader(id, version, fileUrl, stage, setChapter) {
   const alive = () => stage.isConnected
   const say = progressStage(stage, '正在打开 epub…')
 
@@ -176,36 +274,94 @@ async function openEpubReader(fileUrl, stage) {
     if (!alive()) return
 
     stage.innerHTML = `
-      <div class="reader-controls">
-        <button class="btn sm" type="button" data-prev>上一页</button>
-        <button class="btn sm" type="button" data-next>下一页</button>
-        <span class="flex-grow-1"></span>
-        <span class="small muted" data-stat></span>
-      </div>
-      <div class="reader-view"></div>`
+      <div class="reader-page"><div class="reader-view" data-view></div></div>
+      ${footerHtml({ stat: true })}`
 
-    const view = stage.querySelector('.reader-view')
-    const stat = stage.querySelector('[data-stat]')
+    const view = stage.querySelector('[data-view]')
+    const prevBtn = stage.querySelector('[data-prev]')
+    const nextBtn = stage.querySelector('[data-next]')
+    const tocBtn = stage.querySelector('[data-toc]')
 
     epubBook = window.ePub(bytes.buffer)
+    // spread:'none' + 窄栏：宽屏上仍然是一页一行字，图片不会被拉满整屏
     const rendition = epubBook.renderTo(view, { width: '100%', height: '100%', spread: 'none' })
     const go = (dir) => Promise.resolve(rendition[dir]()).catch(() => {})
-    await rendition.display()
 
-    // 节数来自 spine；目录 / 页码要先生成 locations（整本解析，重），这里只报节进度
-    const total = epubBook.spine?.spineItems?.length ?? 0
-    rendition.on('relocated', (loc) => {
+    // 深色主题：epub 自带样式多为黑字，不覆盖会在深色底上看不清
+    if (document.documentElement.dataset.theme === 'dark') {
+      try {
+        rendition.themes.override('color', '#e8efee')
+        rendition.themes.override('background', '#131c1c')
+      } catch {
+        /* 主题接口不可用时按原书样式显示，不影响阅读 */
+      }
+    }
+
+    // 目录（navigation 解析很快，先拿到才能把 href 映射成 spine 序号）
+    const nav = await epubBook.loaded.navigation.catch(() => null)
+    const tocItems = flattenToc(nav?.toc)
+    const spineIndex = (href) => {
+      if (!href) return -1
+      const clean = String(href).split('#')[0]
+      try {
+        // 目录 href 常带 #锚点，spine 里则是整节文件：先按原样，再按去锚点 / 同名文件匹配
+        let section = epubBook.spine.get(href) ?? epubBook.spine.get(clean)
+        if (!section) {
+          const name = clean.split('/').pop()
+          section = epubBook.spine.spineItems.find((item) => String(item.href).split('#')[0].split('/').pop() === name)
+        }
+        return Number.isInteger(section?.index) ? section.index : -1
+      } catch {
+        return -1
+      }
+    }
+    const tocIndexed = tocItems
+      .map((item) => ({ ...item, index: spineIndex(item.href) }))
+      .filter((item) => item.index >= 0)
+      .sort((a, b) => a.index - b.index)
+    const totalSections = epubBook.spine?.spineItems?.length ?? 0
+
+    let currentIndex = 0
+    let lastLoc = null
+    let saveTimer = 0
+
+    const chapterAt = (index) => {
+      let hit = null
+      for (const item of tocIndexed) {
+        if (item.index <= index) hit = item
+        else break
+      }
+      return hit
+    }
+
+    const paintProgress = () => {
+      let ratio = 0
+      try {
+        if (lastLoc?.start?.cfi && epubBook.locations.length() > 0) {
+          ratio = epubBook.locations.percentageFromCfi(lastLoc.start.cfi) || 0
+        } else if (Number.isInteger(lastLoc?.start?.index) && totalSections) {
+          ratio = Math.min(1, (lastLoc.start.index + (lastLoc.atEnd ? 1 : 0)) / totalSections)
+        }
+      } catch {
+        ratio = 0
+      }
+      setProgress(stage, ratio, `${Math.round(ratio * 100)}%`, chapterAt(currentIndex)?.label || '')
+    }
+
+    const paintLocation = (loc) => {
       if (!alive()) return
-      const index = loc?.start?.index
-      stat.textContent = Number.isInteger(index) ? `第 ${index + 1}${total ? ` / ${total}` : ''} 节` : ''
-    })
-    rendition.on('keydown', (e) => {
-      if (e.key === 'ArrowLeft') go('prev')
-      if (e.key === 'ArrowRight') go('next')
-    })
+      lastLoc = loc || lastLoc
+      currentIndex = Number.isInteger(lastLoc?.start?.index) ? lastLoc.start.index : 0
+      // 目录缺失或落在两章之间时，退回节序号，标题栏始终有内容
+      setChapter(chapterAt(currentIndex)?.label || (totalSections ? `第 ${currentIndex + 1} 节` : ''))
+      const stat = stage.querySelector('[data-stat]')
+      if (stat) stat.textContent = totalSections ? `第 ${currentIndex + 1} / ${totalSections} 节` : ''
+      paintProgress()
+    }
 
-    // 焦点还在页面壳（顶栏 / 翻页按钮）时方向键也能翻页；iframe 内的按键不会冒泡到这里，不会翻两次
+    // 键盘：焦点在页面壳时方向键也翻页；iframe 内的按键由 epub.js 自己处理，不会翻两次
     const onKey = (e) => {
+      if (document.getElementById('dlg')?.open) return
       if (e.target instanceof HTMLSelectElement || e.target instanceof HTMLInputElement) return
       if (e.key === 'ArrowLeft') {
         e.preventDefault()
@@ -215,11 +371,112 @@ async function openEpubReader(fileUrl, stage) {
         go('next')
       }
     }
-    document.addEventListener('keydown', onKey)
-    detachKeys = () => document.removeEventListener('keydown', onKey)
 
-    stage.querySelector('[data-prev]').onclick = () => go('prev')
-    stage.querySelector('[data-next]').onclick = () => go('next')
+    // 滚轮翻页：epub 是分页排版（没有可滚动内容），滚轮本来就该是翻页；
+    // 触摸板小增量先累积，翻页后短暂上锁，避免一下跳好几页
+    let wheelAcc = 0
+    let wheelAt = 0
+    let wheelLock = 0
+    const onWheel = (e) => {
+      if (e.ctrlKey || e.metaKey) return
+      const now = Date.now()
+      if (now - wheelAt > 300) wheelAcc = 0
+      wheelAt = now
+      wheelAcc += e.deltaY
+      if (now < wheelLock) {
+        e.preventDefault()
+        return
+      }
+      if (Math.abs(wheelAcc) < 24) return
+      const dir = wheelAcc > 0 ? 'next' : 'prev'
+      wheelAcc = 0
+      wheelLock = now + 400
+      e.preventDefault()
+      go(dir)
+    }
+
+    const wheelDocs = []
+    rendition.hooks.content.register((contents) => {
+      const doc = contents?.document
+      if (!doc) return
+      doc.addEventListener('wheel', onWheel, { passive: false })
+      wheelDocs.push(doc)
+    })
+    view.addEventListener('wheel', onWheel, { passive: false })
+
+    rendition.on('relocated', (loc) => {
+      if (!alive()) return
+      paintLocation(loc)
+      clearTimeout(saveTimer)
+      saveTimer = setTimeout(() => {
+        if (!alive() || !loc?.start?.cfi) return
+        writeStorage(epubPosKey(id), JSON.stringify({ v: version, cfi: loc.start.cfi }))
+      }, 400)
+    })
+    rendition.on('keydown', (e) => {
+      if (e.key === 'ArrowLeft') go('prev')
+      if (e.key === 'ArrowRight') go('next')
+    })
+
+    document.addEventListener('keydown', onKey)
+    epubDispose = () => {
+      clearTimeout(saveTimer)
+      document.removeEventListener('keydown', onKey)
+      view.removeEventListener('wheel', onWheel)
+      for (const doc of wheelDocs) doc.removeEventListener('wheel', onWheel)
+      wheelDocs.length = 0
+    }
+
+    tocBtn.onclick = () => {
+      if (!tocItems.length) {
+        showDialog('<h2>目录</h2><p class="small muted">这本书没有目录信息，可按方向键或滚轮翻页。</p>', {
+          label: '目录',
+        })
+        return
+      }
+      const activeHref = chapterAt(currentIndex)?.href
+      let marked = false
+      const rows = tocItems.map((item) => {
+        const active = !marked && item.href === activeHref
+        if (active) marked = true
+        return { ...item, current: active, no: '' }
+      })
+      const currentRow = rows.findIndex((row) => row.current)
+      const dlg = openTocDialog(rows, { current: currentRow })
+      if (!dlg) return
+      dlg.body.querySelectorAll('[data-toc-i]').forEach((btn) => {
+        btn.onclick = () => {
+          const item = rows[Number(btn.dataset.tocI)]
+          dlg.close()
+          if (item) rendition.display(item.href).catch(() => {})
+        }
+      })
+    }
+    prevBtn.onclick = () => go('prev')
+    nextBtn.onclick = () => go('next')
+
+    // 上次读到的 CFI：换过文件（版本不同）就从头开始
+    const saved = readJson(epubPosKey(id))
+    const savedCfi = saved && String(saved.v) === version && typeof saved.cfi === 'string' ? saved.cfi : null
+    let restored = false
+    if (savedCfi) {
+      try {
+        await rendition.display(savedCfi)
+        restored = true
+      } catch {
+        /* 旧位置已失效：回第一页 */
+      }
+    }
+    if (!restored) await rendition.display()
+    paintLocation(rendition.currentLocation?.() ?? null)
+
+    // 页码 / 百分比要 locations（整本分页统计，异步跑，不挡阅读）
+    epubBook.locations
+      .generate(1024)
+      .then(() => {
+        if (alive()) paintProgress()
+      })
+      .catch(() => {})
   } catch (err) {
     if (alive()) stage.innerHTML = `<div class="alert danger">${esc(err.message)}</div>`
   }
@@ -343,27 +600,18 @@ function chunkByLength(lines, limit = SECTION_CHARS) {
  * 允许从任意章的字节直接开新窗口（读过的章在 localStorage 里有字节表），
  * 所以「跳到第 300 章」= 一个 Range 请求，而不是把前 299 章都下下来。
  */
-function openTxtReader(id, title, version, fileUrl, sizeHint, stage) {
+function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter) {
   stage.innerHTML = `
     <div class="txt-reader">
-      <div class="txt-toolbar">
-        <button class="btn sm" type="button" data-prev>上一章</button>
-        <select class="field txt-toc" data-toc aria-label="目录"></select>
-        <button class="btn sm" type="button" data-next>下一章</button>
-        <span class="flex-grow-1"></span>
-        <button class="btn sm" type="button" data-font="-1" aria-label="缩小字号">A−</button>
-        <button class="btn sm" type="button" data-font="1" aria-label="放大字号">A+</button>
-        <span class="small muted" data-stat></span>
-      </div>
       <div class="txt-body" data-body tabindex="0" role="document" aria-label="${esc(title)}">${loadingBlock('正在加载正文…')}</div>
-    </div>`
+    </div>
+    ${footerHtml({ prev: '上一章', next: '下一章', font: true })}`
 
-  const root = stage.querySelector('.txt-reader')
+  const root = stage
   const body = root.querySelector('[data-body]')
-  const toc = root.querySelector('[data-toc]')
-  const stat = root.querySelector('[data-stat]')
   const prevBtn = root.querySelector('[data-prev]')
   const nextBtn = root.querySelector('[data-next]')
+  const tocBtn = root.querySelector('[data-toc]')
 
   /** 窗口内的行（不含换行符）与章节；章节 line = 标题行，bodyStart = 正文首行 */
   const lines = []
@@ -395,6 +643,7 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage) {
   let fontSize = Number(readStorage(TXT_FONT_KEY)) || 17
   let saveTimer = 0
   let idxTimer = 0
+  let rafPending = false
 
   const cached = readIndex()
   for (const c of cached.chapters ?? []) known.set(c.i, { t: c.t, b: c.b })
@@ -402,17 +651,21 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage) {
 
   const isBlank = (i) => (lines[i] ?? '').trim() === ''
 
-  const currentPos = () => {
+  const scrollRatio = () => {
     const max = body.scrollHeight - body.clientHeight
-    return { c: index + chapterBase, r: max > 0 ? body.scrollTop / max : 0 }
+    return max > 0 ? Math.min(1, Math.max(0, body.scrollTop / max)) : 0
   }
+
+  const currentPos = () => ({ c: index + chapterBase, r: scrollRatio() })
 
   function paintFont() {
     body.style.fontSize = `${fontSize}px`
   }
 
+  /** 加载态文案：借用进度百分比的位置，加载完由 paintProgress() 覆盖回百分比 */
   function say(text) {
-    stat.textContent = text
+    const label = root.querySelector('[data-progress-text]')
+    if (label) label.textContent = text
   }
 
   // ---------- localStorage ----------
@@ -445,6 +698,28 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage) {
     saveTimer = setTimeout(() => {
       if (!disposed && chapters.length) writeStorage(txtPosKey(id), JSON.stringify(currentPos()))
     }, 300)
+  }
+
+  // ---------- 进度 ----------
+
+  /** 有字节表就按「本章起始字节 + 章内滚动比例」估算，否则退回按章序号 */
+  function currentRatio() {
+    const local = index + chapterBase
+    const ratio = scrollRatio()
+    const start = known.get(local)?.b
+    if (start != null && totalBytes) {
+      // 下一章字节未知（本章还没下完）时，用已下载到的位置当章尾，避免一屏就冲到 100%
+      const next = known.get(local + 1)?.b
+      const end = next != null && next > start ? next : Math.max(restPos, start + 1)
+      return Math.min(1, (start + (end - start) * ratio) / totalBytes)
+    }
+    const total = Math.max(chapters.length, known.size, 1)
+    return Math.min(1, (index + ratio) / total)
+  }
+
+  function paintProgress() {
+    const ratio = currentRatio()
+    setProgress(root, ratio, `${Math.round(ratio * 100)}%`, [chapterBase + index + 1, chapters[index]?.title].filter(Boolean).join(' '))
   }
 
   // ---------- 章节维护 ----------
@@ -485,23 +760,15 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage) {
       requestAnimationFrame(() => {
         if (disposed) return
         body.scrollTop = ratio * Math.max(0, body.scrollHeight - body.clientHeight)
+        paintProgress()
       })
     }
 
-    toc.value = String(index + chapterBase)
     prevBtn.disabled = index + chapterBase === 0 || loading
     nextBtn.disabled = (haveAll && index >= chapters.length - 1) || loading
-    const progress = totalBytes ? `${fmtSize(restPos)} / ${fmtSize(totalBytes)}` : fmtSize(restPos)
-    say(`${index + chapterBase + 1} ${mode === 'sections' ? '节' : '章'} · 已下载 ${progress}`)
+    setChapter(chapters[index]?.title || '')
+    paintProgress()
     saveIndex()
-  }
-
-  function rebuildToc() {
-    const rows = [...known.entries()].filter(([, v]) => v.t).sort((a, b) => a[0] - b[0])
-    toc.innerHTML = rows
-      .map(([i, v]) => `<option value="${i}">${esc(v.t)}</option>`)
-      .join('')
-    toc.value = String(index + chapterBase)
   }
 
   // ---------- 增量解码 ----------
@@ -509,14 +776,19 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage) {
   function detectEncoding(bytes) {
     if (bytes[0] === 0xff && bytes[1] === 0xfe) return 'utf-16le'
     if (bytes[0] === 0xfe && bytes[1] === 0xff) return 'utf-16be'
-    // 末尾可能截断在多字节字符中间：留 4 字节不参与严格校验
-    const probe = bytes.length > 8 ? bytes.subarray(0, bytes.length - 4) : bytes
-    try {
-      new TextDecoder('utf-8', { fatal: true }).decode(probe)
-      return 'utf-8'
-    } catch {
-      return 'gb18030'
+    // 分块末尾可能截断在多字节字符中间：逐个回退 1–3 字节找合法边界
+    // （不能盲砍 4 字节：那样还可能把前一个汉字的尾巴切掉，utf-8 文本被误判成 gb18030）
+    for (let cut = 0; cut <= 3; cut += 1) {
+      const probe = cut ? bytes.subarray(0, Math.max(0, bytes.length - cut)) : bytes
+      if (!probe.length) break
+      try {
+        new TextDecoder('utf-8', { fatal: true }).decode(probe)
+        return 'utf-8'
+      } catch {
+        /* 再退一个字节试试 */
+      }
     }
+    return 'gb18030'
   }
 
   function decodeLine(bytes) {
@@ -558,7 +830,7 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage) {
     rebuildChapters()
   }
 
-  function ingest(buf, from) {
+  function ingest(buf) {
     if (!decoder) {
       encoding = encoding || detectEncoding(buf)
       if (encoding === 'utf-16le' || encoding === 'utf-16be') {
@@ -629,7 +901,7 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage) {
       if (res.status !== 206 || !cr) {
         // 服务端没按 Range 回：整本到手
         totalBytes = buf.length
-        ingest(buf, 0)
+        ingest(buf)
         nextByte = buf.length
         haveAll = true
         finishRest()
@@ -642,7 +914,7 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage) {
       } else {
         nextByte = from + buf.length
       }
-      ingest(buf, from)
+      ingest(buf)
       if (totalBytes && nextByte >= totalBytes) {
         haveAll = true
         finishRest()
@@ -704,7 +976,6 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage) {
     // UTF-16 这类分不了行的编码：直接整本解码（fetchChunk 里已标记 legacy）
     if (legacy) await loadAllLegacy()
     rebuildChapters()
-    rebuildToc()
   }
 
   // ---------- 导航 ----------
@@ -732,13 +1003,11 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage) {
         const end = chapterEnd(local)
         if (end != null || haveAll) {
           index = local
-          rebuildToc()
           paint(ratio)
           return
         }
         if (!(await fetchChunk(nextByte, TXT_CHUNK_MORE))) {
           index = local
-          rebuildToc()
           paint(ratio)
           return
         }
@@ -756,7 +1025,6 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage) {
         // 已经到文件尾：夹到最后一章
         if (!chapters.length) return
         index = chapters.length - 1
-        rebuildToc()
         paint(ratio)
         return
       }
@@ -764,21 +1032,56 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage) {
     }
   }
 
+  /** 翻页 / 目录跳转统一入口：失败只在页脚提示，不抛未处理 Promise */
+  const jump = (target) => {
+    go(target).catch((err) => say(err?.message || '加载失败'))
+  }
+
   // ---------- 交互 ----------
 
-  const onScroll = () => savePos()
+  const onScroll = () => {
+    savePos()
+    if (rafPending) return
+    rafPending = true
+    requestAnimationFrame(() => {
+      rafPending = false
+      if (!disposed) paintProgress()
+    })
+  }
 
   const onKey = (e) => {
+    if (document.getElementById('dlg')?.open) return
     if (e.target instanceof HTMLSelectElement || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
       return
     }
     if (e.key === 'ArrowLeft') {
       e.preventDefault()
-      go(index + chapterBase - 1)
+      jump(index + chapterBase - 1)
     } else if (e.key === 'ArrowRight') {
       e.preventDefault()
-      go(index + chapterBase + 1)
+      jump(index + chapterBase + 1)
     }
+  }
+
+  function openToc() {
+    const entries = [...known.entries()]
+      .filter(([, v]) => v.t)
+      .sort((a, b) => a[0] - b[0])
+    const rows = entries.map(([i, v]) => ({ label: v.t, no: '' }))
+    const current = entries.findIndex(([i]) => i === index + chapterBase)
+    const dlg = openTocDialog(rows, {
+      empty: '目录还在加载，稍后再试。',
+      hint: haveAll ? '' : '目录随阅读进度继续补全',
+      current,
+    })
+    if (!dlg) return
+    dlg.body.querySelectorAll('[data-toc-i]').forEach((btn) => {
+      btn.onclick = () => {
+        const row = entries[Number(btn.dataset.tocI)]
+        dlg.close()
+        if (row) jump(row[0])
+      }
+    })
   }
 
   txtReader = {
@@ -796,9 +1099,9 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage) {
   paintFont()
   body.addEventListener('scroll', onScroll, { passive: true })
   document.addEventListener('keydown', onKey)
-  prevBtn.onclick = () => go(index + chapterBase - 1)
-  nextBtn.onclick = () => go(index + chapterBase + 1)
-  toc.onchange = () => go(Number(toc.value))
+  prevBtn.onclick = () => jump(index + chapterBase - 1)
+  nextBtn.onclick = () => jump(index + chapterBase + 1)
+  tocBtn.onclick = openToc
   root.querySelectorAll('[data-font]').forEach((b) => {
     b.onclick = () => {
       fontSize = Math.max(14, Math.min(26, fontSize + Number(b.dataset.font)))
@@ -821,7 +1124,6 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage) {
         if (startChapter > 0) await go(startChapter)
       }
       if (disposed) return
-      rebuildToc()
       if (chapters.length) {
         index = Math.max(0, Math.min(chapters.length - 1, startChapter - chapterBase))
         paint(hit?.b != null ? startRatio : null)
@@ -845,11 +1147,11 @@ function mergeBytes(a, b) {
 
 export function destroy() {
   try {
-    detachKeys?.()
+    epubDispose?.()
   } catch {
     /* 已释放 */
   }
-  detachKeys = null
+  epubDispose = null
   try {
     epubBook?.destroy()
   } catch {

@@ -1591,7 +1591,8 @@ dialog.xl { max-width: 1100px; width: 94% }
 dialog::backdrop { background: rgba(15, 23, 42, .45) }
 dialog h2, dialog h5 { font-size: var(--fs-lg); font-weight: 650; margin-bottom: var(--sp-3) }
 
-/* 阅读页（#/reader?id=）：独立路由，正文区落在首屏内，长内容只在内部滚动 */
+/* 阅读页（#/reader?id=）：独立路由，正文区落在首屏内，长内容只在内部滚动。
+ * 顶栏只留书名 / 当前章，翻页、目录、字号、进度统一下沉到页脚，正文区保持干净。 */
 .reader-bar { display: flex; align-items: center; gap: var(--sp-3); margin-bottom: var(--sp-3); min-width: 0 }
 .reader-bar .reader-title { flex: 1 1 auto; min-width: 0 }
 .reader-bar .page-title {
@@ -1602,7 +1603,7 @@ dialog h2, dialog h5 { font-size: var(--fs-lg); font-weight: 650; margin-bottom:
   white-space: nowrap;
 }
 .reader-bar .page-sub { margin: 2px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
-.reader-actions { display: flex; flex: 0 0 auto; gap: var(--sp-2) }
+.reader-chapter:not([hidden])::after { content: " · " }
 .reader-stage {
   display: flex;
   flex-direction: column;
@@ -1618,36 +1619,130 @@ body:has(.playerbar:not([hidden])) .reader-stage {
 }
 .reader-loading,
 .reader-stage > .empty { padding: var(--sp-5) }
+/* epub：正文按书页宽度排版并居中，宽屏上不把文字 / 插图拉满整屏 */
+.reader-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  justify-content: center;
+  padding: var(--sp-3);
+}
+.reader-view {
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: 760px;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+.reader-view iframe { border: 0 }
+.reader-frame { flex: 1 1 auto; min-height: 0; width: 100%; border: 0 }
+
+/* 页脚控制条：上一章/页 …… 进度 …… 字号 / 目录 / 下一章/页 */
 .reader-controls {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
   padding: var(--sp-2) var(--sp-3);
-  border-bottom: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+  background: var(--surface);
 }
-.reader-view { flex: 1 1 auto; min-height: 0 }
-.reader-view iframe { border: 0 }
-.reader-frame { flex: 1 1 auto; min-height: 0; width: 100%; border: 0 }
+.reader-controls-inner {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  max-width: 48rem;
+  margin-inline: auto;
+}
+.reader-controls .ico.flip { transform: rotate(180deg) }
+.reader-foot-acts { display: flex; flex: 0 0 auto; align-items: center; gap: var(--sp-1) }
+.reader-foot-acts .btn.sm { padding: 0 8px }
+.reader-progress {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.reader-track {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 48px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: var(--r-full);
+  background: var(--surface-3);
+}
+.reader-track > i {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--primary);
+  transition: width var(--dur-base) ease;
+}
+.reader-progress-text {
+  flex: 0 0 auto;
+  min-width: 3em;
+  text-align: right;
+  font-size: var(--fs-sm);
+  color: var(--muted-fg);
+  font-variant-numeric: tabular-nums;
+}
+.reader-stat { flex: 0 0 auto; white-space: nowrap }
+
+/* 目录弹窗：章节多时内部滚动，当前章高亮 */
+.reader-toc {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: min(62vh, 560px);
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+.reader-toc-btn {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+}
+.reader-toc-btn:hover { background: var(--surface-2) }
+.reader-toc-btn[aria-current="true"] { background: var(--primary-wash); color: var(--primary); font-weight: 600 }
+.reader-toc-no {
+  flex: 0 0 auto;
+  min-width: 2.2em;
+  color: var(--muted-fg);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+.reader-toc-btn[aria-current="true"] .reader-toc-no { color: inherit }
+.reader-toc-item[data-depth="1"] .reader-toc-btn { padding-left: 26px; font-size: var(--fs-sm); color: var(--muted-fg) }
+.reader-toc-item[data-depth="2"] .reader-toc-btn { padding-left: 40px; font-size: var(--fs-sm); color: var(--muted-fg) }
+.reader-toc-item[data-depth="3"] .reader-toc-btn { padding-left: 54px; font-size: var(--fs-sm); color: var(--muted-fg) }
+.reader-toc-hint { margin-top: var(--sp-2) }
 
 /* TXT 阅读器：编码在浏览器端识别，只渲染当前章节（大文件不卡） */
 .reader-stage > .txt-reader { flex: 1 1 auto; min-height: 0; padding: var(--sp-3) }
 .txt-reader { display: flex; flex-direction: column; gap: var(--sp-2) }
-.txt-toolbar {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  flex-wrap: wrap;
-  width: 100%;
-  max-width: 60rem;
-  margin-inline: auto;
-}
-.txt-toolbar .txt-toc { width: auto; min-width: 180px; max-width: 46%; height: 32px; padding-top: 0; padding-bottom: 0 }
-.txt-toolbar [data-stat] { white-space: nowrap }
 .txt-body {
   flex: 1 1 auto;
   min-height: 0;
   width: 100%;
-  max-width: 60rem;
+  max-width: 48rem;
   margin-inline: auto;
   overflow-y: auto;
   padding: var(--sp-4);
@@ -1661,6 +1756,19 @@ body:has(.playerbar:not([hidden])) .reader-stage {
   tab-size: 2;
 }
 .txt-body:focus-visible { outline: 2px solid var(--border-strong); outline-offset: 2px }
+
+/* 阅读页窄屏：页脚只留图标，进度条吃掉剩余宽度 */
+@media (max-width: 640px) {
+  .reader-controls { padding: var(--sp-2) }
+  .reader-controls-inner { gap: 4px }
+  .reader-nav span,
+  .reader-foot-acts [data-toc] span { display: none }
+  .reader-foot-acts .btn.sm { padding: 0 7px }
+  .reader-progress-text { min-width: 2.6em }
+  .reader-stat { display: none }
+  .reader-page { padding: 0 }
+  .reader-view { border-radius: 0 }
+}
 
 /* 图表容器：固定高度，Chart.js 在弹窗里撑满而不按宽度比例撑高 */
 .chart-box { position: relative; height: min(360px, 60vh) }
