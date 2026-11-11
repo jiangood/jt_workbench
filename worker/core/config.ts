@@ -128,7 +128,7 @@ export const CONFIG_FIELDS: ConfigField[] = [
     label: 'agent 最新版本',
     kind: 'text',
     maxLen: 64,
-    hint: '填镜像短 sha（如 vaa834fc）；节点版本低于它时后台显黄条，留空不校验',
+    hint: '发布流水线在 agent 有变更时自动写入（发布 tag 去掉前缀 v，如 4.15）；节点版本落后时后台显黄条，节点空闲即触发 Watchtower 即时升级；留空不校验',
   },
   {
     key: 'zsxq_token',

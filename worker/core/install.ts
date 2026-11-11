@@ -10,6 +10,7 @@
 
 import type { Context } from 'hono'
 import type { Env } from './envelope'
+import { randomHex } from './config'
 import { getNodeByKey } from './nodekey'
 
 const AGENT_IMAGE = 'ghcr.io/jiangood/workbench-agent:latest'
@@ -31,6 +32,9 @@ export function requestOrigin(c: Context<Env>): string {
 }
 
 function buildCompose(workerUrl: string, nodeKey: string): string {
+  // Watchtower HTTP API 的本地令牌（v5.1）：同一份 compose 内两个容器共用，随机生成、不落库
+  // 端口不 publish → 只有 compose 内网可达，宿主机外部拿不到
+  const watchtowerToken = randomHex(16)
   // command 必须写全 `node agent.mjs`：node 镜像自带 ENTRYPOINT docker-entrypoint.sh，
   // 首参不是已知命令（如直接给 URL）时会被它改写成 `node <url>` → MODULE_NOT_FOUND
   return `# 由 workbench 后台生成 · 已内联节点密钥，请勿提交仓库或外传
@@ -41,6 +45,9 @@ services:
     command: ['node', 'agent.mjs', '${workerUrl}']
     environment:
       - NODE_KEY=${nodeKey}
+      # 即时升级（v5.1）：空闲时轮询落后就 POST watchtower 触发更新
+      - WATCHTOWER_URL=http://watchtower:8080
+      - WATCHTOWER_TOKEN=${watchtowerToken}
     labels:
       - com.centurylinklabs.watchtower.enable=true
 
@@ -52,8 +59,12 @@ services:
       - ~/.docker/config.json:/config.json:ro
     environment:
       - WATCHTOWER_LABEL_ENABLE=true # 只更新带标签容器
-      - WATCHTOWER_POLL_INTERVAL=900 # 15 分钟短轮询
+      - WATCHTOWER_POLL_INTERVAL=900 # 15 分钟兜底轮询（HTTP API 模式默认关掉，需显式开）
       - WATCHTOWER_CLEANUP=true
+      # HTTP API 只开 update 端点，供 agent 即时触发；不 publish 端口，仅 compose 内网可达
+      - WATCHTOWER_HTTP_API_ENDPOINTS=update
+      - WATCHTOWER_HTTP_API_TOKEN=${watchtowerToken}
+      - WATCHTOWER_HTTP_API_PERIODIC_POLLS=true # 保留 15min 轮询：agent 触发失败也不会漏更
 `
 }
 

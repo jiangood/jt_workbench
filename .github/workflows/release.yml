@@ -21,9 +21,10 @@ env:
 jobs:
   release:
     runs-on: ubuntu-latest
-    # 仓库 Settings → Environments 给 production 配 required reviewer 后，
-    # 发布 release 不会立刻上线，而是先等人工批准（不配则直接执行）。
-    environment: production
+    # 故意不声明 environment：未配任何 protection rule 时它只会凭空生成
+    # Deployments 记录（仓库右侧面板），与 Cloudflare 实际部署无关，纯噪音。
+    # 将来若需要「发布后悔窗口」，再加 environment + wait timer（solo 仓库用
+    # required reviewers 会因「不能自批」而失效）。
     steps:
       - uses: actions/checkout@v4
         with:
@@ -86,7 +87,8 @@ jobs:
             agent/package-lock.json
 
       - name: Worker — install
-        if: steps.diff.outputs.worker == 'true'
+        # agent 发布也会用到这里的 wrangler（发布后回写 agent_latest_version）
+        if: steps.diff.outputs.worker == 'true' || steps.diff.outputs.agent == 'true'
         working-directory: worker
         run: npm ci
 
@@ -148,8 +150,26 @@ jobs:
           context: agent
           push: true
           tags: ${{ steps.meta.outputs.tags }}
+          # 版本号烧进镜像（Dockerfile → esbuild define）：节点据此判断自己是否需要升级
+          build-args: |
+            AGENT_VERSION=${{ github.event.release.tag_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # 镜像推成功后再公布「最新版本」：节点下次 poll 拿到它，空闲时触发 Watchtower 即时升级
+      - name: Agent — publish latest version
+        if: steps.diff.outputs.agent == 'true'
+        working-directory: worker
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9A-Za-z._-]+$'; then
+            echo "::error::发布 tag 含非法字符：$RELEASE_TAG"
+            exit 1
+          fi
+          npx wrangler d1 execute jt_workbench --remote --yes --command \
+            "INSERT INTO app_config (k, v, updated_at) VALUES ('agent_latest_version', '${VERSION}', $(date +%s)000) ON CONFLICT (k) DO UPDATE SET v = excluded.v, updated_at = excluded.updated_at"
 
       - name: Summary
         shell: bash

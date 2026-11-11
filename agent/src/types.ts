@@ -9,6 +9,8 @@ export interface Job {
 export interface Envelope {
   now: number
   jobs: Job[]
+  /** 当前发布的最新 agent 版本（v5.1，仅 poll 带回；空 = 不校验，老 Worker 也没有） */
+  agentLatestVersion?: string
 }
 
 /** handler 产出统一为结构化 items 数组（M3 起按 100 条/批回传） */

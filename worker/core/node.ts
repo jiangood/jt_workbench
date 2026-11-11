@@ -98,7 +98,9 @@ node.post('/poll', async (c) => {
   }
 
   const jobs = await claimPipeline(c.env, nodeId, now)
-  return nodeOk({ jobs })
+  // v5.1：带回最新 agent 版本（发布流水线写入 app_config）；agent 空闲且落后 → 触发 Watchtower 即时升级
+  const agentLatestVersion = await getConfig(c.env, 'agent_latest_version')
+  return nodeOk({ jobs, agentLatestVersion })
 })
 
 node.post('/jobs/:id/heartbeat', async (c) => {

@@ -3,6 +3,7 @@ import { client, UnauthorizedError } from './client.js'
 import { getConfig } from './config.js'
 import { describeError } from './describe-error.js'
 import { run, register } from './runner.js'
+import { maybeRequestUpdate } from './update.js'
 import { rssHandler } from './jobs/rss.js'
 import { stockHandler } from './jobs/stock.js'
 import { zsxqHandler } from './jobs/zsxq.js'
@@ -29,7 +30,12 @@ async function main(): Promise<void> {
 
   while (true) {
     try {
-      let { jobs } = await client.poll()
+      const poll = await client.poll()
+      let jobs = poll.jobs
+      if (!jobs.length) {
+        // 空闲：版本落后就让 Watchtower 立刻拉新镜像（老 compose 没配 → 什么也不做）
+        await maybeRequestUpdate(poll.agentLatestVersion)
+      }
       while (jobs.length) {
         // 一次只干一个活（v4.9）；响应捎带下一个任务则链式连续，无活 → sleep 至下个 poll
         const next = await run(jobs[0])

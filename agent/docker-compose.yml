@@ -4,6 +4,8 @@
 # v4.12：本文件由后台「添加节点」生成的一键脚本自动落盘（含内联的 NODE_KEY）。
 #        这里留作手工部署参考：<NODE_KEY> 从后台该节点「安装命令」弹窗的手动方案里复制
 #        （列表不展示密钥；需要换密钥点「重置密钥」后用新命令重新部署）
+# v5.1：额外内联 WATCHTOWER_TOKEN（agent 空闲时触发即时升级），手工部署时两处必须一致，
+#        随便填一串随机字符即可（不进仓库、不上报 Worker）
 services:
   workbench-agent:
     image: ghcr.io/jiangood/workbench-agent:latest
@@ -12,6 +14,8 @@ services:
     command: ['node', 'agent.mjs', 'https://jt.410518072.xyz'] # 唯一的启动配置：Worker 地址
     environment:
       - NODE_KEY=<后台添加节点后生成>
+      - WATCHTOWER_URL=http://watchtower:8080
+      - WATCHTOWER_TOKEN=<手工部署时自己填，两处一致>
     labels:
       - com.centurylinklabs.watchtower.enable=true
 
@@ -23,5 +27,9 @@ services:
       - ~/.docker/config.json:/config.json:ro
     environment:
       - WATCHTOWER_LABEL_ENABLE=true # 只更新带标签容器，不碰宿主机其他容器
-      - WATCHTOWER_POLL_INTERVAL=900 # 15 分钟短轮询
+      - WATCHTOWER_POLL_INTERVAL=900 # 15 分钟兜底轮询（HTTP API 模式默认关掉，需显式开）
       - WATCHTOWER_CLEANUP=true
+      # HTTP API 只开 update：agent 空闲时即时触发；不 publish 端口，仅 compose 内网可达
+      - WATCHTOWER_HTTP_API_ENDPOINTS=update
+      - WATCHTOWER_HTTP_API_TOKEN=<与 agent 的 WATCHTOWER_TOKEN 一致>
+      - WATCHTOWER_HTTP_API_PERIODIC_POLLS=true # 保留 15min 轮询兜底

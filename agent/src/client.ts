@@ -1,7 +1,6 @@
 import { getConfig } from './config.js'
 import type { Envelope } from './types.js'
-
-const AGENT_VERSION = '0.1.0'
+import { AGENT_VERSION } from './version.js'
 
 export class RetryableError extends Error {}
 /** 401/403：密钥未登记 / 已被注销 —— 不是配置错误，等待后台登记后自动恢复 */

@@ -27,7 +27,7 @@ cd agent && npm ci && npm run dev      # build + node dist/agent.mjs（需 NODE_
 
 1. 在 `main` 上开发完，本地 `npm run check` 全绿；
 2. GitHub → Releases → **Draft a new release** → 新建 tag（如 `v0.2.0`）→ **Publish release**；
-3. `release.yml` 自动执行：校验 tag 在 `main` 上 → worker / agent 类型检查 + worker dry-run → D1 迁移 → 部署 Worker → 仅当 `agent/` 有改动时构建镜像（发布 tag + `v<sha>` + `latest`）。
+3. `release.yml` 自动执行：校验 tag 在 `main` 上 → worker / agent 类型检查 + worker dry-run → D1 迁移 → 部署 Worker → 仅当 `agent/` 有改动时构建镜像（发布 tag + `v<sha>` + `latest`，版本号烧进镜像）并回写 D1 `agent_latest_version`（发布 tag 去掉前缀 `v`），节点据此即时升级。
 
 只发布有变化的半边：纯 Worker 发布不会重推 agent `latest`，节点不会白白重启。失败在 Actions 里 **Re-run jobs** 即可，不会重复建 release。
 
@@ -132,13 +132,15 @@ cd workbench-agent && docker compose logs -f workbench-agent
 | `节点未登记或密钥已失效` | 密钥被重置 / 节点被注销 / 记录被删：回后台该行「查看接入方式」取新命令重装（或重新添加节点） |
 | `缺少 NODE_KEY` | compose 里没有密钥（手动方案漏了），或用了旧的 agent 镜像 |
 | `poll failed` + `fetch failed` | Worker 地址不可达（域名 / 网络 / 证书问题） |
+| `watchtower update requested` | 版本落后，已请 Watchtower 拉新（随后容器会被重建）；`rejected` 多为 token 不一致（重装 compose）或已有更新在跑 |
 | `job failed` + `fetch <url> failed: … [ENOTFOUND]` | 某个任务的外网源抓不动：方括号里是 cause 的错误码（DNS / TLS / 连接被重置），message 里带完整 URL；周期任务会在下个 cron 自动重试，不用重装 |
 
 ### 5. 升级、回滚、重装
 
-- **日常升级**：发布 release（见「发布到线上」）→ 推 `:latest` → Watchtower 每 15min 轮询，inspect 旧容器并原样复制 command / env / 挂载 / 网络 / 重启策略重建。
+- **日常升级**：发布 release（见「发布到线上」）→ 推 `:latest` + 回写 D1 `agent_latest_version` → 节点下次 poll（≤10min）发现版本落后且空闲，立刻 POST Watchtower `/v1/update`（`async=true`），秒级拉新重建；Watchtower 自身的 15min 轮询保留为兜底。重建时原样复制 command / env / 挂载 / 网络 / 重启策略。
+- **即时升级的两处前提**（v5.1）：agent 容器要有 `WATCHTOWER_URL` / `WATCHTOWER_TOKEN`，watchtower 要开 `WATCHTOWER_HTTP_API_ENDPOINTS=update` + 同一个 token（安装脚本写的 compose 已带）。老节点没这两项也能升级，只是回到 15min 轮询——想立刻生效就重装一次。
 - **配置变更**（换镜像、改 Worker 地址等）Watchtower 不负责，手动改 `workbench-agent/docker-compose.yml` 后 `docker compose up -d`。
-- **回滚**：把 `image:` 钉到 `ghcr.io/jiangood/workbench-agent:v<short-sha>`（对应提交的短 sha，也可用发布 tag）再 `up -d`；确认稳定后再改回 `:latest`。
+- **回滚**：把 `image:` 钉到 `ghcr.io/jiangood/workbench-agent:v<short-sha>`（对应提交的短 sha，也可用发布 tag）再 `up -d`；钉住的镜像没有更新摘要，即时升级和 15min 轮询都不会把它拉回 `latest`，确认稳定后再改回 `:latest`。
 - **重装 / 换机**：在节点行点「查看接入方式」取回长期有效的命令（命令自带 `WORKBENCH_AGENT_FORCE=1`，已登记节点不设过期）。
 - **重置密钥**：节点行「重置密钥」→ 旧密钥立即失效（该 agent 持续 401，列表立刻显示离线），再用该行「查看接入方式」取回新命令重新部署；列表里不展示密钥本身。
 - **注销节点**：列表行「注销」→ 密钥立即失效（agent 持续 401），重新添加同名节点会生成新密钥和新接入命令。
