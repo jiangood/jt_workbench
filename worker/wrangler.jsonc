@@ -1,0 +1,24 @@
+{
+  "name": "workbench-cf",
+  "main": "index.ts",
+  "compatibility_date": "2026-11-01",
+  "assets": {
+    "directory": "./public"
+  },
+  "routes": [
+    { "pattern": "jt.410518072.xyz", "custom_domain": true }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "workbench",
+      "database_id": "9c80568b-30a5-4781-af76-e112e85b8b17"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "R2",
+      "bucket_name": "workbench"
+    }
+  ]
+}

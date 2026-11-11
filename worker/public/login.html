@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>登录 · Workbench</title>
+    <script>
+      // 与 index.html 共用主题键，避免登录页与主应用一深一浅
+      ;(() => {
+        try {
+          const saved = localStorage.getItem('wb-theme')
+          const dark = saved ? saved === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches
+          document.documentElement.dataset.theme = dark ? 'dark' : 'light'
+        } catch {
+          document.documentElement.dataset.theme = 'light'
+        }
+      })()
+    </script>
+    <link href="/app.css" rel="stylesheet" />
+  </head>
+  <body>
+    <div class="login-wrap">
+      <div class="card w-100 login-card">
+        <div class="card-body">
+          <h5 class="card-title text-center mb-4" id="title">Workbench</h5>
+          <form id="f">
+            <div class="mb-3">
+              <input class="field" name="username" value="admin" placeholder="用户名" autocomplete="username" required />
+            </div>
+            <div class="mb-3">
+              <input class="field" name="password" type="password" placeholder="密码" autocomplete="current-password" required />
+            </div>
+            <div class="mb-3 d-none" id="confirm-wrap">
+              <input class="field" name="confirm" type="password" placeholder="确认密码" autocomplete="new-password" />
+            </div>
+            <button class="btn primary w-100" id="submit" style="justify-content: center">登录</button>
+            <div id="hint" class="small muted mt-2 text-center d-none"></div>
+            <div id="msg" class="danger-text small mt-3 d-none"></div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const form = document.getElementById('f')
+      const msg = document.getElementById('msg')
+      const hint = document.getElementById('hint')
+      const submit = document.getElementById('submit')
+      const title = document.getElementById('title')
+      let setupMode = false
+      let minLen = 8
+
+      function showError(text) {
+        msg.textContent = text
+        msg.classList.remove('d-none')
+      }
+
+      function clearError() {
+        msg.textContent = ''
+        msg.classList.add('d-none')
+      }
+
+      // 首访初始化：D1 和 wrangler secret 都没有凭据时切到「设置密码」模式
+      fetch('/api/auth/status', { cache: 'no-store' })
+        .then((r) => r.json())
+        .then((env) => {
+          const st = env && env.data
+          if (!st) return
+          minLen = st.minPasswordLength || 8
+          setupMode = st.initialized === false
+          if (!setupMode) return
+
+          title.textContent = '初始化管理员'
+          submit.textContent = '设置密码并登录'
+          form.password.minLength = minLen
+          form.password.autocomplete = 'new-password'
+          form.password.placeholder = '设置密码（至少 ' + minLen + ' 位）'
+          const confirmWrap = document.getElementById('confirm-wrap')
+          const confirm = confirmWrap.querySelector('input')
+          confirm.required = true
+          confirm.minLength = minLen
+          confirmWrap.classList.remove('d-none')
+          hint.textContent = '首次访问：设置管理员账号，完成后此入口变为登录'
+          hint.classList.remove('d-none')
+        })
+        .catch(() => {})
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault()
+        clearError()
+        const data = new FormData(form)
+        const username = String(data.get('username') || '').trim()
+        const password = String(data.get('password') || '')
+        if (setupMode) {
+          if (password.length < minLen) return showError('密码至少 ' + minLen + ' 位')
+          if (password !== data.get('confirm')) return showError('两次输入的密码不一致')
+        }
+
+        submit.disabled = true
+        try {
+          const res = await fetch(setupMode ? '/api/setup' : '/api/login', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ username: username, password: password }),
+          })
+          const env = await res.json()
+          if (env.code === 0) {
+            location.href = '/'
+          } else {
+            showError(env.message || '登录失败')
+          }
+        } catch {
+          showError('网络错误，请重试')
+        } finally {
+          submit.disabled = false
+        }
+      })
+    </script>
+  </body>
+</html>

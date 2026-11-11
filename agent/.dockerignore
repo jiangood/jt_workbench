@@ -1,0 +1,6 @@
+# 构建上下文瘦身：镜像里只放 esbuild 产物，宿主依赖与本地产物不进上下文
+node_modules
+dist
+.env
+.env.*
+*.log

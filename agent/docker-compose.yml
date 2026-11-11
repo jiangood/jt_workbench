@@ -1,0 +1,24 @@
+# 部署双容器：agent + watchtower fork（v4.4：原版已归档，fork 语法兼容）
+# 密钥走 .env（不入库）；NODE_ID 多节点部署时必须各不相同
+services:
+  workbench-agent:
+    image: ghcr.io/<you>/workbench-agent:latest
+    restart: unless-stopped
+    environment:
+      - WORKER_URL=${WORKER_URL}
+      - NODE_ID=${NODE_ID}
+      - NODE_KEY=${NODE_KEY}
+      # - POLL_INTERVAL=600
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+
+  watchtower:
+    image: nicholas-fedor/watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ~/.docker/config.json:/config.json:ro
+    environment:
+      - WATCHTOWER_LABEL_ENABLE=true # 只更新带标签容器，不碰宿主机其他容器
+      - WATCHTOWER_POLL_INTERVAL=900 # 15 分钟短轮询
+      - WATCHTOWER_CLEANUP=true
