@@ -54,6 +54,7 @@ function numOrNull(v: unknown): number | null {
 interface ZsxqItem {
   topicId: string
   groupId: string
+  groupName?: string | null
   title?: string | null
   talkText?: string | null
   images?: Array<{ u: string; w?: number | null; h?: number | null }> | null
@@ -68,6 +69,7 @@ function asZsxqItem(item: unknown): ZsxqItem | null {
   return {
     topicId: it.topicId,
     groupId: it.groupId,
+    groupName: typeof it.groupName === 'string' && it.groupName ? it.groupName : null,
     title: typeof it.title === 'string' ? it.title : null,
     talkText: typeof it.talkText === 'string' ? it.talkText : null,
     images: Array.isArray(it.images) ? it.images : null,
@@ -123,9 +125,14 @@ export async function ingest(
     const rows = items.map(asZsxqItem).filter((r): r is ZsxqItem => r !== null)
     if (!rows.length) return 0
     await db.batch([
-      // 星球名（payload 无名字，agent summary 里捎带；此处仅保证 group 行存在）
+      // 星球名随 items 捎带（agent 同步时顺带查 groups.list）；缺失时保留旧名
       ...rows.map((r) =>
-        db.prepare('INSERT OR IGNORE INTO zsxq_group (id) VALUES (?)').bind(r.groupId),
+        db
+          .prepare(
+            `INSERT INTO zsxq_group (id, name) VALUES (?, ?)
+             ON CONFLICT (id) DO UPDATE SET name = COALESCE(excluded.name, name)`,
+          )
+          .bind(r.groupId, r.groupName),
       ),
       ...rows.map((r) =>
         db

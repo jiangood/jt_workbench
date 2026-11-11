@@ -21,9 +21,21 @@ export const zsxqHandler: JobHandler = async (payload, ctx) => {
   await sleep(1000 + Math.random() * 2000)
 
   const data = await client.listTopics(groupId, count, endTime, ctx.signal)
+
+  // 顺带刷新星球名称（失败不影响同步结果；名称随 items 回传，Worker 落库给页面选星球用）
+  let groupName: string | null = null
+  try {
+    const groups = await client.listGroups(ctx.signal)
+    groupName = (groups.groups ?? []).find((g) => String(g.group_id) === groupId)?.name ?? null
+  } catch (e) {
+    if (e instanceof ZsxqApiError) console.warn(`groups.list failed: ${e.code} ${e.message}`)
+    else console.warn(`groups.list failed: ${describeError(e)}`)
+  }
+
   const items = (data.topics ?? []).map((t: ZsxqTopic) => ({
     topicId: String(t.topic_id),
     groupId,
+    groupName,
     title: t.title ?? null,
     talkText: t.talk?.text ?? null,
     images: (t.talk?.images ?? []).map((im) => {
@@ -35,16 +47,6 @@ export const zsxqHandler: JobHandler = async (payload, ctx) => {
   }))
 
   if (ctx.signal.aborted) return { items: [], summary: 'aborted' }
-
-  // 顺带刷新星球名称（失败不影响同步结果）
-  let groupName: string | null = null
-  try {
-    const groups = await client.listGroups(ctx.signal)
-    groupName = (groups.groups ?? []).find((g) => String(g.group_id) === groupId)?.name ?? null
-  } catch (e) {
-    if (e instanceof ZsxqApiError) console.warn(`groups.list failed: ${e.code} ${e.message}`)
-    else console.warn(`groups.list failed: ${describeError(e)}`)
-  }
 
   return {
     items,

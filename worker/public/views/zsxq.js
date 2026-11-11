@@ -5,21 +5,36 @@ let page = 1
 
 export async function render(main) {
   const d = await api(`/api/zsxq/topics?page=${page}`)
+  const job = d.job ?? {}
   const groupOpts = (d.groups ?? [])
-    .map((g) => `<option value="${esc(g.id)}" ${g.enabled ? '' : 'disabled'}>${esc(g.name || g.id)}</option>`)
+    .map((g) => `<option value="${esc(g.id)}" label="${esc(g.name || g.id)}">${esc(g.name || g.id)}</option>`)
     .join('')
+  const statusText = job.enabled
+    ? `同步已启用${job.lastRunAt ? ` · 上次 ${fmtTime(job.lastRunAt)}` : ''}`
+    : '同步未启用'
 
   main.innerHTML = `
     <div class="page-head">
       <div>
         <h1 class="page-title">知识星球</h1>
-        <p class="page-sub">共 ${esc(d.total)} 条 · 同步节奏克制（token 在后台「参数与密钥」维护）</p>
+        <p class="page-sub">共 ${esc(d.total)} 条 · ${esc(statusText)} · token 在后台「参数与密钥」维护</p>
       </div>
       <div class="page-actions">
-        <select class="field field-sm" id="group">${groupOpts || '<option value="">配置 groupId</option>'}</select>
+        <input class="field field-sm" id="group" list="group-list" inputmode="numeric" autocomplete="off"
+               style="max-width: 210px" placeholder="星球 ID（数字）" value="${esc(job.groupId ?? '')}"
+               aria-label="知识星球 groupId">
+        <datalist id="group-list">${groupOpts}</datalist>
+        <label class="check"><input type="checkbox" id="sync-enabled" ${job.enabled ? 'checked' : ''}> 启用同步</label>
         <button class="btn sm primary" id="save-group">保存同步配置</button>
       </div>
     </div>
+    ${
+      job.enabled
+        ? job.result
+          ? `<p class="small muted">最近一次同步：${esc(String(job.result).slice(0, 160))}</p>`
+          : ''
+        : `<p class="small muted">星球 ID 取自网页版地址 <code>wx.zsxq.com/group/&lt;数字&gt;</code>：填好并勾选「启用同步」保存，节点下次轮询就会同步一轮。</p>`
+    }
     <div class="list">
       ${
         d.topics
@@ -44,7 +59,7 @@ export async function render(main) {
           <small class="muted">${fmtTime(t.createTime)}</small>
         </div>`,
           )
-          .join('') || '<div class="empty">暂无话题（配置 groupId 并启用 zsxq_sync 任务后由节点同步）</div>'
+          .join('') || '<div class="empty">暂无话题（在上方填写星球 ID 并保存，任务启用后由节点同步）</div>'
       }
     </div>
     <nav class="mt-3 flex center">
@@ -63,11 +78,20 @@ export async function render(main) {
   main.querySelector('#next').onclick = () => go(1)
   main.querySelector('#save-group').onclick = async () => {
     const btn = main.querySelector('#save-group')
-    const gid = main.querySelector('#group').value
-    if (!gid) return toast('先选择要同步的星球', true)
-    const res = await run(btn, () => api('/api/zsxq/job', { method: 'POST', body: JSON.stringify({ groupId: gid, enabled: true }) }))
+    const gid = main.querySelector('#group').value.trim()
+    const enabled = main.querySelector('#sync-enabled').checked
+    if (enabled && !/^\d{1,20}$/.test(gid)) {
+      return toast('先填写星球数字 ID（网页版地址 /group/ 后面那串数字）', true)
+    }
+    const res = await run(btn, () =>
+      api('/api/zsxq/job', {
+        method: 'POST',
+        body: JSON.stringify({ groupId: gid || undefined, enabled }),
+      }),
+    )
     if (!res.ok) return
-    toast('已保存：zsxq_sync 任务已启用')
+    toast(enabled ? '已保存：同步任务已启用，节点下次轮询即同步' : '已保存：同步任务已停用')
+    await rerender(render, main)
   }
 }
 
