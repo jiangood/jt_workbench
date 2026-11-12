@@ -4,11 +4,6 @@
  * 跨境链路只有 ~84KB/s（实测），所以「打开一本书」的成本主要在传输，三层处理：
  * - 所有文件 URL 带 ?v=<updatedAt>：换文件必然换版本，服务端据此回 immutable 长缓存（core/files.ts），
  *   第二次打开不再重新下载
- * - txt：整本下载（显示下载大小 / 百分比）→ 解码 → 分章；页脚进度按「当前章节在全书中的
- *   字符位置 + 章内滚动比例」计算，跳章 / 翻页后仍是全书总进度；目录随时可在目录栏 / 弹窗里
- *   手动重新生成（只重扫本地全文，不再重新下载）
- * - txt 右键菜单：选中文字后可「复制」，或「批量删除广告」——读整本 → 删掉所有选中文字
- *   （命中后整行变空的一并去行）→ 以新文件重传（新 uuid = 新版本号，缓存自然失效）→ 重开
  * - epub：库不支持 Range，仍是整本 ArrayBuffer，但脚本与文件并行下载 + 显示进度
  *   （/api/book/read/:id 没有 .epub 后缀，交给库按 URL 找目录会 404）
  * - pdf：浏览器原生查看器（Worker 透传 Range，渐进加载）
@@ -146,7 +141,7 @@ function wireSeg(dlg, key, options, onChange) {
   })
 }
 
-/** 排版挂在 .reader-root 的 CSS 变量上：TXT 正文与 EPUB 外层容器共用一套（epub iframe 另行覆盖） */
+/** 排版挂在 .reader-root 的 CSS 变量上：正文与 EPUB 外层容器共用一套（epub iframe 另行覆盖） */
 function applyReaderType(root, { family, weight, width } = {}) {
   if (!root) return
   const fam = family ?? readFontFamily()
@@ -208,11 +203,11 @@ function fabHtml() {
 /**
  * 阅读设置弹窗：模式 / 字号 / 字体 / 字重 / 行距 / 段距 / 宽度 / 自动翻页 / 背景 / 翻页动效 / 显示。
  * font = { value, min, max, onFont }；line = { value, onLine }（epub 行距跟随原书，不传）；
- * family / weight / para / width = { value, onChange }（para 仅 txt；width 只在宽屏可见差异）
+ * family / weight / para / width = { value, onChange }（width 只在宽屏可见差异）
  * auto = { value, onChange }（秒，0 = 关闭）；actions = [{ id, label, pressed, onToggle }]
  * turn = { value, onChange }（none / fade / slide，翻页动效）
  * mode = { value, onChange }（paged / scroll，仅 epub）
- * onTheme(id) 由调用方接到背景切换（txt 只换令牌，epub 还要刷 iframe 主题）。
+ * onTheme(id) 由调用方接到背景切换（EPUB 还要刷 iframe 主题）。
  */
 function openReaderSettings({
   theme,
@@ -697,7 +692,7 @@ function ttsBarHtml() {
  * 朗读控制器（Web Speech API）。
  *
  * getSegments() 由阅读器按当前 DOM 生成 [{ text, focus }]，每段读一个 utterance；
- * getStartIndex(segments) 决定从哪一段开始（txt 取视口顶部那段，epub 从头）；
+ * getStartIndex(segments) 决定从哪一段开始（EPUB 从头）；
  * onExhausted() 读完当前内容时回调，返回 true 表示已续上新内容（继续读），false 停止。
  *
  * 平台边界：SpeechSynthesis 在桌面 Chrome / Edge / Safari / Android 可用；iOS 需要用户手势
@@ -1028,8 +1023,8 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted }) {
  *
  * 只响应单指、短时、位移小的操作：长按选字、双指缩放、纵向滚动一律放行；
  * 起点在屏幕左右 24px 内不响应，避免撞上系统边缘返回手势。
- * doc 给定时监听 iframe 内部（epub），否则监听 surface（txt 正文 / epub 外边距）。
- * onSwipePrev / onSwipeNext 缺省与点击一致（txt 用来区分「翻一屏」和「跳章」）。
+ * doc 给定时监听 iframe 内部（epub），否则监听 surface（EPUB 外边距）。
+ * onSwipePrev / onSwipeNext 缺省与点击一致。
  * 返回 teardown。
  */
 function setupReaderGestures({
@@ -2272,7 +2267,7 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
   }
 }
 
-/* ---------------- txt ---------------- */
+/* ---------------- 阅读存储工具 ---------------- */
 
 function readStorage(key) {
   try {
