@@ -364,8 +364,7 @@ book.post('/upload', async (c) => {
 function bookFormat(filename: string): string {
   if (/\.pdf$/i.test(filename)) return 'pdf'
   if (/\.epub$/i.test(filename)) return 'epub'
-  if (/\.txt$/i.test(filename)) return 'txt'
-  throw new ApiError(400, 400, '仅支持 epub / pdf / txt')
+  throw new ApiError(400, 400, '仅支持 epub / pdf')
 }
 
 /** 文件已进 R2 之后落库：单请求与分片 complete 共用（入库失败要把刚写的对象删掉，避免孤儿） */
