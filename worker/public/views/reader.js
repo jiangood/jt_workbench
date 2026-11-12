@@ -1,12 +1,11 @@
 /**
- * 阅读页（独立路由 #/reader?id=）：epub / pdf 都在整页里读，不再塞进弹窗。
+ * 阅读页（独立路由 #/reader?id=）：epub 在整页里读，不再塞进弹窗。
  *
  * 跨境链路只有 ~84KB/s（实测），所以「打开一本书」的成本主要在传输，三层处理：
  * - 所有文件 URL 带 ?v=<updatedAt>：换文件必然换版本，服务端据此回 immutable 长缓存（core/files.ts），
  *   第二次打开不再重新下载
  * - epub：库不支持 Range，仍是整本 ArrayBuffer，但脚本与文件并行下载 + 显示进度
  *   （/api/book/read/:id 没有 .epub 后缀，交给库按 URL 找目录会 404）
- * - pdf：浏览器原生查看器（Worker 透传 Range，渐进加载）
  *
  * 版式：微信读书式沉浸页——body.reading 时全局侧栏 / 顶栏隐藏（app.js 挂类），阅读页
  * 自带顶栏（书名 + 章节 + 阅读进度百分比，右上角「首页 / 我的书架」），正文栏宽默认 800px（可调 640/800/1000）。
@@ -1234,19 +1233,14 @@ export async function render(main, params) {
   // 打开即记一次「最近阅读」：书架默认排序按它倒序置顶；待读 → 阅读中，失败静默不挡阅读
   api(`/api/book/${id}/reading`, { method: 'POST' }).catch(() => {})
 
-  // 进度回写书架卡片：epub 阅读器翻页 / 滚动时调用（pdf 是浏览器原生查看器，拿不到页码）
+  // 进度回写书架卡片：epub 阅读器翻页 / 滚动时调用
   reportProgress = progressReporter(id)
 
-  if (book.fmt === 'pdf') {
-    // PDF 交给浏览器原生查看器：自带缩放 / 页码 / 目录，不再叠加一层页脚
-    stage.innerHTML = `<iframe class="reader-frame" src="${esc(fileUrl)}" title="${esc(title)}"></iframe>`
-    return
-  }
   if (book.fmt !== 'epub') {
-    stage.innerHTML = message('该文件格式已不再支持，请上传 EPUB 或 PDF 文件。')
+    stage.innerHTML = message('该文件格式已不再支持，请上传 EPUB 文件。')
     return
   }
-  // 阅读计时：PDF 原生查看器收不到滚动与按键
+  // 阅读计时：统计 EPUB 阅读页的活跃时长
   readingTimer = createReadingTimer(id)
   await openEpubReader(id, version, fileUrl, stage, setChapter)
 }
@@ -1267,7 +1261,7 @@ function setProgress(root, ratio, text) {
 
 /**
  * 阅读进度回写书架卡片：同一百分比不重复发，翻页很快时攒 2 秒再发，离页时 flush。
- * 失败静默（只影响书架上的进度条，不影响阅读）；pdf 走浏览器原生查看器拿不到页码，不接。
+ * 失败静默（只影响书架上的进度条，不影响阅读）。
  */
 function progressReporter(id) {
   let last = -1
@@ -1301,7 +1295,7 @@ let reportProgress = null
 /**
  * 本机阅读计时（issue #23）：只累计「页面可见 + 最近 5 分钟有交互」的净时长。
  * 每 5 秒结算一次，攒够 15 秒落盘一次；切后台 / 隐藏标签页立即停止累计，
- * 离开阅读页 stop() 把最后一段补齐。PDF 原生查看器拿不到这些事件，不计。
+ * 离开阅读页 stop() 把最后一段补齐。
  */
 function createReadingTimer(id) {
   const IDLE_MS = 300_000
