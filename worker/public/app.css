@@ -1167,6 +1167,16 @@ textarea[aria-invalid="true"] { border-color: var(--danger) }
 }
 .news-item.is-read .news-title { color: var(--muted-fg); font-weight: 400 }
 .news-item .item-preview:empty { display: none }
+/* 资讯预览里的原文配图收敛成缩略图，段落也别把列表撑高（issue #19） */
+.news-item .item-preview img {
+  max-width: 100%;
+  max-height: 120px;
+  width: auto;
+  object-fit: cover;
+  border-radius: var(--r-sm);
+  margin: 4px 0;
+}
+.news-item .item-preview p { margin: 2px 0 }
 .link-btn {
   padding: 0;
   border: 0;

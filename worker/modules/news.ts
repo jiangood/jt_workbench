@@ -4,6 +4,7 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { ok, ApiError, type Env } from '../core/envelope'
 import { normalizeCron } from '../core/node'
+import { clampPublishedAt, normalizeAuthor, normalizeHtmlUrls, normalizeUrl } from '../core/ingest'
 
 const PAGE_SIZE = 30
 
@@ -18,30 +19,120 @@ export const news = new Hono<Env>()
 
 // ---------- 列表 ----------
 
-news.get('/items', async (c) => {
-  const page = Math.max(1, Number(c.req.query('page') ?? '1') || 1)
-  const sourceId = c.req.query('sourceId') || null
-  const onlyUnread = c.req.query('unread') === '1'
+/** 列表与「全部标为已读」共用同一份筛选条件（issue #22）：口径必须一致，别各拼一份 WHERE */
+interface NewsFilter {
+  sourceId?: string | null
+  category?: string | null
+  q?: string | null
+  unread?: boolean
+}
 
-  // 条件按需拼，绑定值同序；只有未读筛选时走 idx_news_item_unread
+function buildFilter(f: NewsFilter): {
+  whereSql: string
+  bind: (string | number)[]
+  /** 至少有一个收窄条件（空筛选 = 「整个列表」这种大面积动作，批量已读要求显式 all:true） */
+  scoped: boolean
+} {
   const where: string[] = []
   const bind: (string | number)[] = []
-  if (sourceId) {
+  if (f.sourceId) {
     where.push('source_id = ?')
-    bind.push(sourceId)
+    bind.push(f.sourceId)
   }
-  if (onlyUnread) where.push('read_flag = 0')
-  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
+  if (f.category) {
+    where.push('source_id IN (SELECT id FROM news_source WHERE category = ?)')
+    bind.push(f.category)
+  }
+  const q = (f.q ?? '').trim()
+  if (q) {
+    // 用户输入里的 % _ \ 当普通字符，别让 LIKE 通配符扩大命中范围
+    const like = `%${q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`
+    where.push("(title LIKE ? ESCAPE '\\' OR content_html LIKE ? ESCAPE '\\')")
+    bind.push(like, like)
+  }
+  if (f.unread) where.push('read_flag = 0')
+  return { whereSql: where.length ? `WHERE ${where.join(' AND ')}` : '', bind, scoped: where.length > 0 }
+}
+
+function filterFromQuery(c: Context<Env>): NewsFilter {
+  return {
+    sourceId: c.req.query('sourceId') || null,
+    category: c.req.query('category') || null,
+    q: c.req.query('q') || null,
+    unread: c.req.query('unread') === '1',
+  }
+}
+
+interface NewsListRow {
+  id: number
+  sourceId: string
+  title: string | null
+  link: string | null
+  author: string | null
+  publishedAt: number | null
+  fetchedAt: number | null
+  readFlag: number
+  preview: string | null
+}
+
+interface NewsDetailRow {
+  id: number
+  title: string | null
+  link: string | null
+  author: string | null
+  publishedAt: number | null
+  fetchedAt: number | null
+  readFlag: number
+  contentHtml: string | null
+  sourceName: string | null
+}
+
+/**
+ * 历史数据兜底（issue #19）：入库清洗上线前的老行不改库，返回时走同一套函数——
+ * 坏链 / 带邮箱作者 / 未来时间在列表和详情里都看不到。
+ */
+function normalizeListRow(r: NewsListRow): Omit<NewsListRow, 'fetchedAt'> {
+  const link = normalizeUrl(r.link)
+  return {
+    id: r.id,
+    sourceId: r.sourceId,
+    title: r.title,
+    link,
+    author: normalizeAuthor(r.author),
+    // 真实发布时刻不可能晚于抓取时刻：clamp 掉上游时区错标带来的未来时间
+    publishedAt: clampPublishedAt(r.publishedAt, r.fetchedAt ?? Date.now()),
+    readFlag: r.readFlag,
+    preview: normalizeHtmlUrls(r.preview, link),
+  }
+}
+
+function normalizeDetailRow(r: NewsDetailRow): Omit<NewsDetailRow, 'fetchedAt'> {
+  const link = normalizeUrl(r.link)
+  return {
+    id: r.id,
+    title: r.title,
+    link,
+    author: normalizeAuthor(r.author),
+    publishedAt: clampPublishedAt(r.publishedAt, r.fetchedAt ?? Date.now()),
+    readFlag: r.readFlag,
+    contentHtml: normalizeHtmlUrls(r.contentHtml, link),
+    sourceName: r.sourceName,
+  }
+}
+
+news.get('/items', async (c) => {
+  const page = Math.max(1, Number(c.req.query('page') ?? '1') || 1)
+  const { whereSql, bind } = buildFilter(filterFromQuery(c))
 
   const [items, count, unread] = await Promise.all([
     c.env.DB
       .prepare(
         `SELECT id, source_id AS sourceId, title, link, author, published_at AS publishedAt,
-                read_flag AS readFlag, substr(content_html, 1, 300) AS preview
+                fetched_at AS fetchedAt, read_flag AS readFlag, substr(content_html, 1, 300) AS preview
          FROM news_item ${whereSql} ORDER BY published_at DESC, id DESC LIMIT ? OFFSET ?`,
       )
       .bind(...bind, PAGE_SIZE, (page - 1) * PAGE_SIZE)
-      .all(),
+      .all<NewsListRow>(),
     c.env.DB
       .prepare(`SELECT count(*) AS total FROM news_item ${whereSql}`)
       .bind(...bind)
@@ -51,9 +142,11 @@ news.get('/items', async (c) => {
       .first<{ n: number }>(),
   ])
 
+  const total = count?.total ?? 0
   return ok({
-    items: items.results,
-    total: count?.total ?? 0,
+    items: items.results.map(normalizeListRow),
+    total,
+    pages: Math.max(1, Math.ceil(total / PAGE_SIZE)),
     unread: unread?.n ?? 0,
     page,
     pageSize: PAGE_SIZE,
@@ -65,14 +158,15 @@ news.get('/items/:id', async (c) => {
   const item = await c.env.DB
     .prepare(
       `SELECT i.id, i.title, i.link, i.author, i.published_at AS publishedAt,
-              i.read_flag AS readFlag, i.content_html AS contentHtml, s.name AS sourceName
+              i.fetched_at AS fetchedAt, i.read_flag AS readFlag, i.content_html AS contentHtml,
+              s.name AS sourceName
        FROM news_item i LEFT JOIN news_source s ON s.id = i.source_id
        WHERE i.id = ?`,
     )
     .bind(c.req.param('id'))
-    .first()
+    .first<NewsDetailRow>()
   if (!item) throw new ApiError(404, 404, 'not found')
-  return ok({ item })
+  return ok({ item: normalizeDetailRow(item) })
 })
 
 // ---------- 已读状态 ----------
@@ -101,6 +195,37 @@ async function setReadFlag(c: Context<Env>, read: boolean): Promise<Response> {
 
 news.post('/read', (c) => setReadFlag(c, true))
 news.post('/unread', (c) => setReadFlag(c, false))
+
+/**
+ * POST /read-all：把「当前筛选」的资讯一次性标为已读（issue #22）。
+ * body 与列表查询参数同口径：{ sourceId?, category?, q?, unread?, all? }。
+ * 空筛选等于「整个列表」，影响面最大：必须显式带 all:true（前端弹确认后才发），
+ * 避免某个调用方漏传参数时把 533 条全部清成已读。
+ */
+news.post('/read-all', async (c) => {
+  let body: { sourceId?: unknown; category?: unknown; q?: unknown; unread?: unknown; all?: unknown } = {}
+  try {
+    body = await c.req.json<typeof body>()
+  } catch {
+    /* 空 body 按「无筛选」处理，交给下面的 all:true 守卫 */
+  }
+  const filter: NewsFilter = {
+    sourceId: typeof body.sourceId === 'string' ? body.sourceId : null,
+    category: typeof body.category === 'string' ? body.category : null,
+    q: typeof body.q === 'string' ? body.q : null,
+    unread: body.unread === true || body.unread === 1,
+  }
+  const { whereSql, bind, scoped } = buildFilter(filter)
+  if (!scoped && body.all !== true) throw new ApiError(400, 400, 'filters or all=true required')
+
+  // 一条 UPDATE 打完，不按页循环
+  const r = await c.env.DB
+    .prepare(`UPDATE news_item SET read_flag = 1 ${whereSql}`)
+    .bind(...bind)
+    .run()
+  return ok({ changed: r.meta.changes ?? 0 })
+})
+
 
 // ---------- 订阅源 ----------
 

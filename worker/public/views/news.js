@@ -3,11 +3,16 @@ import { emptyState } from '../ui.js'
 
 const PAGE_SIZE = 30
 let page = 1
+let total = 0
 let onlyUnread = false
 let unreadCount = 0
 let blocks = []
 let sources = []
 let sourceIdx = {}
+let loading = false
+let observer = null
+/** 渲染序号：无限滚动的异步加载在 await 后检查，避免把旧页数据追加进重绘后的新列表 */
+let renderToken = 0
 
 /** 正文消毒在浏览器端（原文入库，v3 决策 #9） */
 function sanitize(html) {
@@ -39,8 +44,202 @@ function matchBlocks(item) {
   })
 }
 
+function itemHtml(i) {
+  const link = i.link || ''
+  return `
+    <div class="news-item${i.readFlag ? ' is-read' : ''}">
+      <div class="flex between center">
+        <div class="flex center flex-grow-1 news-line">
+          <span class="news-dot" aria-hidden="true"></span>
+          <a class="news-title" href="${esc(link || '#')}" target="_blank" rel="noopener"
+             data-open="${esc(i.id)}">${esc(i.title || '(无标题)')}</a>
+        </div>
+        <small class="muted nowrap ms-3">${i.publishedAt ? new Date(i.publishedAt).toLocaleDateString() : ''}</small>
+      </div>
+      <div class="flex between center mt-1">
+        <small class="muted">${esc(sourceName(i.sourceId))}${i.author ? ' · ' + esc(i.author) : ''}</small>
+        <span class="flex center">
+          <span data-origin="${esc(i.id)}"></span>
+          <button class="link-btn" type="button" data-toggle="${esc(i.id)}" data-read="${i.readFlag ? '1' : ''}">
+            ${i.readFlag ? '标为未读' : '标为已读'}
+          </button>
+        </span>
+      </div>
+      <div class="small item-preview mt-1" data-id="${esc(i.id)}"></div>
+    </div>`
+}
+
+/** 预览里重复的「点击查看原文」入口（标题本身就是链接，issue #22） */
+const DUP_ORIGIN_TEXT = /^(?:点击查看原文|查看原文|阅读原文|阅读全文|查看全文|原文链接|原文|read\s*more|more)\s*[»›>→]*$/i
+
+/**
+ * 单条正文预览：DOMPurify 消毒后注入（消毒仍在浏览器端，v3 决策 #9）。
+ * - 去掉与标题重复的「点击查看原文」；剩下没有正文时收成行尾「原文 ↗」小按钮
+ * - 坏链图片（上游 `https:https://…` 之类）加载失败就移除，不留碎图标
+ */
+function fillOrigin(el, item, link) {
+  const slot = el.closest('.news-item')?.querySelector(`[data-origin="${esc(item?.id)}"]`)
+  if (!slot || slot.childElementCount || !link) return
+  const hasBody = !!el.textContent.trim() || !!el.querySelector('img, video, iframe, table')
+  if (!hasBody) slot.innerHTML = `<a class="btn sm" href="${esc(link)}" target="_blank" rel="noopener">原文 ↗</a>`
+}
+
+function applyPreview(el, item) {
+  el.innerHTML = sanitize(item?.preview || '')
+  const link = item?.link || ''
+  el.querySelectorAll('a[href]').forEach((a) => {
+    const text = (a.textContent || '').replace(/\s+/g, ' ').trim()
+    const sameTarget = !!link && a.href === link && !a.querySelector('img')
+    if (DUP_ORIGIN_TEXT.test(text) || sameTarget) {
+      a.remove()
+      return
+    }
+    a.target = '_blank'
+    a.rel = 'noopener'
+  })
+  // 移除链接后可能留下空块（<p> </p>），顺手清掉，避免多一行空白
+  el.querySelectorAll('p, div, li, span, section').forEach((n) => {
+    if (!n.textContent.trim() && !n.querySelector('img, video, iframe, table')) n.remove()
+  })
+  el.querySelectorAll('img').forEach((img) => {
+    img.loading = 'lazy'
+    img.decoding = 'async'
+    // 加载失败（含 CSP 拦掉的 http 图）就移除整张图；只剩图的条目降级成「原文 ↗」
+    img.onerror = () => {
+      img.remove()
+      fillOrigin(el, item, link)
+    }
+  })
+  fillOrigin(el, item, link)
+}
+
+/** 正文预览：只处理本批返回的条目，避免把已注入的旧预览清空 */
+function applyPreviews(root, items) {
+  const byId = new Map(items.map((x) => [String(x.id), x]))
+  root.querySelectorAll('.item-preview').forEach((el) => {
+    const it = byId.get(el.dataset.id)
+    if (it) applyPreview(el, it)
+  })
+}
+
+/** 分页信息：无限滚动下显示「第 N / 总页」= 已加载到第 N 页（总数接口给 total，这里换算页数） */
+function totalPages() {
+  return Math.max(1, Math.ceil(total / PAGE_SIZE))
+}
+
+function syncPager(main) {
+  const pages = totalPages()
+  const loaded = Math.min(pages, Math.max(1, page - 1))
+  const info = main.querySelector('#page-info')
+  if (info) info.textContent = `第 ${loaded} / ${pages} 页`
+  const jump = main.querySelector('#page-jump')
+  if (jump) jump.max = String(pages)
+}
+
+function setLoadStatus(main) {
+  const el = main.querySelector('#load-status')
+  if (!el) return
+  if (!total) {
+    el.textContent = ''
+    return
+  }
+  el.textContent = page * PAGE_SIZE >= total ? `已全部加载（共 ${total} 条）` : '上滑加载更多'
+}
+
+/** 点标题打开原文时顺带标记已读（失败不影响跳转）；手动切换已读/未读 */
+function wireItems(main) {
+  main.querySelectorAll('[data-open]').forEach((a) => {
+    a.onclick = () => {
+      if (a.closest('.news-item')?.classList.contains('is-read')) return
+      setRead(main, a.dataset.open, true)
+    }
+  })
+  main.querySelectorAll('[data-toggle]').forEach((btn) => {
+    btn.onclick = async () => {
+      const read = btn.dataset.read !== '1'
+      if ((await setRead(main, btn.dataset.toggle, read)) && onlyUnread && read) {
+        await rerender(render, main)
+      }
+    }
+  })
+}
+
+/** 哨兵进入视口（含 400px 预取余量）就追加下一页 */
+function setupInfiniteScroll(main) {
+  const sentinel = main.querySelector('#sentinel')
+  if (!sentinel || typeof IntersectionObserver === 'undefined') return
+  observer = new IntersectionObserver(
+    (entries) => {
+      if (entries.some((e) => e.isIntersecting)) loadMore(main)
+    },
+    { rootMargin: '400px 0px' },
+  )
+  observer.observe(sentinel)
+}
+
+/** 追加下一页：屏蔽词在客户端过滤，整页可能被滤空，继续往后取直到出现可见条目或到底 */
+async function loadMore(main) {
+  const token = renderToken
+  if (loading || page * PAGE_SIZE >= total) return
+  loading = true
+  const status = main.querySelector('#load-status')
+  if (status) status.textContent = '加载中…'
+  try {
+    while (page * PAGE_SIZE < total) {
+      const data = await api(`/api/news/items?page=${page}${onlyUnread ? '&unread=1' : ''}`)
+      if (token !== renderToken) return // 视图已重绘 / 已跳页，别把旧页数据写进新列表
+      page++
+      total = Number(data.total) || total
+      const visible = data.items.filter((i) => !matchBlocks(i))
+      const list = main.querySelector('#items')
+      if (!list) return
+      list.querySelector('.empty')?.remove()
+      list.insertAdjacentHTML('beforeend', visible.map(itemHtml).join(''))
+      applyPreviews(main, data.items)
+      wireItems(main)
+      if (visible.length) break
+    }
+  } finally {
+    if (token === renderToken) loading = false
+  }
+  if (token !== renderToken) return
+  setLoadStatus(main)
+  syncPager(main)
+}
+
+/** 页码跳转（Enter 触发，越界 clamp）：列表直接换成目标页，之后继续向下无限滚动 */
+async function goToPage(main, raw) {
+  const target = Math.min(totalPages(), Math.max(1, Math.floor(Number(raw)) || 1))
+  const list = main.querySelector('#items')
+  if (!list) return
+  const token = ++renderToken // 作废在途的 loadMore 结果
+  loading = false
+  const res = await run(null, () => api(`/api/news/items?page=${target}${onlyUnread ? '&unread=1' : ''}`))
+  if (token !== renderToken) return
+  if (!res.ok) return
+  const data = res.data
+  total = Number(data.total) || total
+  page = target + 1
+  const visible = data.items.filter((i) => !matchBlocks(i))
+  list.innerHTML =
+    visible.map(itemHtml).join('') ||
+    (total ? '' : emptyState(onlyUnread ? '没有未读资讯' : '暂无内容（等待抓取任务执行）'))
+  applyPreviews(list, data.items)
+  wireItems(main)
+  setLoadStatus(main)
+  syncPager(main)
+  scrollToTop()
+}
+
 export async function render(main) {
   await loadScriptOnce('/vendor/purify.min.js')
+
+  // 无限滚动：每次进视图 / 切筛选都从第一页开始
+  page = 1
+  loading = false
+  observer?.disconnect()
+  observer = null
+  const token = ++renderToken
 
   const [itemData, blockData, sourceData] = await Promise.all([
     api(`/api/news/items?page=${page}${onlyUnread ? '&unread=1' : ''}`),
@@ -50,6 +249,7 @@ export async function render(main) {
   blocks = blockData.blocks
   sources = sourceData.sources
   sourceIdx = Object.fromEntries(sources.map((s) => [s.id, s.name]))
+  total = Number(itemData.total) || 0
   unreadCount = Number(itemData.unread ?? 0)
   const visible = itemData.items.filter((i) => !matchBlocks(i))
 
@@ -72,6 +272,7 @@ export async function render(main) {
         <p class="page-sub">共 ${esc(itemData.total)} 条 · <span id="unread-count">未读 ${unreadCount}</span> · 正文在浏览器端消毒后展示</p>
       </div>
       <div class="page-actions">
+        <button class="btn sm" id="btn-read-all"${total ? '' : ' disabled'}>全部标为已读</button>
         <button class="btn sm" id="btn-unread" data-focus-key="unread" aria-pressed="${onlyUnread}">${onlyUnread ? '显示全部' : '只看未读'}</button>
         <button class="btn sm" id="btn-sources">${icon('news')}订阅源</button>
         <button class="btn sm" id="btn-blocks">${icon('close')}屏蔽词</button>
@@ -83,75 +284,60 @@ export async function render(main) {
     </p>
     <div class="list" id="items">
       ${
-        visible
-          .map(
-            (i) => `
-        <div class="news-item${i.readFlag ? ' is-read' : ''}">
-          <div class="flex between center">
-            <div class="flex center flex-grow-1 news-line">
-              <span class="news-dot" aria-hidden="true"></span>
-              <a class="news-title" href="${esc(i.link || '#')}" target="_blank" rel="noopener"
-                 data-open="${esc(i.id)}">${esc(i.title || '(无标题)')}</a>
-            </div>
-            <small class="muted nowrap ms-3">${i.publishedAt ? new Date(i.publishedAt).toLocaleDateString() : ''}</small>
-          </div>
-          <div class="flex between center mt-1">
-            <small class="muted">${esc(sourceName(i.sourceId))}${i.author ? ' · ' + esc(i.author) : ''}</small>
-            <button class="link-btn" type="button" data-toggle="${esc(i.id)}" data-read="${i.readFlag ? '1' : ''}">
-              ${i.readFlag ? '标为未读' : '标为已读'}
-            </button>
-          </div>
-          <div class="small item-preview mt-1" data-id="${esc(i.id)}"></div>
-        </div>`,
-          )
-          .join('') || emptyState(onlyUnread ? '没有未读资讯' : '暂无内容（等待抓取任务执行）')
+        visible.map(itemHtml).join('') ||
+        (total ? '' : emptyState(onlyUnread ? '没有未读资讯' : '暂无内容（等待抓取任务执行）'))
       }
     </div>
-    <nav class="mt-3 flex center">
-      <button class="btn sm" id="prev" data-focus-key="prev" ${page <= 1 ? 'disabled' : ''}>上一页</button>
-      <span class="small muted">第 ${page} 页</span>
-      <button class="btn sm" id="next" data-focus-key="next" ${page * PAGE_SIZE >= itemData.total ? 'disabled' : ''}>下一页</button>
-    </nav>`
+    <p class="small muted text-center mt-2" id="pager">
+      <span id="page-info">第 1 / ${totalPages()} 页</span>
+      <label class="ms-3" for="page-jump">跳到</label>
+      <input class="field-sm" id="page-jump" type="number" inputmode="numeric" min="1" step="1"
+             style="width: 4.5em" aria-label="跳转到页码">
+      <span>页</span>
+    </p>
+    <p class="small muted center mt-2" id="load-status" role="status">${total ? '上滑加载更多' : ''}</p>
+    <div id="sentinel" aria-hidden="true"></div>`
 
   // 正文预览：原文已在列表返回，浏览器端 DOMPurify 消毒后注入
-  main.querySelectorAll('.item-preview').forEach((el) => {
-    const it = itemData.items.find((x) => String(x.id) === el.dataset.id)
-    el.innerHTML = sanitize(it?.preview || '')
-  })
+  applyPreviews(main, itemData.items)
+  wireItems(main)
+  syncPager(main)
+  setLoadStatus(main)
 
-  // 翻页后回顶：否则列表重新渲染时用户还停在上一页的底部
-  const go = async (delta) => {
-    page += delta
-    await rerenderKeepingFocus(render, main)
-    scrollToTop()
-  }
-  main.querySelector('#prev').onclick = () => go(-1)
-  main.querySelector('#next').onclick = () => go(1)
   main.querySelector('#btn-unread').onclick = async () => {
     onlyUnread = !onlyUnread
-    page = 1
     await rerenderKeepingFocus(render, main)
     scrollToTop()
   }
   main.querySelector('#btn-sources').onclick = () => showSources(main)
   main.querySelector('#btn-blocks').onclick = () => showBlocks(main)
 
-  // 点标题打开原文时顺带标记已读（失败不影响跳转）
-  main.querySelectorAll('[data-open]').forEach((a) => {
-    a.onclick = () => {
-      if (a.closest('.news-item')?.classList.contains('is-read')) return
-      setRead(main, a.dataset.open, true)
-    }
-  })
-  // 手动切换已读/未读
-  main.querySelectorAll('[data-toggle]').forEach((btn) => {
-    btn.onclick = async () => {
-      const read = btn.dataset.read !== '1'
-      if ((await setRead(main, btn.dataset.toggle, read)) && onlyUnread && read) {
-        await rerender(render, main)
-      }
-    }
-  })
+  // 全部标为已读：作用于「当前筛选」（只看未读 / 整个列表），二次确认后一条 UPDATE 打完
+  const readAllBtn = main.querySelector('#btn-read-all')
+  readAllBtn.onclick = async () => {
+    const scope = onlyUnread ? '当前未读' : '当前列表'
+    if (!confirm(`把${scope}的 ${total} 条资讯全部标为已读？此操作不可撤销。`)) return
+    // 无筛选 = 整个列表：显式 all:true 才允许服务端放行（/api/news/read-all 的守卫）
+    const body = onlyUnread ? { unread: true } : { all: true }
+    const res = await run(readAllBtn, () =>
+      api('/api/news/read-all', { method: 'POST', body: JSON.stringify(body) }),
+    )
+    if (!res.ok) return
+    toast(`已标为已读 ${Number(res.data?.changed ?? 0)} 条`)
+    await rerender(render, main)
+  }
+
+  // 页码跳转：Enter 生效，越界由 goToPage clamp 到 1..总页
+  const jumpInput = main.querySelector('#page-jump')
+  jumpInput.onkeydown = (e) => {
+    if (e.key !== 'Enter') return
+    e.preventDefault()
+    const target = jumpInput.value
+    jumpInput.value = ''
+    goToPage(main, target)
+  }
+
+  setupInfiniteScroll(main)
 }
 
 /** 写已读状态 + 本地乐观更新（圆点 / 按钮 / 未读数），失败由 run 统一 toast */
@@ -278,4 +464,7 @@ function showBlocks(main) {
   }
 }
 
-export function destroy() {}
+export function destroy() {
+  observer?.disconnect()
+  observer = null
+}
