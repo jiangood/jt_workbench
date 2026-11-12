@@ -69,6 +69,12 @@ music.patch('/:id', async (c) => {
   // 艺术家 / 专辑留空表示「未知」，存 NULL 让前端统一显示占位符
   if ('artist' in b) set('artist', text(b.artist, MAX_META))
   if ('album' in b) set('album', text(b.album, MAX_META))
+  // 时长（秒）：老曲目入库时没解析出来，由音乐页「补全元数据」按需回填（issue #18）
+  if ('duration' in b) {
+    const d = Math.round(Number(b.duration))
+    if (!Number.isFinite(d) || d <= 0 || d >= 86_400) throw new ApiError(400, 400, '无效的时长')
+    set('duration', d)
+  }
 
   if (!sets.length) return ok(null)
   await c.env.DB
