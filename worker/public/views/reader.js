@@ -15,10 +15,20 @@
  *
  * 版式：微信读书式沉浸页——body.reading 时全局侧栏 / 顶栏隐藏（app.js 挂类），阅读页
  * 自带顶栏（书名 + 右上角「首页 / 我的书架」），正文栏宽 800px，翻页 / 进度下沉页脚，
- * 目录 / 字号 / 背景（白·米黄·护眼·夜间）收进右侧悬浮工具栏，字号与位置存 localStorage。
+ * 目录 / 书签 / 字号 / 背景（白·米黄·护眼·夜间）收进右侧悬浮工具栏，字号与位置存 localStorage。
  * 位置 / 字号只影响记忆，不影响阅读；销毁时释放 epub 实例与定时器。
  */
-import { api, esc, icon, loadScriptOnce, showDialog, toast } from '../lib.js'
+import {
+  api,
+  closeMoreMenu,
+  esc,
+  icon,
+  loadScriptOnce,
+  moreMenu,
+  setupMoreMenus,
+  showDialog,
+  toast,
+} from '../lib.js'
 import { loadingBlock } from '../ui.js'
 import { enqueue } from '../upload.js'
 
@@ -27,6 +37,9 @@ const TXT_LINE_KEY = 'book:txt:line'
 const EPUB_FONT_KEY = 'book:epub:font'
 const txtPosKey = (id) => `book:txt:pos:${id}`
 const epubPosKey = (id) => `book:epub:pos:${id}`
+/** 书签列表（issue #13）：跟设备走，不占 D1 —— 每本最多 200 条，超出丢最旧的 */
+const marksKey = (id) => `book:marks:${id}`
+const MARK_LIMIT = 200
 
 /* ---------------- 阅读设置：背景 / 字号 / 行距 ---------------- */
 
@@ -75,6 +88,7 @@ function cycleTheme(root) {
 function fabHtml() {
   return `<div class="reader-fabs" role="toolbar" aria-label="阅读工具">
       <button class="reader-fab" type="button" data-fab-toc aria-label="目录" title="目录">${icon('queue', 16)}</button>
+      <button class="reader-fab" type="button" data-fab-mark aria-label="书签" title="书签">${icon('bookmark', 16)}</button>
       <button class="reader-fab" type="button" data-fab-set aria-label="阅读设置" title="阅读设置">Aa</button>
       <button class="reader-fab" type="button" data-fab-theme aria-label="切换背景" title="切换背景"></button>
     </div>`
@@ -148,6 +162,196 @@ function openReaderSettings({ theme, onTheme, font = null, line = null } = {}) {
 
 /** 一屏约 1–2KB，12000 字足够翻好几屏；没有章节标题的书按这个长度分节 */
 const SECTION_CHARS = 12000
+
+/* ---------------- 书签（issue #13） ---------------- */
+
+/** 书签时间：今天只给时分，同年给月-日，跨年带年份（列表里不喧宾夺主） */
+function markTime(at) {
+  const d = new Date(Number(at) || 0)
+  if (!at || Number.isNaN(d.getTime())) return ''
+  const now = new Date()
+  const p2 = (n) => String(n).padStart(2, '0')
+  const hm = `${p2(d.getHours())}:${p2(d.getMinutes())}`
+  if (d.toDateString() === now.toDateString()) return `今天 ${hm}`
+  if (d.getFullYear() === now.getFullYear()) return `${d.getMonth() + 1}-${p2(d.getDate())} ${hm}`
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`
+}
+
+function readMarks(bookId) {
+  const list = readJson(marksKey(bookId))
+  if (!Array.isArray(list)) return []
+  return list.filter((m) => m && typeof m === 'object' && typeof m.id === 'string')
+}
+
+/**
+ * 书签面板：列表 + 添加当前位置 + 重命名（行内编辑）+ 删除（收进「更多」）+ 点击跳转。
+ *
+ * getCurrent() 返回 { cfi } 或 { c, r }，外加展示用的 label / where；返回 null 表示
+ * 正文还没就绪（下载 / 解析中），此时只提示、不写一条空书签。
+ * onJump(mark) 由各阅读器实现定位；书签位置跟书走，换文件（版本变化）后仍按 CFI / 章号尽力恢复。
+ */
+function openMarksDialog({ bookId, getCurrent, onJump }) {
+  const list = readMarks(bookId)
+  const save = () => writeStorage(marksKey(bookId), JSON.stringify(list.slice(0, MARK_LIMIT)))
+
+  const dlg = showDialog(
+    `<h2>书签</h2>
+     <div class="reader-mark-add">
+       <input class="field field-sm" data-mark-name maxlength="60" placeholder="书签名（留空按章节自动命名）" aria-label="书签名">
+       <button class="btn sm primary" type="button" data-mark-add>${icon('plus', 14)}添加当前位置</button>
+     </div>
+     <ul class="reader-mark-list" data-mark-list></ul>`,
+    { label: '书签' },
+  )
+  const listEl = dlg.body.querySelector('[data-mark-list]')
+  const nameInput = dlg.body.querySelector('[data-mark-name]')
+  const addBtn = dlg.body.querySelector('[data-mark-add]')
+
+  const close = () => {
+    closeMoreMenu()
+    dlg.close()
+  }
+  // 弹窗被 Esc / 点击遮罩关掉时也要收起行内「更多」菜单
+  document.getElementById('dlg')?.addEventListener('close', closeMoreMenu, { once: true })
+
+  const findMark = (markId) => list.find((m) => m.id === markId)
+  /** 重命名失焦时延后一帧重绘：否则 pointerdown 触发 blur 就把行删了，紧接着的点击（跳转 / 编辑）落空 */
+  let paintTimer = 0
+  const schedulePaint = () => {
+    clearTimeout(paintTimer)
+    paintTimer = setTimeout(() => {
+      paintTimer = 0
+      paintList()
+    }, 0)
+  }
+
+  /** 行内重命名：Enter / 点保存 / 失焦保存，Esc 取消（并阻止 Esc 把整个弹窗关掉） */
+  const startRename = (row, mark) => {
+    if (!row || !mark) return
+    clearTimeout(paintTimer)
+    // 不要往 <button> 里塞 input（嵌套交互元素会抢焦点）：整行换成编辑条，保存后重绘
+    row.innerHTML = `<input class="field field-sm reader-mark-input" maxlength="60" aria-label="书签名">
+      <button class="btn sm" type="button" data-mark-ok>保存</button>`
+    const input = row.querySelector('input')
+    input.value = mark.label || ''
+    input.focus()
+    input.select()
+    let done = false
+    const finish = (ok) => {
+      if (done) return
+      done = true
+      const next = input.value.trim()
+      if (ok && next && next !== mark.label) {
+        mark.label = next
+        save()
+      }
+      schedulePaint()
+    }
+    input.onkeydown = (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        finish(true)
+      } else if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        finish(false)
+      }
+    }
+    input.onblur = () => finish(true)
+    row.querySelector('[data-mark-ok]').onclick = () => finish(true)
+  }
+
+  const paintList = () => {
+    clearTimeout(paintTimer)
+    paintTimer = 0
+    closeMoreMenu()
+    if (!list.length) {
+      listEl.innerHTML =
+        '<li class="reader-mark-empty small muted">还没有书签。翻到想记的位置，点上面的「添加当前位置」。</li>'
+      return
+    }
+    listEl.innerHTML = list
+      .map(
+        (m) => `<li class="reader-mark" data-mark-id="${esc(m.id)}">
+          <button class="reader-mark-jump" type="button" data-mark-jump="${esc(m.id)}">
+            <span class="reader-mark-label">${esc(m.label || '未命名书签')}</span>
+            <span class="reader-mark-where small muted">${esc(
+              [m.where, markTime(m.at)].filter(Boolean).join(' · ') || ' ',
+            )}</span>
+          </button>
+          <button class="icon-btn" type="button" data-mark-edit="${esc(m.id)}" aria-label="重命名书签" title="重命名">${icon('edit', 14)}</button>
+          ${moreMenu(`mark-${m.id}`, [{ label: '删除书签', icon: 'trash', danger: true, attrs: { 'data-mark-del': m.id } }], {
+            label: '书签操作',
+          })}
+        </li>`,
+      )
+      .join('')
+    setupMoreMenus(listEl)
+    listEl.querySelectorAll('[data-mark-jump]').forEach((btn) => {
+      btn.onclick = () => {
+        const mark = findMark(btn.dataset.markJump)
+        if (!mark) return
+        close()
+        onJump(mark)
+      }
+    })
+    listEl.querySelectorAll('[data-mark-edit]').forEach((btn) => {
+      btn.onclick = () => startRename(btn.closest('.reader-mark'), findMark(btn.dataset.markEdit))
+    })
+    listEl.querySelectorAll('[data-mark-del]').forEach((btn) => {
+      btn.onclick = () => {
+        const i = list.findIndex((m) => m.id === btn.dataset.markDel)
+        if (i < 0) return
+        if (!confirm(`删除书签「${list[i].label || '未命名书签'}」？`)) return
+        list.splice(i, 1)
+        save()
+        paintList()
+      }
+    })
+  }
+
+  const addCurrent = () => {
+    const cur = getCurrent?.()
+    if (!cur || (!cur.cfi && !Number.isInteger(cur.c))) {
+      toast('正文还在加载，稍等再试', true)
+      return
+    }
+    const dup = list.find((m) =>
+      cur.cfi
+        ? m.cfi === cur.cfi
+        : Number.isInteger(m.c) && m.c === cur.c && Math.abs((Number(m.r) || 0) - (Number(cur.r) || 0)) < 0.02,
+    )
+    if (dup) {
+      toast('这个位置已经加过书签了')
+      return
+    }
+    const label = nameInput.value.trim() || cur.label || cur.where || '书签'
+    list.unshift({
+      id: `m${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      label,
+      where: cur.where || '',
+      at: Date.now(),
+      ...(cur.cfi ? { cfi: cur.cfi } : { c: cur.c, r: Number(cur.r) || 0 }),
+    })
+    if (list.length > MARK_LIMIT) list.length = MARK_LIMIT
+    save()
+    nameInput.value = ''
+    paintList()
+    toast('已添加书签')
+  }
+
+  addBtn.onclick = addCurrent
+  nameInput.onkeydown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      addCurrent()
+    }
+  }
+
+  paintList()
+  nameInput.focus()
+  return dlg
+}
 
 /** 数字：半角 / 全角 / 汉字（含「〇」），不少 TXT 用「第１２３章」 */
 const TXT_NUM = '[0-9０-９零〇一二三四五六七八九十百千万两]'
@@ -1060,6 +1264,28 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
     }
     tocBtn.onclick = showToc
     stage.querySelector('[data-fab-toc]').onclick = showToc
+    // 书签：位置用 CFI（不依赖位置表），跳转直接 display；换设备不共享
+    stage.querySelector('[data-fab-mark]').onclick = () =>
+      openMarksDialog({
+        bookId: id,
+        getCurrent: () => {
+          const cfi = lastLoc?.start?.cfi || rendition.currentLocation?.()?.start?.cfi
+          if (!cfi) return null
+          const label = chapterAt(currentIndex)?.label || (totalSections ? `第 ${currentIndex + 1} 节` : '')
+          let ratio = 0
+          try {
+            ratio = epubBook.locations.length() ? epubBook.locations.percentageFromCfi(cfi) || 0 : 0
+          } catch {
+            ratio = 0
+          }
+          // 位置表还没生成好：用节序号估个百分比，仅用于展示
+          if (!ratio && totalSections) ratio = Math.min(1, (currentIndex + 1) / totalSections)
+          return { cfi, label, where: [label, `${Math.round(ratio * 100)}%`].filter(Boolean).join(' · ') }
+        },
+        onJump: (mark) => {
+          if (mark.cfi) rendition.display(mark.cfi).catch(() => {})
+        },
+      })
     prevBtn.onclick = () => go('prev')
     nextBtn.onclick = () => go('next')
 
@@ -1782,6 +2008,27 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
   // 悬浮工具栏：目录 / 阅读设置（字号 + 行距 + 背景）/ 背景循环；先刷一次主题钮图标
   setReaderTheme(root, root.dataset.readerTheme || 'paper')
   stage.querySelector('[data-fab-toc]').onclick = showToc
+  // 书签：txt 记章号 + 章内滚动比例（重新生成目录后仍能定位）
+  stage.querySelector('[data-fab-mark]').onclick = () =>
+    openMarksDialog({
+      bookId: id,
+      getCurrent: () => {
+        if (!chapters.length) return null
+        const c = chapters[index]
+        const pct = Math.round(currentRatio() * 100)
+        return {
+          c: index,
+          r: scrollRatio(),
+          label: c?.title || `第 ${index + 1} 节`,
+          where: [c?.title, `${pct}%`].filter(Boolean).join(' · '),
+        }
+      },
+      onJump: (mark) => {
+        if (!Number.isInteger(mark.c) || !chapters.length) return
+        index = Math.max(0, Math.min(chapters.length - 1, mark.c))
+        paint(typeof mark.r === 'number' ? mark.r : 0)
+      },
+    })
   stage.querySelector('[data-fab-set]').onclick = () => {
     openReaderSettings({
       theme: root.dataset.readerTheme || 'paper',
@@ -1853,6 +2100,7 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
 /* ---------------- 小工具 ---------------- */
 
 export function destroy() {
+  closeMoreMenu()
   try {
     epubDispose?.()
   } catch {

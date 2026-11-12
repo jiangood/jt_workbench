@@ -1859,7 +1859,7 @@ body:has(.playerbar:not([hidden])) .reader-stage {
   --fg: #d0d3d8; --muted-fg: #8d9199; --border: #2e2e31; --border-strong: #45454a;
 }
 
-/* 右侧悬浮工具栏（微信读书式圆钮）：目录 / 阅读设置 / 背景循环切换 */
+/* 右侧悬浮工具栏（微信读书式圆钮）：目录 / 书签 / 阅读设置 / 背景循环切换 */
 .reader-fabs {
   position: absolute;
   right: 14px;
@@ -1918,6 +1918,46 @@ body:has(.playerbar:not([hidden])) .reader-stage {
   cursor: pointer;
 }
 .reader-swatch[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--primary) }
+
+/* 书签面板（issue #13）：列表 + 添加当前位置；重命名行内编辑，删除收进行内「更多」 */
+.reader-mark-add { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-3) }
+.reader-mark-add .field { flex: 1 1 auto; min-width: 0 }
+.reader-mark-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: min(62vh, 520px);
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+.reader-mark { display: flex; align-items: center; gap: 2px; border-radius: var(--r-sm) }
+.reader-mark:hover { background: var(--surface-2) }
+.reader-mark-jump {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.reader-mark-jump:hover .reader-mark-label { color: var(--primary) }
+.reader-mark-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.reader-mark-where { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.reader-mark-input { flex: 1 1 auto; min-width: 0; width: auto; margin: 4px 8px }
+.reader-mark-empty { padding: var(--sp-3) 0; text-align: center }
+@media (max-width: 480px) {
+  .reader-mark-add { flex-wrap: wrap }
+  .reader-mark-add .field { flex: 1 1 100% }
+  .reader-mark-add .btn { flex: 1 1 100%; justify-content: center }
+}
 /* epub / txt 共用：正文 + 右侧目录两栏；窄屏目录隐藏，正文占满 */
 .reader-body {
   display: flex;
