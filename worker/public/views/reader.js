@@ -1,5 +1,5 @@
 /**
- * 阅读页（独立路由 #/reader?id=）：epub / pdf / txt 都在整页里读，不再塞进弹窗。
+ * 阅读页（独立路由 #/reader?id=）：epub / pdf 都在整页里读，不再塞进弹窗。
  *
  * 跨境链路只有 ~84KB/s（实测），所以「打开一本书」的成本主要在传输，三层处理：
  * - 所有文件 URL 带 ?v=<updatedAt>：换文件必然换版本，服务端据此回 immutable 长缓存（core/files.ts），
@@ -1287,7 +1287,7 @@ export async function render(main, params) {
   // 打开即记一次「最近阅读」：书架默认排序按它倒序置顶；待读 → 阅读中，失败静默不挡阅读
   api(`/api/book/${id}/reading`, { method: 'POST' }).catch(() => {})
 
-  // 进度回写书架卡片：epub / txt 阅读器翻页 / 滚动时调用（pdf 是浏览器原生查看器，拿不到页码）
+  // 进度回写书架卡片：epub 阅读器翻页 / 滚动时调用（pdf 是浏览器原生查看器，拿不到页码）
   reportProgress = progressReporter(id)
 
   if (book.fmt === 'pdf') {
@@ -1295,12 +1295,12 @@ export async function render(main, params) {
     stage.innerHTML = `<iframe class="reader-frame" src="${esc(fileUrl)}" title="${esc(title)}"></iframe>`
     return
   }
-  // 阅读计时（#23）：只统计 epub / txt；PDF 原生查看器收不到滚动与按键
-  readingTimer = createReadingTimer(id)
-  if (book.fmt === 'txt') {
-    openTxtReader(id, title, version, fileUrl, book.size, stage, setChapter, book.filename)
+  if (book.fmt !== 'epub') {
+    stage.innerHTML = message('该文件格式已不再支持，请上传 EPUB 或 PDF 文件。')
     return
   }
+  // 阅读计时：PDF 原生查看器收不到滚动与按键
+  readingTimer = createReadingTimer(id)
   await openEpubReader(id, version, fileUrl, stage, setChapter)
 }
 
