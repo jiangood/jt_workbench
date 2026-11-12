@@ -25,6 +25,7 @@ import {
   showDialog,
   toast,
 } from '../lib.js'
+import { loadingBlock } from '../ui.js'
 
 const EPUB_FONT_KEY = 'book:epub:font'
 const epubPosKey = (id) => `book:epub:pos:${id}`
@@ -992,6 +993,10 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted }) {
  * doc 给定时监听 iframe 内部（epub），否则监听 surface（EPUB 外边距）。
  * onSwipePrev / onSwipeNext 缺省与点击一致。
  * 返回 teardown。
+ *
+ * 坐标必须换算到「可见页」：epub.js 分页模式下 iframe 宽度 = 整章分栏总宽
+ * （手机上常见 7000–10000px，翻页靠父容器横向滚动），事件里的 clientX 是分栏坐标。
+ * 直接拿它除以 innerWidth，整个屏幕都会落进中间 40% —— 点哪都只切沉浸模式、不翻页。
  */
 function setupReaderGestures({
   surface,
@@ -1010,9 +1015,22 @@ function setupReaderGestures({
   if (!(window.matchMedia?.('(pointer: coarse)')?.matches ?? false)) return () => {}
   let start = null
 
+  // epub 的 iframe 比可视页宽得多：用它在页面里的偏移把分栏坐标折回可见页坐标
+  const frameEl = doc?.defaultView?.frameElement ?? null
+
   const pointOf = (e) => {
     const t = e.changedTouches?.[0] ?? e.touches?.[0] ?? e
     return { x: Number(t?.clientX) || 0, y: Number(t?.clientY) || 0 }
+  }
+  /** 可见页宽度 / 可见页内的 x：外层直接量 surface；iframe 内加上 iframe 在页面里的偏移 */
+  const pageBox = () => {
+    const box = surface.getBoundingClientRect?.() ?? { left: 0, width: surface.clientWidth || window.innerWidth }
+    const left = frameEl?.getBoundingClientRect ? frameEl.getBoundingClientRect().left - box.left : 0
+    return { width: box.width || surface.clientWidth || window.innerWidth, left }
+  }
+  const visibleX = (x) => {
+    const { left } = pageBox()
+    return x + left
   }
   const selectionText = () => {
     try {
@@ -1030,13 +1048,15 @@ function setupReaderGestures({
     return Boolean(selectionText())
   }
   const onDown = (e) => {
-    if (e.touches && e.touches.length > 1) {
+    // 多指（缩放 / 双指滑动）一律不参与翻页
+    if (e.isPrimary === false || (e.touches && e.touches.length > 1)) {
       start = null
       return
     }
     start = { ...pointOf(e), at: Date.now() }
   }
   const onUp = (e) => {
+    if (e.isPrimary === false) return
     if (!start) return
     const s = start
     start = null
@@ -1045,9 +1065,9 @@ function setupReaderGestures({
     const dx = p.x - s.x
     const dy = p.y - s.y
     const dt = Date.now() - s.at
-    const width = doc ? doc.defaultView?.innerWidth || window.innerWidth : surface.clientWidth || window.innerWidth
-    // 屏幕左右边缘留给系统手势
-    if (s.x < edge || s.x > width - edge) return
+    const { width } = pageBox()
+    // 屏幕左右边缘留给系统手势（换算到可见页坐标后判断）
+    if (visibleX(s.x) < edge || visibleX(s.x) > width - edge) return
     // 横向滑动：至少 48px，且明显比纵向大
     if (dt < 800 && Math.abs(dx) >= 48 && Math.abs(dx) > Math.abs(dy) * 1.4) {
       if (dx < 0) onSwipeNext?.()
@@ -1056,7 +1076,7 @@ function setupReaderGestures({
     }
     // 轻点：左右 30% 翻页，中间切换沉浸模式
     if (dt < 450 && Math.abs(dx) < 12 && Math.abs(dy) < 12) {
-      const ratio = width ? p.x / width : 0.5
+      const ratio = width ? visibleX(p.x) / width : 0.5
       if (ratio < 0.3) onPrev?.()
       else if (ratio > 0.7) onNext?.()
       else onCenter?.()
@@ -2020,6 +2040,17 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
     rendition.hooks.content.register((contents) => {
       const doc = contents?.document
       if (!doc) return
+      // 分页模式下 iframe 宽 = 整章分栏，横滑会被浏览器当成原生横向滚动并触发 pointercancel，
+      // 手势永远收不到 pointerup。这里禁止原生横滑（保留纵向滚动）。
+      try {
+        if (doc.defaultView?.frameElement) doc.defaultView.frameElement.style.touchAction = 'pan-y'
+        contents.addStylesheetRules?.({
+          html: { 'touch-action': 'pan-y' },
+          body: { 'touch-action': 'pan-y' },
+        })
+      } catch {
+        /* 老版本不支持：手势仍可用点击热区 */
+      }
       doc.addEventListener('wheel', onWheel, { passive: false })
       wheelDocs.push(doc)
       fixContentImages(contents)
