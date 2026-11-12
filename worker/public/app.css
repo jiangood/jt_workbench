@@ -2103,20 +2103,45 @@ body:has(.playerbar:not([hidden])) .reader-stage {
 .txt-body p.txt-head { margin: 1.4em 0 1em; text-indent: 0; text-align: center; font-weight: 650 }
 .txt-body p:last-child { margin-bottom: 0 }
 
-/* 阅读页窄屏：页脚只留图标，进度条吃掉剩余宽度；悬浮工具栏挪到右下角 */
+/* 阅读页窄屏（issue #13）：翻页按钮带文字、触控 ≥44px，两个并排收在右下角，
+ * 进度条吃掉剩余宽度；底部让出系统手势区（safe-area），悬浮工具栏挪到右下角上方 */
 @media (max-width: 640px) {
-  .reader-controls { padding: var(--sp-2) }
-  .reader-controls-inner { gap: 4px }
-  .reader-nav span,
+  .reader-controls { padding: 6px var(--sp-2) calc(6px + env(safe-area-inset-bottom, 0px)) }
+  .reader-controls-inner {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
+    grid-template-areas: 'progress acts prev next';
+    gap: 6px;
+  }
+  .reader-progress { grid-area: progress }
+  .reader-foot-acts { grid-area: acts }
+  .reader-controls [data-prev] { grid-area: prev }
+  .reader-controls [data-next] { grid-area: next }
+  .reader-nav {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    min-height: 44px;
+    padding: 0 10px;
+    font-size: var(--fs-sm);
+  }
+  /* 文字标签保留：不只靠小图标（issue #13） */
+  .reader-nav span { display: inline }
+  .reader-foot-acts [data-toc] { min-width: 38px; min-height: 38px; padding: 0 8px }
   .reader-foot-acts [data-toc] span { display: none }
-  .reader-foot-acts .btn.sm { padding: 0 7px }
   .reader-progress-text { min-width: 2.6em }
   .reader-stat { display: none }
   .reader-page { padding: 0 }
   .reader-top { padding: 0 var(--sp-3) }
   .reader-top-links { gap: var(--sp-3) }
   .reader-body > .txt-reader { padding: var(--sp-2) }
-  .reader-fabs { top: auto; bottom: 60px; right: 10px; transform: none; gap: 8px }
+  .reader-fabs {
+    top: auto;
+    bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+    right: 10px;
+    transform: none;
+    gap: 8px;
+  }
   .reader-fab { width: 34px; height: 34px }
 }
 

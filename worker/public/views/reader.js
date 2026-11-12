@@ -288,10 +288,10 @@ function footerHtml({ prev = '上一页', next = '下一页', font = false, stat
         <button class="btn sm" type="button" data-toc aria-haspopup="dialog" aria-label="目录" title="目录">
           ${icon('queue', 14)}<span>目录</span>
         </button>
-        <button class="btn sm reader-nav" type="button" data-next aria-label="${esc(next)}">
-          <span>${esc(next)}</span>${icon('chevron', 14)}
-        </button>
       </div>
+      <button class="btn sm reader-nav" type="button" data-next aria-label="${esc(next)}">
+        <span>${esc(next)}</span>${icon('chevron', 14)}
+      </button>
     </div>
   </footer>`
 }
