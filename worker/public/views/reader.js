@@ -14,9 +14,10 @@
  * - pdf：浏览器原生查看器（Worker 透传 Range，渐进加载）
  *
  * 版式：微信读书式沉浸页——body.reading 时全局侧栏 / 顶栏隐藏（app.js 挂类），阅读页
- * 自带顶栏（书名 + 右上角「首页 / 我的书架」），正文栏宽默认 800px（可调 640/800/1000），
- * 翻页 / 进度下沉页脚，目录 / 书签 / 语音朗读 / 字号 / 字体 / 背景（白·米黄·护眼·夜间）收进右侧
- * 悬浮工具栏，字号与位置存 localStorage。位置 / 字号只影响记忆，不影响阅读；销毁时释放 epub 实例与定时器。
+ * 自带顶栏（书名 + 章节 + 阅读进度百分比，右上角「首页 / 我的书架」），正文栏宽默认 800px（可调 640/800/1000）。
+ * 没有页脚工具条：翻页靠滚轮 / 方向键 / 触屏手势（左右轻点翻一屏、横滑跳章、点中间沉浸），
+ * 目录 / 书签 / 语音朗读 / 字号 / 字体 / 背景（白·米黄·护眼·夜间）收进右侧悬浮工具栏，设置存 localStorage。
+ * 位置 / 字号只影响记忆，不影响阅读；销毁时释放 epub 实例与定时器。
  */
 import {
   addBookReadTime,
@@ -1252,6 +1253,8 @@ export async function render(main, params) {
           <h1 class="page-title" title="${esc(title)}">${esc(title)}</h1>
           <p class="page-sub">
             <span class="reader-chapter" data-chapter hidden></span>
+            <span class="reader-progress-text" data-progress-text>0%</span>
+            <span class="reader-stat" data-stat hidden></span>
             <span data-meta>${esc(meta)}</span>
           </p>
         </div>
@@ -1306,129 +1309,13 @@ function message(text) {
     <p class="mt-3"><a class="btn sm" href="#/book">返回书架</a></p>`
 }
 
-/* ---------------- 通用：页脚 / 进度 / 目录 ---------------- */
+/* ---------------- 通用：进度 / 目录 ---------------- */
 
-/** 页脚控制条：上一章/页 …… 进度 …… 字号 / 目录 / 下一章/页 */
-function footerHtml({ prev = '上一页', next = '下一页', font = false, stat = false } = {}) {
-  return `<footer class="reader-controls">
-    <div class="reader-controls-inner">
-      <button class="btn sm reader-nav" type="button" data-prev aria-label="${esc(prev)}">
-        ${icon('chevron', 14, 'flip')}<span>${esc(prev)}</span>
-      </button>
-      <div class="reader-progress" data-progress>
-        <span class="reader-track" data-seek role="slider" tabindex="0" aria-label="阅读进度"
-              aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i data-bar></i></span>
-        <span class="reader-progress-text" data-progress-text>0%</span>
-        ${stat ? '<span class="reader-stat small muted" data-stat></span>' : ''}
-      </div>
-      <div class="reader-foot-acts">
-        ${
-          font
-            ? `<button class="btn sm" type="button" data-font="-1" aria-label="缩小字号" title="缩小字号">A−</button>
-        <button class="btn sm" type="button" data-font="1" aria-label="放大字号" title="放大字号">A+</button>`
-            : ''
-        }
-        <button class="btn sm" type="button" data-toc aria-haspopup="dialog" aria-label="目录" title="目录">
-          ${icon('queue', 14)}<span>目录</span>
-        </button>
-      </div>
-      <button class="btn sm reader-nav" type="button" data-next aria-label="${esc(next)}">
-        <span>${esc(next)}</span>${icon('chevron', 14)}
-      </button>
-    </div>
-  </footer>`
-}
-
-/** 进度条 / 百分比统一入口（ratio 0–1；text 缺省时显示百分比） */
-function setProgress(root, ratio, text, valuetext = '') {
+/** 阅读进度：顶栏百分比（旧版可拖动进度条已按需求去掉，只剩数字） */
+function setProgress(root, ratio, text) {
   const safe = Number.isFinite(ratio) ? Math.max(0, Math.min(1, ratio)) : 0
-  const pct = Math.round(safe * 100)
-  const bar = root.querySelector('[data-bar]')
-  // 进度条是可拖动的 slider（issue #13）：ARIA 写在滑块上而不是外层容器
-  const box = root.querySelector('[data-seek]') ?? root.querySelector('[data-progress]')
   const label = root.querySelector('[data-progress-text]')
-  if (bar) bar.style.width = `${pct}%`
-  if (box) {
-    box.setAttribute('aria-valuenow', String(pct))
-    if (valuetext) box.setAttribute('aria-valuetext', `${valuetext} ${pct}%`)
-  }
-  if (label) label.textContent = text ?? `${pct}%`
-}
-
-/**
- * 进度条拖动 / 键盘跳转（issue #13）。onSeek(ratio) 由各阅读器提供。
- * 拖动过程只预览百分比，松手（或键盘）才真正跳转，避免翻页抖动。
- * 返回 teardown：阅读器销毁时要解绑，否则切页后还有指针监听。
- */
-function setupSeek(root, onSeek) {
-  const track = root.querySelector('[data-seek]')
-  if (!track) return () => {}
-  const label = root.querySelector('[data-progress-text]')
-  const bar = root.querySelector('[data-bar]')
-  let dragPointer = null
-
-  const ratioAt = (clientX) => {
-    const rect = track.getBoundingClientRect()
-    return rect.width > 0 ? Math.min(1, Math.max(0, (clientX - rect.left) / rect.width)) : 0
-  }
-  const preview = (ratio) => {
-    const pct = Math.round(Math.min(1, Math.max(0, ratio)) * 100)
-    if (bar) bar.style.width = `${pct}%`
-    if (label) label.textContent = `${pct}%`
-    track.setAttribute('aria-valuenow', String(pct))
-  }
-  const onDown = (e) => {
-    if (e.button !== undefined && e.button !== 0) return
-    dragPointer = e.pointerId
-    track.dataset.drag = '1'
-    track.setPointerCapture?.(e.pointerId)
-    // 点一下就聚焦：拖完可以直接用方向键微调
-    track.focus({ preventScroll: true })
-    preview(ratioAt(e.clientX))
-  }
-  const onMove = (e) => {
-    if (dragPointer === null) return
-    preview(ratioAt(e.clientX))
-  }
-  const onUp = (e) => {
-    if (dragPointer === null) return
-    dragPointer = null
-    delete track.dataset.drag
-    track.releasePointerCapture?.(e.pointerId)
-    onSeek(ratioAt(e.clientX))
-  }
-  const onCancel = () => {
-    dragPointer = null
-    delete track.dataset.drag
-  }
-  const onKey = (e) => {
-    const cur = (Number(track.getAttribute('aria-valuenow')) || 0) / 100
-    // Shift 大步（10%），默认 2%；Home/End 到首尾
-    const step = e.shiftKey ? 0.1 : 0.02
-    let next = null
-    if (e.key === 'ArrowRight' || e.key === 'ArrowUp') next = cur + step
-    else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') next = cur - step
-    else if (e.key === 'Home') next = 0
-    else if (e.key === 'End') next = 1
-    if (next === null) return
-    // 别让方向键同时触发翻页（阅读器在 document / body 上也监听方向键）
-    e.preventDefault()
-    e.stopPropagation()
-    onSeek(Math.min(1, Math.max(0, next)))
-  }
-
-  track.addEventListener('pointerdown', onDown)
-  track.addEventListener('pointermove', onMove)
-  track.addEventListener('pointerup', onUp)
-  track.addEventListener('pointercancel', onCancel)
-  track.addEventListener('keydown', onKey)
-  return () => {
-    track.removeEventListener('pointerdown', onDown)
-    track.removeEventListener('pointermove', onMove)
-    track.removeEventListener('pointerup', onUp)
-    track.removeEventListener('pointercancel', onCancel)
-    track.removeEventListener('keydown', onKey)
-  }
+  if (label) label.textContent = text ?? `${Math.round(safe * 100)}%`
 }
 
 /**
@@ -1790,13 +1677,9 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
         ${tocSideHtml()}
       </div>
       ${fabHtml()}
-      ${ttsBarHtml()}
-      ${footerHtml({ stat: true })}`
+      ${ttsBarHtml()}`
 
     const view = stage.querySelector('[data-view]')
-    const prevBtn = stage.querySelector('[data-prev]')
-    const nextBtn = stage.querySelector('[data-next]')
-    const tocBtn = stage.querySelector('[data-toc]')
 
     epubBook = window.ePub(bytes.buffer)
     // 坏书（不是合法 epub）要立刻报错：openFailed 之后 loaded.* 永不 resolve，
@@ -1866,29 +1749,18 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
       setTimeout(() => location.reload(), 350)
     }
 
-    /* 进度条跳转（issue #13）：优先用 epub 位置表精确跳；生成失败退化为按 spine 序号定位 */
+    /* 位置表（整本分页统计，约 1200 等份）：后台异步生成，完成后刷一次百分比；
+     * 进度显示与书签定位都靠它，生成失败时退化用 spine 序号估算 */
     let locationsTask = null
-    const seekEpub = async (ratio) => {
+    const ensureLocations = () => {
       locationsTask ??= epubBook.ready
         .then(() => epubBook.locations.generate(1200))
-        .then(() => true)
+        .then(() => {
+          if (alive()) paintProgress()
+          return true
+        })
         .catch(() => false)
-      const ready = await locationsTask
-      if (!alive()) return
-      if (ready) {
-        const cfi = epubBook.locations.cfiFromPercentage(Math.min(1, Math.max(0, ratio)))
-        if (cfi) {
-          rendition.display(cfi)
-          return
-        }
-      }
-      const total = epubBook.spine?.spineItems?.length ?? 0
-      if (!total) return
-      const idx = Math.min(total - 1, Math.max(0, Math.floor(ratio * total)))
-      const section = epubBook.spine.get(idx)
-      if (section) rendition.display(section.href)
     }
-    const stopSeek = setupSeek(stage, seekEpub)
 
     // epub 是 iframe 里的独立文档：背景 / 字号除了写进 rendition 主题，还要直接刷已渲染的 iframe，
     // 否则 themes API 只对翻页后的新内容生效，当前页不变色
@@ -2082,7 +1954,7 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
       } catch {
         ratio = 0
       }
-      setProgress(stage, ratio, `${Math.round(ratio * 100)}%`, chapterAt(currentIndex)?.label || '')
+      setProgress(root, ratio, `${Math.round(ratio * 100)}%`)
       reportProgress?.report(ratio)
     }
 
@@ -2094,8 +1966,11 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
       // 目录缺失或落在两章之间时，退回节序号，标题栏始终有内容
       setChapter(hit?.label || (totalSections ? `第 ${currentIndex + 1} 节` : ''))
       tocSide?.setCurrent(tocIndexOf(hit?.href))
-      const stat = stage.querySelector('[data-stat]')
-      if (stat) stat.textContent = totalSections ? `第 ${currentIndex + 1} / ${totalSections} 节` : ''
+      const stat = root.querySelector('[data-stat]')
+      if (stat) {
+        stat.textContent = totalSections ? `第 ${currentIndex + 1} / ${totalSections} 节` : ''
+        stat.hidden = !totalSections
+      }
       paintProgress()
     }
 
@@ -2284,7 +2159,6 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
     document.addEventListener('keydown', onKey)
     epubDispose = () => {
       tocSide?.destroy()
-      stopSeek()
       tts?.destroy()
       stopAuto()
       for (const stop of gestureStops) stop()
@@ -2327,7 +2201,7 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
         }
       })
     }
-    tocBtn.onclick = showToc
+    // 目录统一从悬浮工具栏 / 右侧栏进（页脚按钮已去掉）
     stage.querySelector('[data-fab-toc]').onclick = showToc
     // 书签：位置用 CFI（不依赖位置表），跳转直接 display；换设备不共享
     stage.querySelector('[data-fab-mark]').onclick = () =>
@@ -2424,8 +2298,6 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
       },
     })
     stage.querySelector('[data-fab-tts]').onclick = () => tts?.toggleBar()
-    prevBtn.onclick = () => go('prev')
-    nextBtn.onclick = () => go('next')
 
     // 上次读到的 CFI：换过文件（版本不同）就从头开始
     const saved = readJson(epubPosKey(id))
@@ -2441,14 +2313,8 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
     }
     if (!restored) await rendition.display()
     paintLocation(rendition.currentLocation?.() ?? null)
-
-    // 页码 / 百分比要 locations（整本分页统计，异步跑，不挡阅读）
-    epubBook.locations
-      .generate(1024)
-      .then(() => {
-        if (alive()) paintProgress()
-      })
-      .catch(() => {})
+    // 精确百分比要 locations（整本分页统计，异步跑，不挡阅读）；完成后 paintProgress 自己会刷新
+    ensureLocations()
   } catch (err) {
     if (alive()) stage.innerHTML = `<div class="alert danger">${esc(err.message)}</div>`
   }
@@ -2690,17 +2556,13 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
       ${tocSideHtml({ refresh: true })}
     </div>
     ${fabHtml()}
-    ${ttsBarHtml()}
-    ${footerHtml({ prev: '上一章', next: '下一章' })}`
+    ${ttsBarHtml()}`
 
   const root = stage
   // 背景令牌 / 沉浸模式 / 排版变量都挂在最外层 .reader-root 上：stage 只是它的子节点，
   // 属性写在 stage 上 CSS 匹配不到（TXT 之前换背景、进沉浸模式没反应就是这个原因）
   const themeRoot = stage.closest('.reader-root') || stage
   const body = root.querySelector('[data-body]')
-  const prevBtn = root.querySelector('[data-prev]')
-  const nextBtn = root.querySelector('[data-next]')
-  const tocBtn = root.querySelector('[data-toc]')
   /** 右侧目录控制器：整本分章后一次建好，换章只同步高亮 */
   let tocSide = null
   /** 语音朗读控制器（分章渲染后才知道有哪些段落） */
@@ -2830,12 +2692,7 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
 
   function paintProgress() {
     const ratio = currentRatio()
-    setProgress(
-      root,
-      ratio,
-      `${Math.round(ratio * 100)}%`,
-      [index + 1, chapters[index]?.title].filter(Boolean).join(' '),
-    )
+    setProgress(themeRoot, ratio, `${Math.round(ratio * 100)}%`)
     reportProgress?.report(ratio)
   }
 
@@ -2847,17 +2704,6 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
       }
     }, 300)
   }
-
-  /** 进度条拖动 / 键盘跳转：全书字符比例 → 章号 + 章内比例（issue #13） */
-  const seekTxt = (ratio) => {
-    if (!chapters.length) return
-    const base = chapters[0]?.start ?? 0
-    const span = Math.max(1, totalChars - base)
-    const hit = locateChar(base + Math.min(1, Math.max(0, ratio)) * span)
-    index = hit.index
-    paint(hit.ratio)
-  }
-  const stopSeek = setupSeek(root, seekTxt)
 
   /** 从视口顶部那一段开始读（不是每章都从头） */
   const ttsStartIndex = (segs) => {
@@ -2974,8 +2820,6 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
       })
     }
 
-    prevBtn.disabled = index === 0 || loading
-    nextBtn.disabled = index >= chapters.length - 1 || loading
     setChapter(c.title)
     tocSide?.setCurrent(index)
     paintProgress()
@@ -3219,7 +3063,6 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
       disposed = true
       closeCtx()
       tocSide?.destroy()
-      stopSeek()
       tts?.destroy()
       stopAuto()
       for (const stop of gestureStops) stop()
@@ -3235,10 +3078,6 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
   body.addEventListener('scroll', onScroll, { passive: true })
   body.addEventListener('contextmenu', onContextMenu)
   document.addEventListener('keydown', onKey)
-  prevBtn.disabled = true
-  nextBtn.disabled = true
-  prevBtn.onclick = () => jump(index - 1)
-  nextBtn.onclick = () => jump(index + 1)
   const showToc = () => {
     // 宽屏：按钮退化为右侧目录的显隐开关；窄屏仍开弹窗
     if (tocSide?.canToggle()) {
@@ -3247,10 +3086,10 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
     }
     openToc()
   }
-  tocBtn.onclick = showToc
+  // 目录统一从悬浮工具栏 / 右侧栏进（页脚按钮已去掉）
+  stage.querySelector('[data-fab-toc]').onclick = showToc
   // 悬浮工具栏：目录 / 书签 / 朗读 / 阅读设置 / 背景循环；先刷一次主题钮图标
   setReaderTheme(themeRoot, themeRoot.dataset.readerTheme || 'paper')
-  stage.querySelector('[data-fab-toc]').onclick = showToc
   // 书签：txt 记章号 + 章内滚动比例（重新生成目录后仍能定位）
   stage.querySelector('[data-fab-mark]').onclick = () =>
     openMarksDialog({
@@ -3366,7 +3205,7 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
       const bytes = await readBodyWithProgress(res, (got, total) => {
         const all = total || hint || got
         const pct = all ? Math.round((got / all) * 100) : 0
-        setProgress(root, all ? got / all : 0, `${pct}%`, '正在下载')
+        setProgress(themeRoot, all ? got / all : 0, `${pct}%`)
         say(`正在下载 ${fmtSize(got)} / ${fmtSize(all)}（${pct}%）`)
       })
       if (disposed) return
