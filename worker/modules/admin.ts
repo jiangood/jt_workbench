@@ -218,6 +218,58 @@ admin.get('/summary', async (c) => {
   })
 })
 
+interface ScoreRow {
+  targetKey: string
+  nodeId: string
+  score: number
+  cooldownUntil: number | null
+  updatedAt: number
+}
+
+/**
+ * 抓取目标评分（issue #4）：目标 × 节点，派单时按这里的分数礼让。
+ * 只读；旧库没有评分表（迁移未 apply）时返回空列表，不 500。
+ */
+admin.get('/node-scores', async (c) => {
+  const now = Date.now()
+  try {
+    const [scores, jobs] = await Promise.all([
+      c.env.DB.prepare(
+        `SELECT target_key AS targetKey, node_id AS nodeId, score,
+                cooldown_until AS cooldownUntil, updated_at AS updatedAt
+         FROM node_target_score
+         ORDER BY target_key, score DESC
+         LIMIT 500`,
+      ).all<ScoreRow>(),
+      c.env.DB.prepare(
+        `SELECT target_key AS targetKey, count(*) AS n FROM job
+         WHERE target_key IS NOT NULL GROUP BY target_key`,
+      ).all<{ targetKey: string; n: number }>(),
+    ])
+    const counts = new Map((jobs.results ?? []).map((r) => [r.targetKey, r.n]))
+    const targets = new Map<
+      string,
+      { targetKey: string; jobCount: number; nodes: Array<Omit<ScoreRow, 'targetKey'>> }
+    >()
+    for (const r of scores.results ?? []) {
+      let entry = targets.get(r.targetKey)
+      if (!entry) {
+        entry = { targetKey: r.targetKey, jobCount: counts.get(r.targetKey) ?? 0, nodes: [] }
+        targets.set(r.targetKey, entry)
+      }
+      entry.nodes.push({
+        nodeId: r.nodeId,
+        score: r.score,
+        cooldownUntil: r.cooldownUntil ?? null,
+        updatedAt: r.updatedAt,
+      })
+    }
+    return ok({ generatedAt: now, targets: [...targets.values()] })
+  } catch {
+    return ok({ generatedAt: now, targets: [] })
+  }
+})
+
 /** 节点状态页：登记表 + node_state + 最近 job_run（版本漂移可见，v4.12） */
 admin.get('/nodes', async (c) => {
   const now = Date.now()

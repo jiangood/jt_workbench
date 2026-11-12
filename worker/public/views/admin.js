@@ -137,13 +137,14 @@ function errorReportName(ts) {
 }
 
 export async function render(main, params = {}) {
-  const [nodes, cfg, jobsInit] = await Promise.all([
+  const [nodes, cfg, jobsInit, scoresInit] = await Promise.all([
     api('/api/admin/nodes'),
     api('/api/admin/config'),
     // 旧库 / 接口异常时不让整页挂掉：在「定时任务」区域里单独提示
     api('/api/admin/jobs').catch((err) => ({ jobs: [], error: err.message })),
+    // 目标评分（issue #4）：旧库没有评分表时后端返回空列表，前端只显示空态
+    api('/api/admin/node-scores').catch(() => ({ targets: [] })),
   ])
-
   const activeTab = TABS.some((t) => t.id === params.tab) ? params.tab : 'nodes'
   const paneAttrs = (id) => `id="pane-${id}" role="tabpanel" aria-labelledby="tab-${id}" data-pane="${id}"${id === activeTab ? '' : ' hidden'}`
 
@@ -171,6 +172,20 @@ export async function render(main, params = {}) {
         <tbody id="nodes-body"></tbody>
       </table>
       <div class="small mt-2" id="node-msg" role="status"></div>
+
+      <div class="section-head mt-4">
+        <h2>抓取目标评分</h2>
+        <button class="btn sm" id="score-refresh" type="button">${icon('refresh', 14)}刷新</button>
+      </div>
+      <div class="small muted" style="max-width: 980px">
+        同一站点的多个 RSS 源共用一行；初始 50，抓取成功 +5，网络类失败 -30 并冷却 5 分钟。
+        派单时优先给该目标分最高的在线节点，评分相同则先到先得；到期 15 分钟仍无人领取会放宽给任意节点。
+      </div>
+      <table>
+        <thead><tr><th>目标</th><th>关联任务</th><th>节点</th><th>评分</th><th>冷却</th><th>更新时间</th></tr></thead>
+        <tbody id="score-body"></tbody>
+      </table>
+      <div class="small mt-2" id="score-msg" role="status"></div>
 
       <div id="node-cfg" class="mt-3" style="max-width: 980px"></div>
     </section>
@@ -461,6 +476,68 @@ export async function render(main, params = {}) {
       '<tr><td colspan="6" class="muted">还没有节点——点右上角「添加节点」登记，接入前会一直显示离线</td></tr>'
   }
   paintNodes()
+
+  // ---------- 抓取目标评分（issue #4） ----------
+  const scoreBody = main.querySelector('#score-body')
+  const scoreMsg = main.querySelector('#score-msg')
+  let scoreTargets = Array.isArray(scoresInit?.targets) ? scoresInit.targets : []
+
+  /** 分数着色：≥70 健康、≤29 该节点抓不动这个站；中间维持默认色 */
+  const scoreHtml = (score) => {
+    const n = Number(score)
+    if (!Number.isFinite(n)) return '—'
+    const tone = n >= 70 ? 'ok-text' : n <= 29 ? 'danger-text' : ''
+    return `<span class="${tone || 'mono'}">${esc(n)}</span>`
+  }
+
+  const paintScores = () => {
+    if (!scoreTargets.length) {
+      scoreBody.innerHTML =
+        '<tr><td colspan="6" class="muted">还没有评分记录：RSS 任务第一次被领取时自动建立（初始 50 分）</td></tr>'
+      return
+    }
+    const now = Date.now()
+    scoreBody.innerHTML = scoreTargets
+      .map((t) =>
+        (t.nodes ?? [])
+          .map(
+            (n, i) => `
+          <tr>
+            ${
+              i === 0
+                ? `<td class="mono" rowspan="${t.nodes.length}">${esc(t.targetKey)}</td>
+                   <td class="small" rowspan="${t.nodes.length}">${esc(t.jobCount ?? 0)} 个源</td>`
+                : ''
+            }
+            <td class="mono small">${esc(n.nodeId)}</td>
+            <td>${scoreHtml(n.score)}</td>
+            <td class="small">${
+              n.cooldownUntil && n.cooldownUntil > now
+                ? `<span class="pill warn"><span class="dot"></span>${relTime(n.cooldownUntil)}恢复</span>`
+                : '—'
+            }</td>
+            <td class="small">${relTime(n.updatedAt)}</td>
+          </tr>`,
+          )
+          .join(''),
+      )
+      .join('')
+  }
+  paintScores()
+
+  main.querySelector('#score-refresh').onclick = async () => {
+    scoreMsg.className = 'small mt-2'
+    scoreMsg.textContent = ''
+    const res = await run(main.querySelector('#score-refresh'), () => api('/api/admin/node-scores'))
+    if (!res.ok) {
+      scoreMsg.className = 'small mt-2 danger-text'
+      scoreMsg.textContent = res.error?.message || '刷新失败'
+      return
+    }
+    scoreTargets = Array.isArray(res.data?.targets) ? res.data.targets : []
+    paintScores()
+    scoreMsg.textContent = `已刷新 · ${scoreTargets.length} 个目标`
+  }
 
   const installStatusHtml = (online) =>
     online

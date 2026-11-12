@@ -31,5 +31,7 @@ export const client = {
   heartbeat: (id: number) => call(`/node/jobs/${id}/heartbeat`),
   results: (id: number, items: unknown[]) => call(`/node/jobs/${id}/results`, { items }),
   complete: (id: number, summary: string) => call(`/node/jobs/${id}/complete`, { summary }),
-  fail: (id: number, error: string) => call(`/node/jobs/${id}/fail`, { error }),
+  /** errorKind：网络类失败才让 Worker 扣节点评分（issue #4），老版本 Worker 会忽略这个字段 */
+  fail: (id: number, error: string, errorKind?: string) =>
+    call(`/node/jobs/${id}/fail`, errorKind ? { error, errorKind } : { error }),
 }

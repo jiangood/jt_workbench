@@ -3,7 +3,7 @@
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { ok, ApiError, type Env } from '../core/envelope'
-import { normalizeCron } from '../core/node'
+import { normalizeCron, normalizeTargetKey } from '../core/node'
 import { clampPublishedAt, normalizeAuthor, normalizeHtmlUrls, normalizeUrl } from '../core/ingest'
 
 const PAGE_SIZE = 30
@@ -263,14 +263,15 @@ news.post('/sources', async (c) => {
     )
     .bind(b.id, b.name, b.url, b.category ?? null, b.sort ?? 0)
     .run()
-  // 任务：按源一行（已存在则不动）
+  // 任务：按源一行（已存在则不动）。
+  // target_key（issue #4）= 规范化域名，同一站点的多个源共享「目标 × 节点」评分
   await c.env.DB
     .prepare(
-      `INSERT INTO job (type, payload, cron, enabled, status, next_run_at)
-       SELECT 'rss_fetch', json_object('sourceId', ?, 'url', ?), ?, 1, 'pending', 1
+      `INSERT INTO job (type, payload, cron, enabled, status, next_run_at, target_key)
+       SELECT 'rss_fetch', json_object('sourceId', ?, 'url', ?), ?, 1, 'pending', 1, ?
        WHERE NOT EXISTS (SELECT 1 FROM job WHERE type = 'rss_fetch' AND payload LIKE '%' || ? || '%')`,
     )
-    .bind(b.id, b.url, RSS_CRON, b.id)
+    .bind(b.id, b.url, RSS_CRON, normalizeTargetKey(b.url), b.id)
     .run()
   return ok({ id: b.id })
 })
@@ -290,6 +291,16 @@ news.put('/sources/:id', async (c) => {
       b.name ?? null, b.url ?? null, b.sort ?? null, id,
     )
     .run()
+  // 改了 URL：任务 payload 与 target_key 同步（否则评分会挂在旧域名上，抓取也还在用旧地址）
+  if (b.url) {
+    await c.env.DB
+      .prepare(
+        `UPDATE job SET payload = json_set(payload, '$.url', ?), target_key = ?
+         WHERE type = 'rss_fetch' AND payload LIKE '%' || ? || '%'`,
+      )
+      .bind(b.url, normalizeTargetKey(b.url), id)
+      .run()
+  }
   // 抓取任务跟随订阅源开关；重新启用 = 解除熔断（清零连败、立即到期）。
   // leased 的行保持原样：正在跑的这一次交给 complete/fail 自己收尾，避免 409 丢结果。
   if (b.enabled === true) {

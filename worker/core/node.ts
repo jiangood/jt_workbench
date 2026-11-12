@@ -15,6 +15,20 @@ const MAX_ATTEMPTS = 3 // 单次触发最多重试 3 次（周期任务失败后
 const MAX_FAIL_STREAK = 3 // 连续 N 个周期都失败 → 熔断暂停（enabled=0），等人工重新启用
 const TZ = 'Asia/Shanghai' // Worker 运行在 UTC，cron 解析显式指定
 
+// ---------- 跨节点调度（issue #4）----------
+const ONLINE_MS = 30 * 60_000 // 与后台「在线」判定一致：3× poll 间隔
+const CLAIM_CANDIDATES = 8 // 一次最多看 8 个到期任务：给「礼让最优节点」留余量
+const SCORE_BASE = 50 // 没有评分记录的「目标 × 节点」按 50 分处理
+const SCORE_SUCCESS = 5
+const SCORE_NETWORK_FAIL = -30
+const SCORE_MAX = 100
+const SCORE_MIN = -1
+const SCORE_COOLDOWN_MS = 5 * 60_000 // 网络类失败后该节点对该目标避让 5 分钟
+const STARVE_MS = 15 * 60_000 // 到期超过 15 分钟还没人领 → 不再礼让，任何节点都能拿
+/** 网络类错误兜底判定：老 agent 不传 errorKind 时靠错误原文兜底，只认明确的连接/超时类 */
+const NETWORK_ERROR_RE =
+  /(ETIMEDOUT|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|ECONNABORTED|EPIPE|EPROTO|UND_ERR_[A-Z_]+|socket hang up|fetch failed|getaddrinfo|timed out|timeout)/i
+
 export const node = new Hono<Env>()
 
 // cron 归一化：Quartz 风格 → 标准 5 段（分 时 日 月 周）。
@@ -69,7 +83,166 @@ node.use('*', async (c, next) => {
   await next()
 })
 
-/** 领取管线（v4.9）：回收 + 领 1；幂等不加锁，可挂到任何交互末尾 */
+/**
+ * 目标标识（issue #4）：RSS 任务按 URL 的域名归一化，同一站点的多个源共享一份评分。
+ * 只对 rss_fetch 生效，其它任务返回 null（保持原有派单行为）。
+ */
+export function normalizeTargetKey(url: string): string | null {
+  try {
+    const u = new URL(url)
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
+    const host = u.hostname.toLowerCase().replace(/^www\./, '')
+    return host || null
+  } catch {
+    return null
+  }
+}
+
+export function targetKeyOf(type: string, payload: Record<string, unknown>): string | null {
+  if (type !== 'rss_fetch') return null
+  return typeof payload.url === 'string' ? normalizeTargetKey(payload.url) : null
+}
+
+function parsePayload(raw: string | null): Record<string, unknown> {
+  try {
+    const v = JSON.parse(raw ?? '')
+    return typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {}
+  } catch {
+    return {}
+  }
+}
+
+/** 单条「目标 × 节点」评分 */
+interface ScoreCell {
+  score: number
+  cooldownUntil: number | null
+}
+
+/** 一次领取用到的调度上下文：在线节点 + 候选目标的评分 */
+interface DispatchCtx {
+  online: Set<string>
+  scores: Map<string, ScoreCell> // key = `${target}\u0000${node}`
+  now: number
+}
+
+const scoreKey = (target: string, nodeId: string) => `${target}\u0000${nodeId}`
+
+/**
+ * 在线节点 = 30 分钟内 poll 过的 + 正持有租约的。
+ * 后者很关键：节点跑一个长任务时会停止 poll，只看 last_seen 会把它误判成离线，
+ * 导致它的任务被「礼让」给别的节点（然后两边都没跑）。
+ */
+async function loadDispatchCtx(db: D1Database, targets: string[], now: number): Promise<DispatchCtx> {
+  const online = new Set<string>()
+  const scores = new Map<string, ScoreCell>()
+  try {
+    const [onlineRes, scoreRes] = await Promise.all([
+      db
+        .prepare(
+          `SELECT node_id FROM node_state WHERE last_seen_at >= ?
+           UNION
+           SELECT node_id FROM job WHERE status = 'leased' AND lease_until > ? AND node_id IS NOT NULL`,
+        )
+        .bind(now - ONLINE_MS, now)
+        .all<{ node_id: string }>(),
+      db
+        .prepare(
+          `SELECT target_key AS targetKey, node_id AS nodeId, score, cooldown_until AS cooldownUntil
+           FROM node_target_score WHERE target_key IN (${targets.map(() => '?').join(',')})`,
+        )
+        .bind(...targets)
+        .all<{ targetKey: string; nodeId: string; score: number; cooldownUntil: number | null }>(),
+    ])
+    for (const r of onlineRes.results ?? []) online.add(r.node_id)
+    for (const r of scoreRes.results ?? []) {
+      scores.set(scoreKey(r.targetKey, r.nodeId), { score: r.score, cooldownUntil: r.cooldownUntil ?? null })
+    }
+  } catch {
+    // 迁移未 apply / 查询失败：退化成「谁都能领」，不影响任务执行
+    return { online: new Set(), scores: new Map(), now }
+  }
+  return { online, scores, now }
+}
+
+function scoreOf(ctx: DispatchCtx, target: string, nodeId: string): number {
+  return ctx.scores.get(scoreKey(target, nodeId))?.score ?? SCORE_BASE
+}
+
+/**
+ * 这个节点能不能领这条目标任务：
+ * - 到期超过 STARVE_MS → 放行（最优节点忙碌/离线也不能把任务卡死）
+ * - 没有任何可用在线节点（含「全在冷却」）→ 放行（单节点场景不阻塞）
+ * - 本节点分 ≥ 在线节点最高分 → 放行；同分沿用先到先得的竞争机制
+ * - 冷却中的节点不参与「最高分」计算：有其他节点就先避让
+ */
+function canTake(ctx: DispatchCtx, target: string, nodeId: string, nextRunAt: number | null): boolean {
+  if (ctx.now - (nextRunAt ?? ctx.now) >= STARVE_MS) return true
+  let best: number | null = null
+  for (const node of ctx.online) {
+    const cell = ctx.scores.get(scoreKey(target, node))
+    if (cell?.cooldownUntil && cell.cooldownUntil > ctx.now) continue
+    const score = cell?.score ?? SCORE_BASE
+    if (best === null || score > best) best = score
+  }
+  if (best === null) return true
+  return scoreOf(ctx, target, nodeId) >= best
+}
+
+/**
+ * 评分写入（issue #4）：
+ * - success：+5，上限 100，并清掉冷却
+ * - network：-30，下限 -1，并把该节点对该目标冷却 5 分钟
+ * 迁移未 apply / 写失败一律吞掉：调度优化不能影响任务本身。
+ */
+async function bumpScore(
+  db: D1Database,
+  targetKey: string | null,
+  nodeId: string,
+  kind: 'success' | 'network',
+  now: number,
+): Promise<void> {
+  if (!targetKey) return
+  try {
+    if (kind === 'success') {
+      await db
+        .prepare(
+          `INSERT INTO node_target_score (target_key, node_id, score, updated_at)
+           VALUES (?, ?, min(?, ? + ?), ?)
+           ON CONFLICT (target_key, node_id) DO UPDATE SET
+             score = min(?, score + ?), cooldown_until = NULL, updated_at = excluded.updated_at`,
+        )
+        .bind(targetKey, nodeId, SCORE_MAX, SCORE_BASE, SCORE_SUCCESS, now, SCORE_MAX, SCORE_SUCCESS)
+        .run()
+    } else {
+      await db
+        .prepare(
+          `INSERT INTO node_target_score (target_key, node_id, score, cooldown_until, updated_at)
+           VALUES (?, ?, max(?, ? + ?), ?, ?)
+           ON CONFLICT (target_key, node_id) DO UPDATE SET
+             score = max(?, score + ?), cooldown_until = excluded.cooldown_until, updated_at = excluded.updated_at`,
+        )
+        .bind(
+          targetKey,
+          nodeId,
+          SCORE_MIN,
+          SCORE_BASE,
+          SCORE_NETWORK_FAIL,
+          now + SCORE_COOLDOWN_MS,
+          now,
+          SCORE_MIN,
+          SCORE_NETWORK_FAIL,
+        )
+        .run()
+    }
+  } catch {
+    /* 旧库没有评分表：忽略 */
+  }
+}
+
+/**
+ * 领取管线（v4.9）：回收 + 领 1；幂等不加锁，可挂到任何交互末尾。
+ * v5.2（#4）：带 target_key 的任务先看「目标 × 节点」评分，低分节点礼让给高分节点。
+ */
 async function claimPipeline(env: Bindings, nodeId: string, now: number): Promise<Job[]> {
   const db = env.DB
   await db
@@ -80,28 +253,62 @@ async function claimPipeline(env: Bindings, nodeId: string, now: number): Promis
     .bind(now)
     .run()
 
-  const claim = await db
+  // 取一批到期候选而不是只取一条：最早那条可能要礼让给更高分的节点
+  const candidates = await db
     .prepare(
-      `UPDATE job SET status = 'leased', lease_until = ?, node_id = ?, started_at = ?
-       WHERE id = (SELECT id FROM job WHERE status = 'pending' AND next_run_at <= ? AND enabled = 1
-                   ORDER BY next_run_at LIMIT 1)
-       RETURNING id, type, payload`,
+      `SELECT id, type, payload, target_key AS targetKey, next_run_at AS nextRunAt
+       FROM job WHERE status = 'pending' AND next_run_at <= ? AND enabled = 1
+       ORDER BY next_run_at LIMIT ?`,
     )
-    .bind(now + LEASE_MS, nodeId, now, now)
-    .all<{ id: number; type: string; payload: string | null }>()
+    .bind(now, CLAIM_CANDIDATES)
+    .all<{
+      id: number
+      type: string
+      payload: string | null
+      targetKey: string | null
+      nextRunAt: number | null
+    }>()
 
-  const row = claim.results[0]
-  if (!row) return []
+  const rows = candidates.results ?? []
+  if (!rows.length) return []
 
-  const payload = row.payload ? (JSON.parse(row.payload) as Record<string, unknown>) : {}
-  // 密钥不进 agent 环境变量：第三方 token 存 D1（app_config），下发这一刻注入 payload
-  if (row.type === 'zsxq_sync' || row.type === 'zsxq_groups') {
-    const token = await getConfig(env, 'zsxq_token')
-    if (token) payload.token = token
+  const planned = rows.map((row) => {
+    const payload = parsePayload(row.payload)
+    // 老任务（迁移前入库）没有 target_key：按 payload.url 现场推导，领取时顺手回填
+    return { row, payload, target: row.targetKey ?? targetKeyOf(row.type, payload) }
+  })
+  const targets = [...new Set(planned.map((p) => p.target).filter((t): t is string => !!t))]
+  // 没有目标任务时保持原来的查询量：不查节点与评分
+  const ctx = targets.length ? await loadDispatchCtx(db, targets, now) : null
+
+  for (const item of planned) {
+    if (item.target && ctx && !canTake(ctx, item.target, nodeId, item.row.nextRunAt)) continue
+
+    const claim = await db
+      .prepare(
+        `UPDATE job SET status = 'leased', lease_until = ?, node_id = ?, started_at = ?,
+           target_key = COALESCE(target_key, ?)
+         WHERE id = ? AND status = 'pending' AND enabled = 1
+         RETURNING id, type, payload`,
+      )
+      .bind(now + LEASE_MS, nodeId, now, item.target, item.row.id)
+      .all<{ id: number; type: string; payload: string | null }>()
+
+    const row = claim.results?.[0]
+    if (!row) continue // 被别的节点抢先 / 刚被禁用：看下一个候选
+
+    const payload = item.payload
+    // 密钥不进 agent 环境变量：第三方 token 存 D1（app_config），下发这一刻注入 payload
+    if (row.type === 'zsxq_sync' || row.type === 'zsxq_groups') {
+      const token = await getConfig(env, 'zsxq_token')
+      if (token) payload.token = token
+    }
+    // 全量采集断点：把每个星球的回溯游标一并下发（agent 无状态，游标只存 D1）
+    if (row.type === 'zsxq_sync') payload.cursors = await zsxqCursors(db, payload)
+    return [{ id: row.id, type: row.type, payload }]
   }
-  // 全量采集断点：把每个星球的回溯游标一并下发（agent 无状态，游标只存 D1）
-  if (row.type === 'zsxq_sync') payload.cursors = await zsxqCursors(db, payload)
-  return [{ id: row.id, type: row.type, payload }]
+
+  return []
 }
 
 /**
@@ -215,9 +422,15 @@ node.post('/jobs/:id/complete', async (c) => {
   const nodeId = c.get('node')
 
   const job = await db
-    .prepare('SELECT cron, started_at FROM job WHERE id = ?')
+    .prepare('SELECT cron, started_at, type, payload, target_key AS targetKey FROM job WHERE id = ?')
     .bind(id)
-    .first<{ cron: string | null; started_at: number | null }>()
+    .first<{
+      cron: string | null
+      started_at: number | null
+      type: string
+      payload: string | null
+      targetKey: string | null
+    }>()
   if (!job) return nodeErr(409, 'lease lost')
   const nextRunAt = job.cron ? nextCronRun(job.cron, now) : null
   // 无 cron = 一次性任务：完成后置 done（next_run_at 不推进，回 pending 会被立刻重复领取）
@@ -241,6 +454,9 @@ node.post('/jobs/:id/complete', async (c) => {
     .bind(id, summary ?? null, job.started_at ? now - job.started_at : null, now, nodeId, agentVersion ?? '?')
     .run()
 
+  // 跨节点调度：这个节点对这个目标抓成功 → +5（同一站点的所有源共享评分）
+  await bumpScore(db, job.targetKey ?? targetKeyOf(job.type, parsePayload(job.payload)), nodeId, 'success', now)
+
   const jobs = await claimPipeline(c.env, nodeId, now)
   return nodeOk({ jobs })
 })
@@ -249,17 +465,26 @@ node.post('/jobs/:id/fail', async (c) => {
   const now = Date.now()
   const db = c.env.DB
   const id = Number(c.req.param('id'))
-  const { error, agentVersion } = await c.req.json<{ error?: string; agentVersion?: string }>()
+  const { error, errorKind, agentVersion } = await c.req.json<{
+    error?: string
+    errorKind?: string
+    agentVersion?: string
+  }>()
   const nodeId = c.get('node')
 
   const row = await db
-    .prepare('SELECT attempts, started_at, cron, fail_streak AS failStreak FROM job WHERE id = ?')
+    .prepare(
+      'SELECT attempts, started_at, cron, fail_streak AS failStreak, type, payload, target_key AS targetKey FROM job WHERE id = ?',
+    )
     .bind(id)
     .first<{
       attempts: number
       started_at: number | null
       cron: string | null
       failStreak: number
+      type: string
+      payload: string | null
+      targetKey: string | null
     }>()
   const attempts = (row?.attempts ?? 0) + 1
   const lastError = (error ?? '').slice(0, 1000) || null
@@ -310,6 +535,14 @@ node.post('/jobs/:id/fail', async (c) => {
     )
     .bind(id, lastError, row?.started_at ? now - row.started_at : null, now, nodeId, agentVersion ?? '?')
     .run()
+
+  // 跨节点调度：只有「网络类」失败才扣该节点对该目标的评分（403/404、解析错误不算节点的锅）。
+  // agent 新版会直接给 errorKind；老 agent 靠错误原文兜底。
+  const isNetwork = errorKind ? errorKind === 'network' : NETWORK_ERROR_RE.test(lastError ?? '')
+  if (isNetwork) {
+    const target = row?.targetKey ?? targetKeyOf(row?.type ?? '', parsePayload(row?.payload ?? null))
+    await bumpScore(db, target, nodeId, 'network', now)
+  }
 
   const jobs = await claimPipeline(c.env, nodeId, now)
   return nodeOk({ jobs })
