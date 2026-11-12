@@ -59,6 +59,15 @@ const LINE_OPTIONS = [
   { value: 1.7, label: '宽松' },
 ]
 
+/** 自动翻页间隔（秒）；0 = 关闭。不持久化：每次打开默认关闭，避免「自己开始翻页」 */
+const AUTO_OPTIONS = [
+  { value: 0, label: '关闭' },
+  { value: 10, label: '10 秒' },
+  { value: 20, label: '20 秒' },
+  { value: 30, label: '30 秒' },
+  { value: 60, label: '60 秒' },
+]
+
 /** 没存过时跟随应用主题：应用是深色就默认夜间阅读，浅色默认白纸 */
 function readTheme() {
   const saved = readStorage(READER_THEME_KEY)
@@ -96,11 +105,12 @@ function fabHtml() {
 }
 
 /**
- * 阅读设置弹窗：字号 / 行距（txt）/ 背景，改动即时生效、无需保存。
+ * 阅读设置弹窗：字号 / 行距（txt）/ 自动翻页 / 背景 / 全屏与常亮，改动即时生效、无需保存。
  * font = { value, min, max, onFont }；line = { value, onLine }（epub 行距跟随原书，不传）；
+ * auto = { value, onChange }（秒，0 = 关闭）；actions = [{ id, label, pressed, onToggle }]
  * onTheme(id) 由调用方接到背景切换（txt 只换令牌，epub 还要刷 iframe 主题）。
  */
-function openReaderSettings({ theme, onTheme, font = null, line = null } = {}) {
+function openReaderSettings({ theme, onTheme, font = null, line = null, auto = null, actions = [] } = {}) {
   const fontBlock = font
     ? `<div class="reader-setting"><span class="reader-setting-label">字号</span>
          <button class="btn sm" type="button" data-fs="-1" aria-label="缩小字号">A−</button>
@@ -118,14 +128,34 @@ function openReaderSettings({ theme, onTheme, font = null, line = null } = {}) {
            .join('')}</div>
        </div>`
     : ''
+  const autoBlock = auto
+    ? `<div class="reader-setting"><span class="reader-setting-label">自动翻页</span>
+         <div class="reader-seg" role="group" aria-label="自动翻页间隔">${AUTO_OPTIONS.map(
+           (o) =>
+             `<button class="reader-seg-btn" type="button" data-auto="${o.value}" aria-pressed="${o.value === Number(auto.value || 0)}">${esc(o.label)}</button>`,
+         ).join('')}</div>
+       </div>`
+    : ''
   const swatchBlock = `<div class="reader-setting"><span class="reader-setting-label">背景</span>
       <div class="reader-swatches">${READER_THEMES.map(
         (t) =>
           `<button class="reader-swatch" type="button" data-swatch="${t.id}" title="${esc(t.label)}" aria-label="${esc(t.label)}" aria-pressed="${t.id === theme}" style="background:${t.bg}"></button>`,
       ).join('')}</div>
     </div>`
+  const actionBlock = actions.length
+    ? `<div class="reader-setting"><span class="reader-setting-label">显示</span>
+         <div class="reader-settings-actions">${actions
+           .map(
+             (a) =>
+               `<button class="btn sm" type="button" data-action="${esc(a.id)}" aria-pressed="${a.pressed ? 'true' : 'false'}">${esc(a.label)}</button>`,
+           )
+           .join('')}</div>
+       </div>`
+    : ''
 
-  const dlg = showDialog(`<h2>阅读设置</h2>${fontBlock}${lineBlock}${swatchBlock}`, { label: '阅读设置' })
+  const dlg = showDialog(`<h2>阅读设置</h2>${fontBlock}${lineBlock}${autoBlock}${swatchBlock}${actionBlock}`, {
+    label: '阅读设置',
+  })
   if (font) {
     dlg.body.querySelectorAll('[data-fs]').forEach((b) => {
       b.onclick = () => {
@@ -149,6 +179,26 @@ function openReaderSettings({ theme, onTheme, font = null, line = null } = {}) {
       }
     })
   }
+  if (auto) {
+    dlg.body.querySelectorAll('[data-auto]').forEach((b) => {
+      b.onclick = () => {
+        const next = Number(b.dataset.auto) || 0
+        auto.value = next
+        auto.onChange?.(next)
+        dlg.body
+          .querySelectorAll('[data-auto]')
+          .forEach((x) => x.setAttribute('aria-pressed', String((Number(x.dataset.auto) || 0) === next)))
+      }
+    })
+  }
+  dlg.body.querySelectorAll('[data-action]').forEach((b) => {
+    b.onclick = async () => {
+      const act = actions.find((a) => a.id === b.dataset.action)
+      if (!act) return
+      const next = await act.onToggle?.()
+      if (typeof next === 'boolean') b.setAttribute('aria-pressed', String(next))
+    }
+  })
   dlg.body.querySelectorAll('[data-swatch]').forEach((b) => {
     b.onclick = () => {
       const id = b.dataset.swatch
@@ -708,6 +758,155 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted }) {
   }
 }
 
+/* ---------------- 翻页手势 / 点击热区 / 沉浸模式（issue #13 P2） ---------------- */
+
+/**
+ * 阅读手势：左右滑动翻页、点击左右热区翻页、点中间切换沉浸模式。
+ *
+ * 只响应单指、短时、位移小的操作：长按选字、双指缩放、纵向滚动一律放行；
+ * 起点在屏幕左右 24px 内不响应，避免撞上系统边缘返回手势。
+ * doc 给定时监听 iframe 内部（epub），否则监听 surface（txt 正文 / epub 外边距）。
+ * onSwipePrev / onSwipeNext 缺省与点击一致（txt 用来区分「翻一屏」和「跳章」）。
+ * 返回 teardown。
+ */
+function setupReaderGestures({
+  surface,
+  doc = null,
+  onPrev,
+  onNext,
+  onSwipePrev = onPrev,
+  onSwipeNext = onNext,
+  onCenter,
+  enabled = () => true,
+  edge = 24,
+}) {
+  const target = doc ?? surface
+  if (!target?.addEventListener) return () => {}
+  // 触屏才启用：桌面鼠标点击保持原行为（按钮 / 方向键 / 滚轮触发的翻页不受影响）
+  if (!(window.matchMedia?.('(pointer: coarse)')?.matches ?? false)) return () => {}
+  let start = null
+
+  const pointOf = (e) => {
+    const t = e.changedTouches?.[0] ?? e.touches?.[0] ?? e
+    return { x: Number(t?.clientX) || 0, y: Number(t?.clientY) || 0 }
+  }
+  const selectionText = () => {
+    try {
+      const sel = doc ? doc.getSelection?.() : window.getSelection?.()
+      return String(sel ?? '').trim()
+    } catch {
+      return ''
+    }
+  }
+  const ignored = (e) => {
+    if (!enabled()) return true
+    // 别把链接 / 按钮 / 输入框上的点击当成翻页
+    const el = e.target && typeof e.target.closest === 'function' ? e.target : null
+    if (el?.closest('a, button, input, textarea, select, [contenteditable="true"]')) return true
+    return Boolean(selectionText())
+  }
+  const onDown = (e) => {
+    if (e.touches && e.touches.length > 1) {
+      start = null
+      return
+    }
+    start = { ...pointOf(e), at: Date.now() }
+  }
+  const onUp = (e) => {
+    if (!start) return
+    const s = start
+    start = null
+    if (ignored(e)) return
+    const p = pointOf(e)
+    const dx = p.x - s.x
+    const dy = p.y - s.y
+    const dt = Date.now() - s.at
+    const width = doc ? doc.defaultView?.innerWidth || window.innerWidth : surface.clientWidth || window.innerWidth
+    // 屏幕左右边缘留给系统手势
+    if (s.x < edge || s.x > width - edge) return
+    // 横向滑动：至少 48px，且明显比纵向大
+    if (dt < 800 && Math.abs(dx) >= 48 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+      if (dx < 0) onSwipeNext?.()
+      else onSwipePrev?.()
+      return
+    }
+    // 轻点：左右 30% 翻页，中间切换沉浸模式
+    if (dt < 450 && Math.abs(dx) < 12 && Math.abs(dy) < 12) {
+      const ratio = width ? p.x / width : 0.5
+      if (ratio < 0.3) onPrev?.()
+      else if (ratio > 0.7) onNext?.()
+      else onCenter?.()
+    }
+  }
+  const onCancel = () => {
+    start = null
+  }
+
+  target.addEventListener('pointerdown', onDown, { passive: true })
+  target.addEventListener('pointerup', onUp)
+  target.addEventListener('pointercancel', onCancel, { passive: true })
+  return () => {
+    target.removeEventListener('pointerdown', onDown)
+    target.removeEventListener('pointerup', onUp)
+    target.removeEventListener('pointercancel', onCancel)
+  }
+}
+
+/* ---------------- 全屏 / 屏幕常亮 ---------------- */
+
+let wakeLock = null
+
+async function toggleFullscreen() {
+  try {
+    if (document.fullscreenElement) {
+      await document.exitFullscreen?.()
+      return Boolean(document.fullscreenElement)
+    }
+    await document.documentElement.requestFullscreen?.()
+    return Boolean(document.fullscreenElement)
+  } catch {
+    toast('当前浏览器不支持全屏', true)
+    return false
+  }
+}
+
+async function toggleScreenWake() {
+  if (!('wakeLock' in navigator)) {
+    toast('当前浏览器不支持屏幕常亮', true)
+    return false
+  }
+  if (wakeLock) {
+    try {
+      await wakeLock.release()
+    } catch {
+      /* 已被系统释放 */
+    }
+    wakeLock = null
+    return false
+  }
+  try {
+    wakeLock = await navigator.wakeLock.request('screen')
+    wakeLock.addEventListener?.('release', () => {
+      wakeLock = null
+    })
+    toast('屏幕保持常亮')
+    return true
+  } catch {
+    wakeLock = null
+    toast('常亮开启失败（系统可能拒绝）', true)
+    return false
+  }
+}
+
+function releaseScreenWake() {
+  try {
+    wakeLock?.release?.()
+  } catch {
+    /* 已释放 */
+  }
+  wakeLock = null
+}
+
 /** 数字：半角 / 全角 / 汉字（含「〇」），不少 TXT 用「第１２３章」 */
 const TXT_NUM = '[0-9０-９零〇一二三四五六七八九十百千万两]'
 /** 章节单位：章 / 节 / 回 / 卷 / 部 / 篇 / 集 / 幕 / 折 / 话 */
@@ -1254,6 +1453,42 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
     const rendition = epubBook.renderTo(view, { width: '100%', height: '100%', spread: 'none' })
     const go = (dir) => Promise.resolve(rendition[dir]()).catch(() => {})
 
+    /** 沉浸模式：点屏幕中间切换（隐藏顶栏 / 页脚 / 悬浮工具栏，正文占满整屏） */
+    let immersive = false
+    const toggleImmersive = () => {
+      immersive = !immersive
+      if (immersive) root.dataset.immersive = '1'
+      else delete root.dataset.immersive
+      if (immersive) toast('沉浸阅读：点屏幕中间恢复工具栏')
+    }
+
+    // 自动翻页（间隔秒数；0 = 关闭；不持久化，每次打开默认关闭）
+    let autoSeconds = 0
+    let autoTimer = 0
+    const stopAuto = () => {
+      if (!autoTimer) return
+      clearInterval(autoTimer)
+      autoTimer = 0
+    }
+    const startAuto = () => {
+      stopAuto()
+      if (!autoSeconds) return
+      autoTimer = window.setInterval(() => {
+        if (document.hidden || document.getElementById('dlg')?.open || tts?.isActive()) return
+        if (!alive() || rendition.currentLocation?.()?.atEnd) {
+          stopAuto()
+          toast('已到书末，自动翻页已停止')
+          return
+        }
+        go('next')
+      }, autoSeconds * 1000)
+    }
+    const setAuto = (sec) => {
+      autoSeconds = Math.max(0, Number(sec) || 0)
+      startAuto()
+      if (autoSeconds) toast(`自动翻页：每 ${autoSeconds} 秒`)
+    }
+
     /* 进度条跳转（issue #13）：优先用 epub 位置表精确跳；生成失败退化为按 spine 序号定位 */
     let locationsTask = null
     const seekEpub = async (ratio) => {
@@ -1338,6 +1573,11 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
             paintEpubTheme()
           },
         },
+        auto: { value: autoSeconds, onChange: setAuto },
+        actions: [
+          { id: 'fullscreen', label: '全屏', pressed: Boolean(document.fullscreenElement), onToggle: toggleFullscreen },
+          { id: 'wake', label: '常亮', pressed: Boolean(wakeLock), onToggle: toggleScreenWake },
+        ],
         onTheme: setFabTheme,
       })
     }
@@ -1460,6 +1700,7 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
     }
 
     const wheelDocs = []
+    const gestureStops = []
 
     /* ---------------- issue #15：epub 图片兜底 ---------------- */
 
@@ -1562,8 +1803,29 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
       doc.addEventListener('wheel', onWheel, { passive: false })
       wheelDocs.push(doc)
       fixContentImages(contents)
+      // 手势挂在 iframe 内部：epub 的正文在 iframe 里，外层收不到点击。
+      // 不保存 teardown：监听挂在 document 上，iframe 销毁时随文档一起回收，
+      // 保存反而会让整本书翻过的旧文档都滞留内存。
+      setupReaderGestures({
+        surface: view,
+        doc,
+        onPrev: () => go('prev'),
+        onNext: () => go('next'),
+        onCenter: toggleImmersive,
+        enabled: () => alive() && !document.getElementById('dlg')?.open,
+      })
     })
     view.addEventListener('wheel', onWheel, { passive: false })
+    // 正文两侧的留白（iframe 外）也要能点 / 滑
+    gestureStops.push(
+      setupReaderGestures({
+        surface: view,
+        onPrev: () => go('prev'),
+        onNext: () => go('next'),
+        onCenter: toggleImmersive,
+        enabled: () => alive() && !document.getElementById('dlg')?.open,
+      }),
+    )
 
     rendition.on('relocated', (loc) => {
       if (!alive()) return
@@ -1588,6 +1850,9 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
       tocSide?.destroy()
       stopSeek()
       tts?.destroy()
+      stopAuto()
+      for (const stop of gestureStops) stop()
+      gestureStops.length = 0
       clearTimeout(saveTimer)
       document.removeEventListener('keydown', onKey)
       view.removeEventListener('wheel', onWheel)
@@ -1996,6 +2261,45 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
   let tocSide = null
   /** 语音朗读控制器（分章渲染后才知道有哪些段落） */
   let tts = null
+  /** 手势 teardown（iframe / 正文上的 pointer 监听，销毁时统一解绑） */
+  const gestureStops = []
+
+  /** 沉浸模式：点屏幕中间切换（隐藏顶栏 / 页脚 / 悬浮工具栏） */
+  let immersive = false
+  const toggleImmersive = () => {
+    immersive = !immersive
+    if (immersive) root.dataset.immersive = '1'
+    else delete root.dataset.immersive
+    if (immersive) toast('沉浸阅读：点屏幕中间恢复工具栏')
+  }
+
+  // 自动翻页（间隔秒数；0 = 关闭；不持久化）
+  let autoSeconds = 0
+  let autoTimer = 0
+  const stopAuto = () => {
+    if (!autoTimer) return
+    clearInterval(autoTimer)
+    autoTimer = 0
+  }
+  const startAuto = () => {
+    stopAuto()
+    if (!autoSeconds) return
+    autoTimer = window.setInterval(() => {
+      if (document.hidden || document.getElementById('dlg')?.open || tts?.isActive()) return
+      const max = body.scrollHeight - body.clientHeight
+      if (max <= 0 || body.scrollTop >= max - 8) {
+        stopAuto()
+        toast('本章读完，自动翻页已停止')
+        return
+      }
+      body.scrollBy({ top: Math.round(body.clientHeight * 0.9), behavior: 'smooth' })
+    }, autoSeconds * 1000)
+  }
+  const setAuto = (sec) => {
+    autoSeconds = Math.max(0, Number(sec) || 0)
+    startAuto()
+    if (autoSeconds) toast(`自动翻页：每 ${autoSeconds} 秒`)
+  }
 
   /** 整本按行切开（含标题行）；正文渲染从章节的 bodyStart 开始 */
   const lines = []
@@ -2443,6 +2747,9 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
       tocSide?.destroy()
       stopSeek()
       tts?.destroy()
+      stopAuto()
+      for (const stop of gestureStops) stop()
+      gestureStops.length = 0
       clearTimeout(saveTimer)
       body.removeEventListener('scroll', onScroll)
       body.removeEventListener('contextmenu', onContextMenu)
@@ -2492,6 +2799,18 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
       },
     })
   stage.querySelector('[data-fab-tts]').onclick = () => tts?.toggleBar()
+  // 手势：轻点左右翻一屏、横滑跳章、点中间沉浸模式（长按选字 / 纵向滚动不拦）
+  gestureStops.push(
+    setupReaderGestures({
+      surface: body,
+      onPrev: () => body.scrollBy({ top: -Math.round(body.clientHeight * 0.9), behavior: 'smooth' }),
+      onNext: () => body.scrollBy({ top: Math.round(body.clientHeight * 0.9), behavior: 'smooth' }),
+      onSwipePrev: () => jump(index - 1),
+      onSwipeNext: () => jump(index + 1),
+      onCenter: toggleImmersive,
+      enabled: () => !document.getElementById('dlg')?.open && !ctx,
+    }),
+  )
   stage.querySelector('[data-fab-set]').onclick = () => {
     openReaderSettings({
       theme: root.dataset.readerTheme || 'paper',
@@ -2514,6 +2833,11 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
           writeStorage(TXT_LINE_KEY, String(v))
         },
       },
+      auto: { value: autoSeconds, onChange: setAuto },
+      actions: [
+        { id: 'fullscreen', label: '全屏', pressed: Boolean(document.fullscreenElement), onToggle: toggleFullscreen },
+        { id: 'wake', label: '常亮', pressed: Boolean(wakeLock), onToggle: toggleScreenWake },
+      ],
       onTheme: (id) => setReaderTheme(root, id),
     })
   }
@@ -2564,6 +2888,7 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
 
 export function destroy() {
   closeMoreMenu()
+  releaseScreenWake()
   try {
     epubDispose?.()
   } catch {

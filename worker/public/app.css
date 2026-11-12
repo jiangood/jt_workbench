@@ -1896,6 +1896,12 @@ body:has(.playerbar:not([hidden])) .reader-stage {
 .reader-setting:last-child { margin-bottom: 0 }
 .reader-setting-label { flex: 0 0 3em; color: var(--muted-fg); font-size: var(--fs-sm) }
 .reader-setting-value { min-width: 2em; text-align: center; font-variant-numeric: tabular-nums }
+.reader-settings-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2) }
+.reader-settings-actions .btn[aria-pressed="true"] {
+  background: var(--primary-wash);
+  border-color: var(--primary);
+  color: var(--primary);
+}
 .reader-seg { display: flex; border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden }
 .reader-seg-btn {
   padding: 5px 14px;
@@ -2000,6 +2006,16 @@ body:has(.playerbar:not([hidden])) .reader-stage {
   .tts-bar { gap: 6px; padding: 6px var(--sp-2) }
   .tts-status { flex: 1 1 100%; order: 10; white-space: normal }
   .tts-field select { min-width: 64px }
+}
+
+/* 沉浸阅读（点屏幕中间切换）：收起顶栏 / 页脚 / 悬浮工具栏，正文占满整屏 */
+.reader-root[data-immersive="1"] .reader-top,
+.reader-root[data-immersive="1"] .reader-controls,
+.reader-root[data-immersive="1"] .reader-fabs,
+.reader-root[data-immersive="1"] .tts-bar { display: none }
+.reader-root[data-immersive="1"] .reader-stage { height: 100dvh }
+body:has(.playerbar:not([hidden])) .reader-root[data-immersive="1"] .reader-stage {
+  height: max(320px, calc(100dvh - var(--playerbar-h)));
 }
 /* epub / txt 共用：正文 + 右侧目录两栏；窄屏目录隐藏，正文占满 */
 .reader-body {
