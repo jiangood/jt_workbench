@@ -68,6 +68,31 @@ const AUTO_OPTIONS = [
   { value: 60, label: '60 秒' },
 ]
 
+/** 翻页动效：默认无（不改变现有手感）；仿真翻页需要专用渲染层，epub iframe 下不做 */
+const TURN_KEY = 'book:turn'
+const TURN_OPTIONS = [
+  { id: 'none', label: '无' },
+  { id: 'fade', label: '淡入' },
+  { id: 'slide', label: '滑动' },
+]
+
+function readTurn() {
+  const saved = readStorage(TURN_KEY)
+  return TURN_OPTIONS.some((o) => o.id === saved) ? saved : 'none'
+}
+
+/** 页面切换动效：只作用于外层容器，不动 iframe 内容；prefers-reduced-motion 由 CSS 关掉 */
+function playTurnEffect(el, effect, dir) {
+  if (!el || !effect || effect === 'none') return
+  el.classList.remove('turn-fade', 'turn-slide', 'turn-next', 'turn-prev')
+  // 连翻两页时强制重排，动画能重新触发
+  void el.offsetWidth
+  el.classList.add(`turn-${effect}`, dir === 'next' ? 'turn-next' : 'turn-prev')
+  window.setTimeout(() => {
+    el.classList.remove('turn-fade', 'turn-slide', 'turn-next', 'turn-prev')
+  }, 320)
+}
+
 /** 没存过时跟随应用主题：应用是深色就默认夜间阅读，浅色默认白纸 */
 function readTheme() {
   const saved = readStorage(READER_THEME_KEY)
@@ -108,9 +133,10 @@ function fabHtml() {
  * 阅读设置弹窗：字号 / 行距（txt）/ 自动翻页 / 背景 / 全屏与常亮，改动即时生效、无需保存。
  * font = { value, min, max, onFont }；line = { value, onLine }（epub 行距跟随原书，不传）；
  * auto = { value, onChange }（秒，0 = 关闭）；actions = [{ id, label, pressed, onToggle }]
+ * turn = { value, onChange }（none / fade / slide，翻页动效）
  * onTheme(id) 由调用方接到背景切换（txt 只换令牌，epub 还要刷 iframe 主题）。
  */
-function openReaderSettings({ theme, onTheme, font = null, line = null, auto = null, actions = [] } = {}) {
+function openReaderSettings({ theme, onTheme, font = null, line = null, auto = null, turn = null, actions = [] } = {}) {
   const fontBlock = font
     ? `<div class="reader-setting"><span class="reader-setting-label">字号</span>
          <button class="btn sm" type="button" data-fs="-1" aria-label="缩小字号">A−</button>
@@ -142,6 +168,14 @@ function openReaderSettings({ theme, onTheme, font = null, line = null, auto = n
           `<button class="reader-swatch" type="button" data-swatch="${t.id}" title="${esc(t.label)}" aria-label="${esc(t.label)}" aria-pressed="${t.id === theme}" style="background:${t.bg}"></button>`,
       ).join('')}</div>
     </div>`
+  const turnBlock = turn
+    ? `<div class="reader-setting"><span class="reader-setting-label">翻页</span>
+         <div class="reader-seg" role="group" aria-label="翻页效果">${TURN_OPTIONS.map(
+           (o) =>
+             `<button class="reader-seg-btn" type="button" data-turn="${o.id}" aria-pressed="${o.id === turn.value}">${esc(o.label)}</button>`,
+         ).join('')}</div>
+       </div>`
+    : ''
   const actionBlock = actions.length
     ? `<div class="reader-setting"><span class="reader-setting-label">显示</span>
          <div class="reader-settings-actions">${actions
@@ -153,7 +187,7 @@ function openReaderSettings({ theme, onTheme, font = null, line = null, auto = n
        </div>`
     : ''
 
-  const dlg = showDialog(`<h2>阅读设置</h2>${fontBlock}${lineBlock}${autoBlock}${swatchBlock}${actionBlock}`, {
+  const dlg = showDialog(`<h2>阅读设置</h2>${fontBlock}${lineBlock}${autoBlock}${swatchBlock}${turnBlock}${actionBlock}`, {
     label: '阅读设置',
   })
   if (font) {
@@ -188,6 +222,17 @@ function openReaderSettings({ theme, onTheme, font = null, line = null, auto = n
         dlg.body
           .querySelectorAll('[data-auto]')
           .forEach((x) => x.setAttribute('aria-pressed', String((Number(x.dataset.auto) || 0) === next)))
+      }
+    })
+  }
+  if (turn) {
+    dlg.body.querySelectorAll('[data-turn]').forEach((b) => {
+      b.onclick = () => {
+        turn.value = b.dataset.turn
+        turn.onChange?.(turn.value)
+        dlg.body
+          .querySelectorAll('[data-turn]')
+          .forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.turn === turn.value)))
       }
     })
   }
@@ -1451,7 +1496,11 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
     )
     // spread:'none' + 窄栏：宽屏上仍然是一页一行字，图片不会被拉满整屏
     const rendition = epubBook.renderTo(view, { width: '100%', height: '100%', spread: 'none' })
-    const go = (dir) => Promise.resolve(rendition[dir]()).catch(() => {})
+    let turnEffect = readTurn()
+    const go = (dir) => {
+      playTurnEffect(view, turnEffect, dir)
+      return Promise.resolve(rendition[dir]()).catch(() => {})
+    }
 
     /** 沉浸模式：点屏幕中间切换（隐藏顶栏 / 页脚 / 悬浮工具栏，正文占满整屏） */
     let immersive = false
@@ -1574,6 +1623,13 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
           },
         },
         auto: { value: autoSeconds, onChange: setAuto },
+        turn: {
+          value: turnEffect,
+          onChange: (v) => {
+            turnEffect = v
+            writeStorage(TURN_KEY, v)
+          },
+        },
         actions: [
           { id: 'fullscreen', label: '全屏', pressed: Boolean(document.fullscreenElement), onToggle: toggleFullscreen },
           { id: 'wake', label: '常亮', pressed: Boolean(wakeLock), onToggle: toggleScreenWake },
@@ -2276,6 +2332,8 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
   // 自动翻页（间隔秒数；0 = 关闭；不持久化）
   let autoSeconds = 0
   let autoTimer = 0
+  /** 翻页动效（none / fade / slide），跟着设置走 */
+  let turnEffect = readTurn()
   const stopAuto = () => {
     if (!autoTimer) return
     clearInterval(autoTimer)
@@ -2471,8 +2529,11 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
   /** 跳章：章节表已经完整，直接切换（不再需要下载） */
   function jump(target) {
     if (disposed || !chapters.length) return
-    index = Math.max(0, Math.min(chapters.length - 1, target))
+    const next = Math.max(0, Math.min(chapters.length - 1, target))
+    const dir = next >= index ? 'next' : 'prev'
+    index = next
     paint()
+    playTurnEffect(body, turnEffect, dir)
   }
 
   function paint(ratio = null, keepScroll = false) {
@@ -2834,6 +2895,13 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
         },
       },
       auto: { value: autoSeconds, onChange: setAuto },
+      turn: {
+        value: turnEffect,
+        onChange: (v) => {
+          turnEffect = v
+          writeStorage(TURN_KEY, v)
+        },
+      },
       actions: [
         { id: 'fullscreen', label: '全屏', pressed: Boolean(document.fullscreenElement), onToggle: toggleFullscreen },
         { id: 'wake', label: '常亮', pressed: Boolean(wakeLock), onToggle: toggleScreenWake },

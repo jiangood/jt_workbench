@@ -2017,6 +2017,23 @@ body:has(.playerbar:not([hidden])) .reader-stage {
 body:has(.playerbar:not([hidden])) .reader-root[data-immersive="1"] .reader-stage {
   height: max(320px, calc(100dvh - var(--playerbar-h)));
 }
+
+/* 翻页动效（设置里可选「无 / 淡入 / 滑动」；只动外层容器，不动 iframe 内容） */
+@keyframes wb-turn-fade { from { opacity: .2 } to { opacity: 1 } }
+@keyframes wb-turn-next { from { opacity: .3; transform: translateX(18px) } to { opacity: 1; transform: none } }
+@keyframes wb-turn-prev { from { opacity: .3; transform: translateX(-18px) } to { opacity: 1; transform: none } }
+.reader-view.turn-fade,
+.txt-body.turn-fade { animation: wb-turn-fade 200ms ease }
+.reader-view.turn-slide.turn-next,
+.txt-body.turn-slide.turn-next { animation: wb-turn-next 220ms ease }
+.reader-view.turn-slide.turn-prev,
+.txt-body.turn-slide.turn-prev { animation: wb-turn-prev 220ms ease }
+@media (prefers-reduced-motion: reduce) {
+  .reader-view.turn-fade,
+  .reader-view.turn-slide,
+  .txt-body.turn-fade,
+  .txt-body.turn-slide { animation: none !important }
+}
 /* epub / txt 共用：正文 + 右侧目录两栏；窄屏目录隐藏，正文占满 */
 .reader-body {
   display: flex;
