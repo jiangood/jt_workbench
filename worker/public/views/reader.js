@@ -163,7 +163,20 @@ function setProgress(root, ratio, text, valuetext = '') {
   if (label) label.textContent = text ?? `${pct}%`
 }
 
-/** 目录弹窗：rows = [{ label, depth?, attrs }]，点击回调由调用方接在 data-toc-i 上 */
+/** 目录行 DOM：弹窗与右侧栏共用，避免两套结构走偏 */
+function tocRowsHtml(rows, current) {
+  return rows
+    .map(
+      (row, i) => `<li class="reader-toc-item" data-depth="${Math.min(row.depth ?? 0, 3)}">
+            <button class="reader-toc-btn" type="button" data-toc-i="${i}"${
+              i === current ? ' aria-current="true"' : ''
+            }>${row.no ? `<span class="reader-toc-no">${esc(row.no)}</span>` : ''}${esc(row.label)}</button>
+          </li>`,
+    )
+    .join('')
+}
+
+/** 目录弹窗：rows = [{ label, depth?, no? }]，点击回调由调用方接在 data-toc-i 上 */
 function openTocDialog(rows, { empty = '这本书没有目录信息。', hint = '', current = -1 } = {}) {
   if (!rows.length) {
     showDialog(`<h2>目录</h2><p class="small muted">${esc(empty)}</p>`, { label: '目录' })
@@ -171,21 +184,114 @@ function openTocDialog(rows, { empty = '这本书没有目录信息。', hint = 
   }
   const html = `<h2>目录</h2>
     <ol class="reader-toc">
-      ${rows
-        .map(
-          (row, i) => `<li class="reader-toc-item" data-depth="${Math.min(row.depth ?? 0, 3)}">
-            <button class="reader-toc-btn" type="button" data-toc-i="${i}"${
-              i === current ? ' aria-current="true"' : ''
-            }>${row.no ? `<span class="reader-toc-no">${esc(row.no)}</span>` : ''}${esc(row.label)}</button>
-          </li>`,
-        )
-        .join('')}
+      ${tocRowsHtml(rows, current)}
     </ol>
     ${hint ? `<p class="reader-toc-hint small muted">${esc(hint)}</p>` : ''}`
 
   const dlg = showDialog(html, { label: '目录' })
   dlg.body.querySelector('[aria-current="true"]')?.scrollIntoView({ block: 'nearest' })
   return dlg
+}
+
+/* ---------------- 右侧目录栏（桌面） ---------------- */
+
+const TOC_OPEN_KEY = 'book:toc:open'
+/** 断点与 CSS 的 1024px 保持一致 */
+const tocWide = () => window.matchMedia('(min-width: 1024px)').matches
+
+const tocSideHtml = () => `<aside class="reader-toc-side" data-toc-side hidden aria-label="目录">
+    <div class="reader-toc-head">
+      <strong>目录</strong>
+      <button class="icon-btn" type="button" data-toc-close aria-label="收起目录" title="收起目录">${icon('close', 14)}</button>
+    </div>
+    <ol class="reader-toc reader-toc-list" data-toc-list></ol>
+    <p class="reader-toc-hint small muted" data-toc-hint hidden></p>
+  </aside>`
+
+/**
+ * 桌面右侧目录：默认展开、偏好记忆、当前章高亮 + 自动滚动。
+ * onPick(row) 由各阅读器提供跳转逻辑；窄屏不显示（仍走页脚目录按钮的弹窗）。
+ */
+function createTocSide(stage, onPick) {
+  const panel = stage.querySelector('[data-toc-side]')
+  if (!panel) return null
+  const list = panel.querySelector('[data-toc-list]')
+  const hintEl = panel.querySelector('[data-toc-hint]')
+  const closeBtn = panel.querySelector('[data-toc-close]')
+
+  let rows = []
+  let current = -1
+  let open = readStorage(TOC_OPEN_KEY) !== '0'
+  let userScrollAt = 0
+
+  const sync = () => {
+    panel.hidden = !(open && tocWide() && rows.length > 0)
+  }
+
+  const scrollToCurrent = () => {
+    // 用户刚手动滚过目录就暂时不抢滚动，避免「手一滑就被拽回去」
+    if (panel.hidden || Date.now() - userScrollAt < 1200) return
+    list.querySelector('[aria-current="true"]')?.scrollIntoView({ block: 'nearest' })
+  }
+
+  const paint = () => {
+    list.innerHTML = tocRowsHtml(rows, current)
+    scrollToCurrent()
+  }
+
+  /** 章节表变化时重建；阅读器随后调 setCurrent 同步高亮 */
+  const setRows = (next, hint = '') => {
+    rows = next || []
+    hintEl.textContent = hint
+    hintEl.hidden = !hint
+    sync()
+    paint()
+  }
+
+  const setCurrent = (i) => {
+    current = Number.isInteger(i) ? i : -1
+    list.querySelectorAll('[data-toc-i]').forEach((btn) => {
+      if (Number(btn.dataset.tocI) === current) btn.setAttribute('aria-current', 'true')
+      else btn.removeAttribute('aria-current')
+    })
+    scrollToCurrent()
+  }
+
+  const toggle = () => {
+    open = !open
+    writeStorage(TOC_OPEN_KEY, open ? '1' : '0')
+    sync()
+    if (open) scrollToCurrent()
+  }
+
+  const markUserScroll = () => {
+    userScrollAt = Date.now()
+  }
+  list.addEventListener('wheel', markUserScroll, { passive: true })
+  list.addEventListener('touchstart', markUserScroll, { passive: true })
+  list.addEventListener('pointerdown', markUserScroll)
+  list.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-toc-i]')
+    if (!btn) return
+    const row = rows[Number(btn.dataset.tocI)]
+    if (row) onPick(row)
+  })
+  closeBtn.addEventListener('click', () => {
+    open = false
+    writeStorage(TOC_OPEN_KEY, '0')
+    sync()
+  })
+
+  const onResize = () => sync()
+  window.addEventListener('resize', onResize)
+
+  return {
+    setRows,
+    setCurrent,
+    toggle,
+    canToggle: () => tocWide() && rows.length > 0,
+    destroy: () => window.removeEventListener('resize', onResize),
+  }
 }
 
 /* ---------------- 通用：进度显示 / 带进度读取 ---------------- */
@@ -274,7 +380,10 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
     if (!alive()) return
 
     stage.innerHTML = `
-      <div class="reader-page"><div class="reader-view" data-view></div></div>
+      <div class="reader-body">
+        <div class="reader-page"><div class="reader-view" data-view></div></div>
+        ${tocSideHtml()}
+      </div>
       ${footerHtml({ stat: true })}`
 
     const view = stage.querySelector('[data-view]')
@@ -321,6 +430,13 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
       .sort((a, b) => a.index - b.index)
     const totalSections = epubBook.spine?.spineItems?.length ?? 0
 
+    // 右侧目录：默认展开（窄屏隐藏），点击直接 display
+    const tocSide = createTocSide(stage, (row) => {
+      if (row?.href) rendition.display(row.href).catch(() => {})
+    })
+    tocSide?.setRows(tocItems.map(({ label, depth, href }) => ({ label, depth, href })))
+    const tocIndexOf = (href) => (href ? tocItems.findIndex((item) => item.href === href) : -1)
+
     let currentIndex = 0
     let lastLoc = null
     let saveTimer = 0
@@ -352,8 +468,10 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
       if (!alive()) return
       lastLoc = loc || lastLoc
       currentIndex = Number.isInteger(lastLoc?.start?.index) ? lastLoc.start.index : 0
+      const hit = chapterAt(currentIndex)
       // 目录缺失或落在两章之间时，退回节序号，标题栏始终有内容
-      setChapter(chapterAt(currentIndex)?.label || (totalSections ? `第 ${currentIndex + 1} 节` : ''))
+      setChapter(hit?.label || (totalSections ? `第 ${currentIndex + 1} 节` : ''))
+      tocSide?.setCurrent(tocIndexOf(hit?.href))
       const stat = stage.querySelector('[data-stat]')
       if (stat) stat.textContent = totalSections ? `第 ${currentIndex + 1} / ${totalSections} 节` : ''
       paintProgress()
@@ -420,6 +538,7 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
 
     document.addEventListener('keydown', onKey)
     epubDispose = () => {
+      tocSide?.destroy()
       clearTimeout(saveTimer)
       document.removeEventListener('keydown', onKey)
       view.removeEventListener('wheel', onWheel)
@@ -428,6 +547,11 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
     }
 
     tocBtn.onclick = () => {
+      // 宽屏：按钮退化为右侧目录的显隐开关；窄屏仍开弹窗
+      if (tocSide?.canToggle()) {
+        tocSide.toggle()
+        return
+      }
       if (!tocItems.length) {
         showDialog('<h2>目录</h2><p class="small muted">这本书没有目录信息，可按方向键或滚轮翻页。</p>', {
           label: '目录',
@@ -602,8 +726,11 @@ function chunkByLength(lines, limit = SECTION_CHARS) {
  */
 function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter) {
   stage.innerHTML = `
-    <div class="txt-reader">
-      <div class="txt-body" data-body tabindex="0" role="document" aria-label="${esc(title)}">${loadingBlock('正在加载正文…')}</div>
+    <div class="reader-body">
+      <div class="txt-reader">
+        <div class="txt-body" data-body tabindex="0" role="document" aria-label="${esc(title)}">${loadingBlock('正在加载正文…')}</div>
+      </div>
+      ${tocSideHtml()}
     </div>
     ${footerHtml({ prev: '上一章', next: '下一章', font: true })}`
 
@@ -612,6 +739,8 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter)
   const prevBtn = root.querySelector('[data-prev]')
   const nextBtn = root.querySelector('[data-next]')
   const tocBtn = root.querySelector('[data-toc]')
+  /** 右侧目录控制器：jump 定义后创建（章节表是增量长出来的） */
+  let tocSide = null
 
   /** 窗口内的行（不含换行符）与章节；章节 line = 标题行，bodyStart = 正文首行 */
   const lines = []
@@ -736,11 +865,27 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter)
     }
   }
 
-  /** 章节的结束行：下一章标题行；整本读完时是文件尾；还没下载到则是 null */
+  /** 章节结束行：下一章标题行；整本读完时是文件尾；还没下载到则是 null */
   function chapterEnd(local) {
     const next = chapters[local + 1]
     if (next) return next.line
     return haveAll ? lines.length : null
+  }
+
+  /** 目录条目：跨窗口章节表，按全局章号排序 */
+  function tocEntries() {
+    return [...known.entries()].filter(([, v]) => v.t).sort((a, b) => a[0] - b[0])
+  }
+
+  /** 右侧目录：章节表随下载增长，每次换章刷新一遍并同步高亮 */
+  function paintTocSide() {
+    if (!tocSide) return
+    const entries = tocEntries()
+    tocSide.setRows(
+      entries.map(([i, v]) => ({ label: v.t, i })),
+      haveAll ? '' : '目录随阅读进度继续补全',
+    )
+    tocSide.setCurrent(entries.findIndex(([i]) => i === index + chapterBase))
   }
 
   function paint(ratio = null, keepScroll = false) {
@@ -767,6 +912,7 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter)
     prevBtn.disabled = index + chapterBase === 0 || loading
     nextBtn.disabled = (haveAll && index >= chapters.length - 1) || loading
     setChapter(chapters[index]?.title || '')
+    paintTocSide()
     paintProgress()
     saveIndex()
   }
@@ -1037,6 +1183,11 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter)
     go(target).catch((err) => say(err?.message || '加载失败'))
   }
 
+  /** 右侧目录：点击跳到全局章号；章节表增量增长，由 paintTocSide 刷新 */
+  tocSide = createTocSide(stage, (row) => {
+    if (Number.isInteger(row?.i)) jump(row.i)
+  })
+
   // ---------- 交互 ----------
 
   const onScroll = () => {
@@ -1064,9 +1215,7 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter)
   }
 
   function openToc() {
-    const entries = [...known.entries()]
-      .filter(([, v]) => v.t)
-      .sort((a, b) => a[0] - b[0])
+    const entries = tocEntries()
     const rows = entries.map(([i, v]) => ({ label: v.t, no: '' }))
     const current = entries.findIndex(([i]) => i === index + chapterBase)
     const dlg = openTocDialog(rows, {
@@ -1089,6 +1238,7 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter)
       if (disposed) return
       if (chapters.length) writeStorage(txtPosKey(id), JSON.stringify(currentPos()))
       disposed = true
+      tocSide?.destroy()
       clearTimeout(saveTimer)
       clearTimeout(idxTimer)
       body.removeEventListener('scroll', onScroll)
@@ -1101,7 +1251,14 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter)
   document.addEventListener('keydown', onKey)
   prevBtn.onclick = () => jump(index + chapterBase - 1)
   nextBtn.onclick = () => jump(index + chapterBase + 1)
-  tocBtn.onclick = openToc
+  tocBtn.onclick = () => {
+    // 宽屏：按钮退化为右侧目录的显隐开关；窄屏仍开弹窗
+    if (tocSide?.canToggle()) {
+      tocSide.toggle()
+      return
+    }
+    openToc()
+  }
   root.querySelectorAll('[data-font]').forEach((b) => {
     b.onclick = () => {
       fontSize = Math.max(14, Math.min(26, fontSize + Number(b.dataset.font)))

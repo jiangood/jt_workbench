@@ -348,6 +348,37 @@ textarea:focus-visible {
 }
 .theme-toggle:hover { background: var(--surface-2); color: var(--fg) }
 
+/* 侧栏底部：桌面收起/展开（窄屏由 CSS 隐藏，仍走抽屉） */
+.sidebar-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: auto;
+}
+.sidebar-foot .theme-toggle { margin-top: 0 }
+.nav-collapse {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  background: none;
+  color: var(--muted-fg);
+  font-family: inherit;
+  font-size: var(--fs-md);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
+}
+.nav-collapse:hover { background: var(--surface-2); color: var(--fg) }
+.nav-collapse .ico {
+  flex: 0 0 auto;
+  transform: rotate(180deg);
+  transition: transform var(--dur-base) ease;
+}
+
 .nav-group {
   margin: var(--sp-4) var(--sp-2) var(--sp-1);
   font-size: var(--fs-xs);
@@ -379,6 +410,7 @@ textarea:focus-visible {
 .container.container-wide { max-width: var(--container-max-wide) }
 
 .topbar { display: none }
+
 .scrim { display: none }
 
 /* 播放条出现时给内容留位，避免最后一行被盖住 */
@@ -1619,9 +1651,16 @@ body:has(.playerbar:not([hidden])) .reader-stage {
 }
 .reader-loading,
 .reader-stage > .empty { padding: var(--sp-5) }
+/* epub / txt 共用：正文 + 右侧目录两栏；窄屏目录隐藏，正文占满 */
+.reader-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
 /* epub：正文按书页宽度排版并居中，宽屏上不把文字 / 插图拉满整屏 */
 .reader-page {
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
   display: flex;
   justify-content: center;
@@ -1735,8 +1774,39 @@ body:has(.playerbar:not([hidden])) .reader-stage {
 .reader-toc-item[data-depth="3"] .reader-toc-btn { padding-left: 54px; font-size: var(--fs-sm); color: var(--muted-fg) }
 .reader-toc-hint { margin-top: var(--sp-2) }
 
+/* 右侧常驻目录（桌面）：默认展开，页脚「目录」按钮 / 栏头关闭按钮都能收起 */
+.reader-toc-side {
+  display: none;
+  flex: 0 0 240px;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+}
+@media (min-width: 1024px) {
+  .reader-toc-side:not([hidden]) { display: flex }
+}
+.reader-toc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-sm);
+}
+.reader-toc-head strong { font-weight: 650 }
+.reader-toc-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  padding: var(--sp-2);
+  overflow-y: auto;
+}
+.reader-toc-side .reader-toc-hint { margin: 0; padding: 0 var(--sp-3) var(--sp-2) }
+
 /* TXT 阅读器：编码在浏览器端识别，只渲染当前章节（大文件不卡） */
-.reader-stage > .txt-reader { flex: 1 1 auto; min-height: 0; padding: var(--sp-3) }
+.reader-body > .txt-reader { flex: 1 1 auto; min-height: 0; padding: var(--sp-3) }
 .txt-reader { display: flex; flex-direction: column; gap: var(--sp-2) }
 .txt-body {
   flex: 1 1 auto;
@@ -2276,7 +2346,34 @@ hr.sep { border: 0; border-top: 1px solid var(--border); margin: var(--sp-5) 0 }
   .home-news-meta { display: none }
 }
 
+/* 桌面：主导航收起为 64px 图标栏（body.nav-collapsed 由 lib.js 控制）。
+ * 窄屏继续用抽屉，收起重置不生效。 */
+@media (min-width: 769px) {
+  .sidebar { transition: width var(--dur-base) ease, padding var(--dur-base) ease }
+  body.nav-collapsed .sidebar {
+    width: 64px;
+    padding-inline: 6px;
+    overflow-x: hidden;
+  }
+  body.nav-collapsed .sidebar .brand {
+    justify-content: center;
+    margin-inline: 0;
+  }
+  body.nav-collapsed .brand-text,
+  body.nav-collapsed .navlink span,
+  body.nav-collapsed .sidebar .theme-toggle span:last-child,
+  body.nav-collapsed .nav-collapse span { display: none }
+  body.nav-collapsed .navlink,
+  body.nav-collapsed .sidebar .theme-toggle,
+  body.nav-collapsed .nav-collapse {
+    justify-content: center;
+    padding-inline: 0;
+  }
+  body.nav-collapsed .nav-collapse .ico { transform: none }
+}
+
 @media (max-width: 768px) {
+  .nav-collapse { display: none }
   .topbar {
     position: sticky;
     top: 0;

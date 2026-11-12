@@ -251,6 +251,47 @@ export function scrollToTop() {
   window.scrollTo({ top: 0 })
 }
 
+/* ---------------- 主导航：窄屏抽屉 + 宽屏收起 ---------------- */
+
+const NAV_COLLAPSED_KEY = 'wb-nav:collapsed'
+
+/** 用户偏好：桌面导航是否收起（阅读页的自动收起不写这里） */
+let navCollapsed = false
+/** 本次是否由阅读页自动收起（临时状态，路由离开时还原） */
+let navAutoCollapsed = false
+let paintNavCollapsed = () => {}
+
+function readNavCollapsed() {
+  try {
+    return localStorage.getItem(NAV_COLLAPSED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function saveNavCollapsed(on) {
+  try {
+    localStorage.setItem(NAV_COLLAPSED_KEY, on ? '1' : '0')
+  } catch {
+    /* 隐私模式 / 配额满：只影响下次打开时的默认状态 */
+  }
+}
+
+/**
+ * 阅读页自动收起主导航：临时状态，不写 localStorage。
+ * 用户本来就收起的保持收起；在阅读页里手动切换过，则以手动为准。
+ */
+export function autoCollapseNav(on) {
+  if (on) {
+    if (navAutoCollapsed || navCollapsed) return
+    navAutoCollapsed = true
+    paintNavCollapsed(true)
+  } else if (navAutoCollapsed) {
+    navAutoCollapsed = false
+    paintNavCollapsed(navCollapsed)
+  }
+}
+
 /** 窄屏抽屉导航：汉堡开合 + 遮罩/Esc/跳转关闭；打开时主内容 inert，焦点留在导航内 */
 export function setupDrawer() {
   const toggle = document.getElementById('nav-toggle')
@@ -288,6 +329,33 @@ export function setupDrawer() {
     if (e.matches) close(false)
   })
 
+  // 宽屏收起 / 展开：底部一个折叠按钮（窄屏由 CSS 隐藏，仍走抽屉）
+  const foot = document.createElement('div')
+  foot.className = 'sidebar-foot'
+  foot.innerHTML = `<button class="nav-collapse" type="button" aria-expanded="true" aria-label="收起导航" title="收起导航">${icon('chevron', 14)}<span>收起导航</span></button>`
+  sidebar.append(foot)
+
+  const collapseBtn = foot.querySelector('.nav-collapse')
+  paintNavCollapsed = (on) => {
+    document.body.classList.toggle('nav-collapsed', on)
+    collapseBtn.setAttribute('aria-expanded', String(!on))
+    collapseBtn.setAttribute('aria-label', on ? '展开导航' : '收起导航')
+    collapseBtn.title = on ? '展开导航' : '收起导航'
+    const label = collapseBtn.querySelector('span')
+    if (label) label.textContent = on ? '展开导航' : '收起导航'
+  }
+
+  navCollapsed = readNavCollapsed()
+  paintNavCollapsed(navCollapsed)
+
+  collapseBtn.addEventListener('click', () => {
+    // 以实际状态为准：阅读页自动收起时 navCollapsed 仍是偏好值，直接取反会点不动
+    navCollapsed = !document.body.classList.contains('nav-collapsed')
+    navAutoCollapsed = false
+    paintNavCollapsed(navCollapsed)
+    saveNavCollapsed(navCollapsed)
+  })
+
   const skip = document.querySelector('.skip')
   skip?.addEventListener('click', (e) => {
     e.preventDefault()
@@ -301,7 +369,8 @@ export function setupTheme() {
   const sidebar = document.getElementById('sidebar')
   if (!sidebar) return
 
-  sidebar.insertAdjacentHTML(
+  const host = sidebar.querySelector('.sidebar-foot') || sidebar
+  host.insertAdjacentHTML(
     'beforeend',
     '<button class="theme-toggle" id="theme-toggle" type="button" aria-pressed="false" aria-label="深色模式"><span class="theme-icon"></span><span>深色模式</span></button>',
   )

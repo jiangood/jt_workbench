@@ -1,5 +1,6 @@
 /** SPA 入口：hash 路由 + 侧栏渲染 + 视图生命周期（render / destroy） */
 import {
+  autoCollapseNav,
   closeModal,
   icon,
   initPlayer,
@@ -51,6 +52,8 @@ const SLOW_HINT_MS = 8000
 let currentView = null
 let ticket = 0
 let stopTableScroll = null
+/** 上一次路由 path：只在「进入 / 离开阅读页」时自动收起主导航，同页换书不重复触发 */
+let lastPath = null
 
 function parseHash() {
   const raw = location.hash.replace(/^#/, '') || '/'
@@ -62,7 +65,7 @@ function renderNav() {
   document.getElementById('sidebar').insertAdjacentHTML(
     'beforeend',
     ROUTES.filter((r) => !r.hidden)
-      .map((r) => `<a class="navlink" data-path="${r.path}" href="#${r.path}">${icon(r.icon)}<span>${r.nav || r.title}</span></a>`)
+      .map((r) => `<a class="navlink" data-path="${r.path}" href="#${r.path}" title="${r.nav || r.title}">${icon(r.icon)}<span>${r.nav || r.title}</span></a>`)
       .join(''),
   )
 }
@@ -83,6 +86,11 @@ async function render() {
   const initial = isFirstRender
   isFirstRender = false
   const { path, params } = parseHash()
+  // 进阅读页自动收起主导航，把横向空间让给正文 + 右侧目录；离开时还原
+  if (path !== lastPath) {
+    autoCollapseNav(path === '/reader')
+    lastPath = path
+  }
   const route = ROUTES.find((r) => r.path === path) || ROUTES[0]
   if (route.path !== path) history.replaceState(null, '', `#${route.path}`)
 
