@@ -795,11 +795,108 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
     }
 
     const wheelDocs = []
+
+    /* ---------------- issue #15：epub 图片兜底 ---------------- */
+
+    /**
+     * 章节里的相对图片路径 → archive blob URL。
+     *
+     * epub.js 的资源替换（Resources.replacements）是把 manifest 里的路径做「字符串全局替换」，
+     * 章节里写成 `./Images/a.jpg`、大小写不同、带百分号编码、或 `../` 层级不一致时一张都换不到，
+     * 残留的相对路径会按 iframe 的 <base> 解析成站点地址 → 404 → 静默空白。
+     * 这里逐张重解析：按章节目录拼绝对路径交给 archive，任一变体命中 zip 就用它的 blob URL。
+     */
+    const resolveEpubImage = async (raw, chapterHref) => {
+      const dir = chapterHref.includes('/') ? chapterHref.slice(0, chapterHref.lastIndexOf('/') + 1) : ''
+      const tidy = (p) => {
+        const out = []
+        for (const part of p.split('/')) {
+          if (!part || part === '.') continue
+          if (part === '..') out.pop()
+          else out.push(part)
+        }
+        return out.join('/')
+      }
+      const bare = raw.split(/[?#]/)[0]
+      const variants = new Set([tidy(dir + bare), tidy(bare)])
+      // zip 条目名里常见空格 → 章节里写成 %20（或反过来）：两个方向都试
+      try {
+        variants.add(tidy(dir + decodeURIComponent(bare)))
+      } catch {
+        /* 非法百分号编码：按原样试 */
+      }
+      for (const rel of variants) {
+        if (!rel) continue
+        // 第二个参数 false = 只算 archive 内路径，不要拼站点 URL
+        const abs = epubBook.resolve(rel, false)
+        if (!abs) continue
+        try {
+          const url = await epubBook.archive.createUrl(abs)
+          if (typeof url === 'string' && url) return url
+        } catch {
+          /* 这个候选不在 zip 里：试下一个 */
+        }
+      }
+      return null
+    }
+
+    /** 逐张兜底替换；失败的加占位样式 + console.warn，现场可定位是哪一章哪张图 */
+    const fixContentImages = (contents) => {
+      const doc = contents?.document
+      if (!doc) return
+      try {
+        // adjustImages() 用「解析那一刻的 offsetHeight」算 max-height，iframe 还没布局时会算出
+        // 0px !important，封面页 / 整页图 / 漫画页整张被压没。改用视口单位重设（本 hook 后注册，
+        // 规则追加在后面，同权重下覆盖 epub.js 的写法），布局什么时候完成都不会是 0。
+        contents.addStylesheetRules?.({
+          img: { 'max-height': 'calc(100vh - 16px) !important', 'object-fit': 'contain' },
+          svg: { 'max-height': 'calc(100vh - 16px) !important' },
+          'img[data-wb-img="missing"]': {
+            'min-height': '64px',
+            'min-width': '64px',
+            background: 'rgba(127, 127, 127, 0.12)',
+            'border-radius': '4px',
+          },
+        })
+      } catch {
+        /* 老版本没有 addStylesheetRules：图片仍按原样式显示 */
+      }
+
+      const chapter = epubBook.spine?.get(contents.sectionIndex)?.href ?? ''
+      const nodes = [...doc.querySelectorAll('img, image')]
+      for (const el of nodes) {
+        const isSvgImage = el.tagName.toLowerCase() === 'image'
+        // 读 attribute 而不是 property：property 会被浏览器按 <base> 展开成 https://…
+        const raw = (
+          el.getAttribute(isSvgImage ? 'xlink:href' : 'src') ||
+          el.getAttribute('href') ||
+          ''
+        ).trim()
+        if (!raw || /^(?:blob:|data:|https?:)/i.test(raw)) continue
+        void resolveEpubImage(raw, chapter).then((url) => {
+          if (!url) {
+            el.setAttribute('data-wb-img', 'missing')
+            if (!isSvgImage) el.setAttribute('alt', el.getAttribute('alt') || '图片无法显示')
+            console.warn('[reader] epub 图片解析失败', chapter, raw)
+            return
+          }
+          if (isSvgImage) {
+            el.setAttribute('href', url)
+            el.setAttribute('xlink:href', url)
+          } else {
+            el.setAttribute('src', url)
+          }
+          el.setAttribute('data-wb-img', 'ok')
+        })
+      }
+    }
+
     rendition.hooks.content.register((contents) => {
       const doc = contents?.document
       if (!doc) return
       doc.addEventListener('wheel', onWheel, { passive: false })
       wheelDocs.push(doc)
+      fixContentImages(contents)
     })
     view.addEventListener('wheel', onWheel, { passive: false })
 
