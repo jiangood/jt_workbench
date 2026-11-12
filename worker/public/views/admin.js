@@ -133,10 +133,8 @@ export async function render(main, params = {}) {
         <button class="btn primary sm" id="node-add" type="button">${icon('plus')}添加节点</button>
       </div>
       <div class="small muted" style="max-width: 980px">
-        添加节点后立刻登记（接入前显示离线），并生成一条 <code>curl | sh</code> 接入命令（<strong>长期有效</strong>）：
-        在目标 Linux 机器的任意目录执行，会自动创建 <code>workbench-agent/docker-compose.yml</code>（仅此一个文件）并启动。
-        宿主机不需要 <code>.env</code>，密钥由后台生成并只写进 compose、页面不展示；
-        现场不能马上接入也没关系，之后随时点该行「查看接入方式」取回命令。需要换密钥点「重置密钥」。
+        登记即生成长期有效的 <code>curl | sh</code> 命令，在目标 Linux 机器任意目录执行即可拉起容器；
+        命令随时可从该行「查看接入方式」取回，换密钥点「重置密钥」。
       </div>
       <table>
         <thead><tr><th>节点</th><th>版本</th><th>状态</th><th>最后心跳</th><th>在持任务</th><th></th></tr></thead>
@@ -144,12 +142,7 @@ export async function render(main, params = {}) {
       </table>
       <div class="small mt-2" id="node-msg" role="status"></div>
 
-      <div class="section-head"><h2>agent 版本</h2></div>
-      <div class="small muted" style="max-width: 980px">
-        发布流水线在 agent 有变更时自动写入最新版本号（发布 tag 去掉前缀 v）；节点空闲时按它触发 Watchtower 即时升级。
-        在线节点的版本落后于这里时，会在上表版本列标出「可升级」。
-      </div>
-      <div id="node-cfg" class="mt-2" style="max-width: 860px"></div>
+      <div id="node-cfg" class="mt-3" style="max-width: 980px"></div>
     </section>
 
     <section class="tab-pane" ${paneAttrs('runs')}>
@@ -682,7 +675,8 @@ docker compose up -d</pre>
       el.textContent = text
     }
     const repaint = () => {
-      wrap.innerHTML = cfgHtml(field())
+      const f = field()
+      wrap.innerHTML = f.group === NODE_GROUP ? cfgInlineHtml(f) : cfgHtml(f)
       bindCfg(wrap, key)
     }
 
@@ -695,16 +689,19 @@ docker compose up -d</pre>
       }
     }
 
-    q('copy').onclick = async () => {
-      const value = field().value
-      if (!value) return
-      try {
-        await navigator.clipboard.writeText(value)
-        say('已复制到剪贴板')
-      } catch {
-        cfgShown.add(key)
-        repaint()
-        say('浏览器不允许写剪贴板，已展开明文，请手动复制', true)
+    const copy = q('copy')
+    if (copy) {
+      copy.onclick = async () => {
+        const value = field().value
+        if (!value) return
+        try {
+          await navigator.clipboard.writeText(value)
+          say('已复制到剪贴板')
+        } catch {
+          cfgShown.add(key)
+          repaint()
+          say('浏览器不允许写剪贴板，已展开明文，请手动复制', true)
+        }
       }
     }
 
@@ -766,10 +763,31 @@ docker compose up -d</pre>
     }
   }
 
-  /** 计算节点页的 agent 版本卡片（group=node，字段仍存 app_config） */
+  /** 计算节点页的 agent 版本：压成一行（标签 + 值 + 来源 + 编辑），字段仍存 app_config */
+  const cfgInlineHtml = (f) => {
+    const masked = f.kind === 'secret' && !cfgShown.has(f.key)
+    return `
+      <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap">
+        <span class="small">${esc(f.label)}</span>
+        <code class="mono" data-act="val">${f.value ? esc(masked ? maskValue(f.value) : f.value) : '<span class="muted">未设置</span>'}</code>
+        ${cfgSource(f)}
+        <button class="btn sm" data-act="edit" type="button">编辑</button>
+        <span class="small muted" data-act="meta">${cfgMeta(f)}</span>
+        <form data-act="form" style="display: none; gap: 8px; align-items: center; flex-wrap: wrap">
+          <input class="field" name="value" autocomplete="off" spellcheck="false" style="width: 160px"
+            aria-label="「${esc(f.label)}」的新值" aria-describedby="cfg-msg-${esc(f.key)}"
+            placeholder="如 4.15，留空 = 不校验" />
+          <button class="btn sm" type="submit">保存</button>
+          <button class="btn sm" type="button" data-act="cancel">取消</button>
+        </form>
+        <div class="small" data-act="msg" id="cfg-msg-${esc(f.key)}" role="status"></div>
+      </div>`
+  }
+
+  /** 计算节点页的 agent 版本行（group=node，字段仍存 app_config） */
   const paintNodeCfg = () => {
     const fields = cfgFields.filter((f) => f.group === NODE_GROUP)
-    nodeCfg.innerHTML = fields.map((f) => `<div data-cfg="${esc(f.key)}">${cfgHtml(f)}</div>`).join('')
+    nodeCfg.innerHTML = fields.map((f) => `<div data-cfg="${esc(f.key)}">${cfgInlineHtml(f)}</div>`).join('')
     for (const f of fields) bindCfg(nodeCfg.querySelector(`[data-cfg="${f.key}"]`), f.key)
   }
 
