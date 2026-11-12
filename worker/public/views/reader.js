@@ -81,6 +81,13 @@ function readTurn() {
   return TURN_OPTIONS.some((o) => o.id === saved) ? saved : 'none'
 }
 
+/** 阅读模式（仅 epub）：paged 分页 / scroll 连续滚动 */
+const VIEW_MODE_KEY = 'book:view'
+
+function readViewMode() {
+  return readStorage(VIEW_MODE_KEY) === 'scroll' ? 'scroll' : 'paged'
+}
+
 /** 页面切换动效：只作用于外层容器，不动 iframe 内容；prefers-reduced-motion 由 CSS 关掉 */
 function playTurnEffect(el, effect, dir) {
   if (!el || !effect || effect === 'none') return
@@ -134,9 +141,10 @@ function fabHtml() {
  * font = { value, min, max, onFont }；line = { value, onLine }（epub 行距跟随原书，不传）；
  * auto = { value, onChange }（秒，0 = 关闭）；actions = [{ id, label, pressed, onToggle }]
  * turn = { value, onChange }（none / fade / slide，翻页动效）
+ * mode = { value, onChange }（paged / scroll，仅 epub）
  * onTheme(id) 由调用方接到背景切换（txt 只换令牌，epub 还要刷 iframe 主题）。
  */
-function openReaderSettings({ theme, onTheme, font = null, line = null, auto = null, turn = null, actions = [] } = {}) {
+function openReaderSettings({ theme, onTheme, font = null, line = null, auto = null, turn = null, mode = null, actions = [] } = {}) {
   const fontBlock = font
     ? `<div class="reader-setting"><span class="reader-setting-label">字号</span>
          <button class="btn sm" type="button" data-fs="-1" aria-label="缩小字号">A−</button>
@@ -152,6 +160,14 @@ function openReaderSettings({ theme, onTheme, font = null, line = null, auto = n
                `<button class="reader-seg-btn" type="button" data-line="${o.value}" aria-pressed="${o.value === line.value}">${esc(o.label)}</button>`,
            )
            .join('')}</div>
+       </div>`
+    : ''
+  const modeBlock = mode
+    ? `<div class="reader-setting"><span class="reader-setting-label">模式</span>
+         <div class="reader-seg" role="group" aria-label="阅读模式">
+           <button class="reader-seg-btn" type="button" data-mode="paged" aria-pressed="${mode.value !== 'scroll'}">分页</button>
+           <button class="reader-seg-btn" type="button" data-mode="scroll" aria-pressed="${mode.value === 'scroll'}">滚动</button>
+         </div>
        </div>`
     : ''
   const autoBlock = auto
@@ -187,7 +203,7 @@ function openReaderSettings({ theme, onTheme, font = null, line = null, auto = n
        </div>`
     : ''
 
-  const dlg = showDialog(`<h2>阅读设置</h2>${fontBlock}${lineBlock}${autoBlock}${swatchBlock}${turnBlock}${actionBlock}`, {
+  const dlg = showDialog(`<h2>阅读设置</h2>${modeBlock}${fontBlock}${lineBlock}${autoBlock}${swatchBlock}${turnBlock}${actionBlock}`, {
     label: '阅读设置',
   })
   if (font) {
@@ -210,6 +226,21 @@ function openReaderSettings({ theme, onTheme, font = null, line = null, auto = n
         dlg.body
           .querySelectorAll('[data-line]')
           .forEach((x) => x.setAttribute('aria-pressed', String(Number(x.dataset.line) === line.value)))
+      }
+    })
+  }
+  if (mode) {
+    dlg.body.querySelectorAll('[data-mode]').forEach((b) => {
+      b.onclick = () => {
+        const next = b.dataset.mode === 'scroll' ? 'scroll' : 'paged'
+        if (next === mode.value) return
+        mode.value = next
+        mode.onChange?.(next)
+        dlg.body
+          .querySelectorAll('[data-mode]')
+          .forEach((x) =>
+            x.setAttribute('aria-pressed', String((x.dataset.mode === 'scroll' ? 'scroll' : 'paged') === next)),
+          )
       }
     })
   }
@@ -1494,11 +1525,18 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
     const openBroken = new Promise((_, reject) =>
       epubBook.on('openFailed', () => reject(new Error('这本书解析失败（不是有效的 epub）'))),
     )
-    // spread:'none' + 窄栏：宽屏上仍然是一页一行字，图片不会被拉满整屏
-    const rendition = epubBook.renderTo(view, { width: '100%', height: '100%', spread: 'none' })
+    // spread:'none' + 窄栏：宽屏上仍然是一页一行字，图片不会被拉满整屏。
+    // 连续滚动要换 continuous 管理器（epub.js 的 flow 只改布局，不换 manager）
+    const viewMode = readViewMode()
+    const rendition = epubBook.renderTo(
+      view,
+      viewMode === 'scroll'
+        ? { width: '100%', height: '100%', spread: 'none', flow: 'scrolled-doc', manager: 'continuous' }
+        : { width: '100%', height: '100%', spread: 'none' },
+    )
     let turnEffect = readTurn()
     const go = (dir) => {
-      playTurnEffect(view, turnEffect, dir)
+      if (viewMode === 'paged') playTurnEffect(view, turnEffect, dir)
       return Promise.resolve(rendition[dir]()).catch(() => {})
     }
 
@@ -1536,6 +1574,17 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
       autoSeconds = Math.max(0, Number(sec) || 0)
       startAuto()
       if (autoSeconds) toast(`自动翻页：每 ${autoSeconds} 秒`)
+    }
+
+    /** 切换分页 / 连续滚动：epub.js 换管理器要重建实例，重载阅读页最稳（位置先落盘） */
+    const setViewMode = (mode) => {
+      const next = mode === 'scroll' ? 'scroll' : 'paged'
+      if (next === viewMode) return
+      writeStorage(VIEW_MODE_KEY, next)
+      const cfi = rendition.currentLocation?.()?.start?.cfi
+      if (cfi) writeStorage(epubPosKey(id), JSON.stringify({ v: version, cfi }))
+      toast(next === 'scroll' ? '切换为连续滚动…' : '切换为分页…')
+      setTimeout(() => location.reload(), 350)
     }
 
     /* 进度条跳转（issue #13）：优先用 epub 位置表精确跳；生成失败退化为按 spine 序号定位 */
@@ -1622,6 +1671,7 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
             paintEpubTheme()
           },
         },
+        mode: { value: viewMode, onChange: setViewMode },
         auto: { value: autoSeconds, onChange: setAuto },
         turn: {
           value: turnEffect,
