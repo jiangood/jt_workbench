@@ -21,6 +21,16 @@ let searchResults = []
 let searchSeq = 0
 let searchTimer = 0
 
+// ---------------- 窄屏两态：列表 / 编辑（issue #12） ----------------
+/**
+ * 当前视图的根 <main>：destroy 时用它把编辑态类摘掉（防御节点被复用）。
+ * 编辑态本身只是 <main> 上的一个类，显隐全部交给 app.css 的窄屏媒体查询；
+ * 桌面端没有对应规则，这个类等于惰性状态位。
+ */
+let viewRoot = null
+/** 进编辑态前列表达态的滚动位置：返回列表时滚回原处，不要让用户重新找 */
+let listScrollY = 0
+
 // ---------------- 脏状态 / 草稿（issue #20） ----------------
 /**
  * 编辑器是否与「最后一次落库（或打开）时的内容」不一致。
@@ -94,17 +104,29 @@ function scheduleDraft() {
   draftTimer = setTimeout(flushDraft, DRAFT_DEBOUNCE)
 }
 
+/** 保存状态标签（手机端显示在「目录」右侧，桌面端由 CSS 隐藏）：只如实反映 dirty，不做真正的自动保存 */
+function renderSaveState() {
+  const el = editorRef?.stateEl
+  if (!el) return
+  // 新笔记还没落库（id 为空）也算未保存，别让用户以为已经存上了
+  const unsaved = dirty || editorRef.id == null
+  el.textContent = unsaved ? '未保存' : '已保存'
+  el.classList.toggle('is-dirty', unsaved)
+}
+
 /** 输入 / 移动目录后重算脏状态；脏了排一次防抖草稿，回到原样则清掉草稿 */
 function syncDirty() {
   const value = editorValue()
   if (!value || !editorRef?.snapshot) {
     dirty = false
+    renderSaveState()
     return false
   }
   const base = editorRef.snapshot
   dirty = value.title !== base.title || value.content !== base.content || value.folderId !== base.folderId
   if (dirty) scheduleDraft()
   else dropDraft(editorRef.id)
+  renderSaveState()
   return dirty
 }
 
@@ -146,8 +168,63 @@ function onBeforeUnload(e) {
   return ''
 }
 
+// ---------------- 窄屏两态切换（issue #12） ----------------
+
+/** lib.js 的图标集里没有左箭头，视图内自带一份（结构与 icon() 一致，继承 currentColor） */
+const BACK_ICON =
+  '<svg class="ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M15 19 8 12l7-7"/></svg>'
+
+/** 元素是否真的被渲染：被 CSS 藏起来的节点（桌面端的返回按钮）不响应点击 */
+function isRendered(el) {
+  return !!el && el.getClientRects().length > 0
+}
+
+/**
+ * 切到编辑态：窄屏下列表整块让位给编辑器。
+ * 用「列表栏是否还有渲染盒」判断当前是不是窄屏两态，避免在 JS 里重复写断点。
+ * 桌面端三栏都在 → 直接返回，不做任何滚动，行为与改动前完全一致。
+ */
+function enterMobileEditing(main) {
+  if (!main) return
+  const before = window.scrollY
+  main.classList.add('note-mobile-editing')
+  if (isRendered(main.querySelector('.note-pane-list'))) return
+  // 窄屏：列表被 CSS 藏掉了，记下原来的浏览位置，正文若被顶出视口就回到顶部
+  if (before > 0) listScrollY = before
+  const editor = main.querySelector('.note-pane-editor')
+  if (editor && editor.getBoundingClientRect().top < 0) window.scrollTo({ top: 0 })
+}
+
+/**
+ * 返回列表：脏了先走 #20 的 confirmDiscard（取消就留在编辑态），
+ * 确认放弃后再收起编辑态、清空编辑器、回到列表并滚回原位。
+ */
+function backToNoteList(main) {
+  if (!confirmDiscard()) return
+  currentId = null
+  emptyEditor(main.querySelector('#editor'))
+  main.classList.remove('note-mobile-editing')
+  renderNotes(main)
+  if (listScrollY) {
+    window.scrollTo({ top: listScrollY })
+    listScrollY = 0
+  }
+}
+
+/** 窄屏目录栏收起 / 展开：类挂在目录栏上，触发按钮在桌面端由 CSS 隐藏 */
+function setFoldersCollapsed(main, collapsed) {
+  const pane = main.querySelector('.note-pane-folders')
+  const btn = main.querySelector('#folder-toggle')
+  if (!pane || !btn) return
+  pane.classList.toggle('is-folded', collapsed)
+  btn.setAttribute('aria-expanded', String(!collapsed))
+  btn.textContent = collapsed ? '展开' : '收起'
+}
+
 export async function render(main, params = {}) {
   alive = true
+  viewRoot = main
+  listScrollY = 0
   // 本视图自己的卸载守卫；destroy() 里解除，避免视图切换后残留
   window.removeEventListener('beforeunload', onBeforeUnload)
   window.addEventListener('beforeunload', onBeforeUnload)
@@ -155,6 +232,7 @@ export async function render(main, params = {}) {
   searchResults = []
   searchSeq += 1
   clearTimeout(searchTimer)
+  main.classList.remove('note-mobile-editing')
   main.innerHTML = `
     <div class="page-head">
       <div>
@@ -169,7 +247,11 @@ export async function render(main, params = {}) {
       <aside class="note-pane note-pane-folders" aria-label="笔记目录">
         <div class="note-folder-head">
           <span>目录</span>
-          <button class="link-btn" id="folder-manage" type="button" aria-label="管理目录">管理</button>
+          <span class="note-folder-acts">
+            <button class="link-btn note-folder-toggle" id="folder-toggle" type="button"
+                    aria-controls="folder-tree" aria-expanded="true">收起</button>
+            <button class="link-btn" id="folder-manage" type="button" aria-label="管理目录">管理</button>
+          </span>
         </div>
         <div id="folder-tree" role="tree" aria-label="笔记目录"></div>
       </aside>
@@ -188,6 +270,8 @@ export async function render(main, params = {}) {
     openEditor(main, null)
   }
   main.querySelector('#folder-manage').onclick = () => openFolderManager(main)
+  main.querySelector('#folder-toggle').onclick = () =>
+    setFoldersCollapsed(main, !main.querySelector('.note-pane-folders')?.classList.contains('is-folded'))
   bindFolderTree(main)
   bindSearch(main)
 
@@ -751,6 +835,7 @@ function openEditor(main, n) {
   const folderId = n ? n.folder_id : /^\d+$/.test(selectedFolder) ? Number(selectedFolder) : null
   editor.innerHTML = `
     <div class="editor-head">
+      <button class="note-back" id="e-back" type="button" aria-label="返回笔记列表">${BACK_ICON}<span>返回</span></button>
       <label class="sr-only" for="e-title">标题</label>
       <input class="field" id="e-title" placeholder="标题" value="${esc(n?.title ?? '')}" aria-describedby="e-msg">
       <div class="editor-acts">
@@ -771,6 +856,7 @@ function openEditor(main, n) {
       <span class="editor-folder" id="e-folder-label" data-folder-id="${folderId ?? ''}" title="${esc(folderPathName(folderId))}">
         ${icon('folder', 14)}<span class="editor-folder-name">${esc(folderPathName(folderId))}</span>
       </span>
+      <span class="note-save-state" id="e-state" aria-live="polite">已保存</span>
     </div>
     <label class="sr-only" for="e-content">正文</label>
     <textarea class="field" id="e-content" rows="14" placeholder="正文（原文存储，展示即所见）">${esc(n?.content ?? '')}</textarea>
@@ -786,6 +872,7 @@ function openEditor(main, n) {
   const msgEl = editor.querySelector('#e-msg')
   const labelEl = editor.querySelector('#e-folder-label')
   const contentEl = editor.querySelector('#e-content')
+  const stateEl = editor.querySelector('#e-state')
 
   // 新编辑器 = 新基线：脏状态与草稿都从这份快照重新算
   editorRef = {
@@ -793,11 +880,20 @@ function openEditor(main, n) {
     titleEl,
     contentEl,
     labelEl,
+    stateEl,
     snapshot: { title: n?.title ?? '', content: n?.content ?? '', folderId: labelEl.dataset.folderId || '' },
   }
   dirty = false
   clearTimeout(draftTimer)
   draftTimer = 0
+  renderSaveState()
+
+  // 手机端「← 返回」：桌面端该按钮被 CSS 隐藏，这里再用渲染盒兜一层，避免误触清空编辑器
+  const backBtn = editor.querySelector('#e-back')
+  backBtn.onclick = () => {
+    if (!isRendered(backBtn)) return
+    backToNoteList(main)
+  }
 
   titleEl.addEventListener('input', () => {
     msgEl.textContent = ''
@@ -853,6 +949,8 @@ function openEditor(main, n) {
 
   editor.querySelector('#e-save').onclick = async () => {
     const btn = editor.querySelector('#e-save')
+    // 保存期间编辑器可能已被「返回」清空：下面只在还是同一个编辑器实例时才重新载入
+    const self = editorRef
     const title = titleEl.value.trim()
     if (!title) {
       msgEl.textContent = '标题不能为空'
@@ -870,8 +968,14 @@ function openEditor(main, n) {
       content,
       folderId: pick ? Number(pick) : null,
     })
+    // 状态标签给个即时反馈（桌面端由 CSS 隐藏；编辑器若已被「返回」换掉，这里写的是游离节点，无副作用）
+    stateEl.textContent = '保存中…'
+    stateEl.classList.remove('is-dirty')
     const res = await run(btn, () => api('/api/note/save', { method: 'POST', body }))
-    if (!res.ok) return
+    if (!res.ok) {
+      renderSaveState()
+      return
+    }
     // 已落库：基线对齐 + 清草稿，之后切页不再误报「未保存」
     // 标题提交前会 trim，输入框里若留了空格先对齐，否则会立刻又变「脏」
     if (titleEl.value !== title) titleEl.value = title
@@ -879,7 +983,7 @@ function openEditor(main, n) {
     toast('已保存')
     await rerender(refreshAll, main)
     // 新笔记落库后才有 id，重新载入成「已存在」态；老笔记不重绘编辑器，免得光标跳走
-    if (!n) {
+    if (!n && editorRef === self) {
       const loaded = await run(null, () => api(`/api/note/${res.data.id}`))
       if (loaded.ok) {
         if (loaded.data.note.folder_id != null) {
@@ -932,8 +1036,13 @@ function openEditor(main, n) {
     dropDraft(Number(n.id))
     currentId = null
     emptyEditor(editor)
+    // 窄屏删完只剩空面板：直接退回列表，别把用户留在空白页
+    main.classList.remove('note-mobile-editing')
     await rerender(refreshAll, main)
   }
+
+  // 窄屏进编辑态（桌面端是惰性类，不改变三栏布局）；放在草稿提示之前，避免先弹窗后切页
+  enterMobileEditing(main)
 
   // 上次没保存的草稿：服务端内容没变才提示恢复，变了说明已在别处存过，旧草稿直接丢
   const draft = readDraft(editorRef.id)
@@ -966,6 +1075,10 @@ export function destroy() {
   clearTimeout(searchTimer)
   searchSeq += 1
   window.removeEventListener('beforeunload', onBeforeUnload)
+  // 窄屏编辑态类挂在 <main> 上：路由换页会换掉整个 <main>，这里再摘一次兜底
+  viewRoot?.classList.remove('note-mobile-editing')
+  viewRoot = null
+  listScrollY = 0
   // hash 路由切页已经发生、无法回退，只能做到「不静默丢」：
   // 把没落盘的内容同步写进草稿，下次打开同一篇还能选择恢复。
   flushDraft()

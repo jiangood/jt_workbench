@@ -1429,6 +1429,12 @@ body:has(.playerbar:not([hidden])) .note-split {
 .link-btn.danger:hover { color: var(--danger); text-decoration: underline }
 .note-folder-hint { margin: 0; flex: 1 1 auto; font-size: var(--fs-xs) }
 .folder-admin-foot { align-items: center; gap: var(--sp-3) }
+/* 笔记：手机端「列表 ↔ 编辑」两态（issue #12）。三个手机端控件桌面端一律隐藏，显隐规则在 ≤900px 段 */
+.note-back,
+.note-folder-toggle,
+.note-save-state { display: none }
+.note-folder-acts { display: inline-flex; align-items: center; gap: var(--sp-3) }
+
 
 /* 首页卡片流：资讯（宽）/ 提醒 / 自选股 / 笔记 / 知识星球 */
 .home-grid {
@@ -2386,6 +2392,115 @@ hr.sep { border: 0; border-top: 1px solid var(--border); margin: var(--sp-5) 0 }
   .note-split { grid-template-columns: minmax(0, 1fr); height: auto; gap: var(--sp-3) }
   .note-pane-folders, .note-pane-list { max-height: 320px }
 }
+
+/* ---- 笔记：窄屏两态（列表 ↔ 编辑，issue #12）---- */
+@media (max-width: 900px) {
+  /* ① 触控尺寸：列表行 / 目录行 / 工具栏按钮 ≥ 40px 命中区 */
+  .note-pane-list .list > a { min-height: 56px; padding: 10px 12px }
+  .tree-row { min-height: 44px; padding-block: 6px; font-size: var(--fs-md) }
+  .tree-toggle { flex-basis: 26px; width: 26px; height: 26px }
+  .note-folder-head { min-height: 36px }
+  .note-folder-head .link-btn { min-height: 28px; padding: 0 4px; font-size: var(--fs-sm) }
+  .note-pane-list .note-search .field { min-height: 40px; font-size: var(--fs-md) }
+  .editor-acts .btn.sm { height: 38px; padding: 0 14px }
+  .editor-acts .icon-btn { width: 38px; height: 38px }
+  .editor-foot .btn.sm { height: 38px; padding: 0 14px }
+  .folder-admin-row { min-height: 44px }
+  .folder-admin-acts { gap: var(--sp-3) }
+
+  /* ② 列表态：编辑器整栏不占位，列表跟页面一起滚（避免双滚动） */
+  #main:not(.note-mobile-editing) .note-pane-editor { display: none }
+  #main:not(.note-mobile-editing) .note-pane-list { max-height: none }
+  #main:not(.note-mobile-editing) .note-pane-list > .list { overflow: visible }
+  #main:not(.note-mobile-editing) .note-pane-folders { max-height: 42vh }
+  .note-pane-folders.is-folded > #folder-tree { display: none }
+  .note-pane-folders.is-folded { padding-bottom: var(--sp-2) }
+
+  /* ③ 编辑态：页头 / 目录 / 列表让位，编辑器占满首屏 */
+  #main.note-mobile-editing { --note-topbar-h: 52px }
+  #main.note-mobile-editing .page-head,
+  #main.note-mobile-editing .note-pane-folders,
+  #main.note-mobile-editing .note-pane-list { display: none }
+  #main.note-mobile-editing .note-split {
+    display: block;
+    height: max(320px, calc(100dvh - var(--note-topbar-h) - var(--sp-4)));
+    margin: 0;
+  }
+  #main.note-mobile-editing .note-pane-editor { height: 100%; border: 0; border-radius: 0 }
+  body:has(#main.note-mobile-editing) #view-host { padding: var(--sp-4) 0 0 }
+  body:has(#main.note-mobile-editing) .mainwrap { padding-bottom: 0 }
+  /* 固定播放条会压住正文末尾 / 键盘上方：编辑时先藏起来（音频继续播） */
+  body:has(#main.note-mobile-editing) .playerbar { display: none }
+
+  /* ④ 编辑区内部：压缩顶栏与正文内边距，把高度让给输入 */
+  #main.note-mobile-editing .editor-head { padding: var(--sp-2); gap: 6px }
+  #main.note-mobile-editing .editor-head #e-title { min-height: 38px }
+  #main.note-mobile-editing .editor-meta { padding: var(--sp-2) var(--sp-3) 0 }
+  #main.note-mobile-editing .editor-meta > .editor-folder { max-width: none }
+  #main.note-mobile-editing .note-pane-editor > #e-content {
+    min-height: 0;
+    margin-top: var(--sp-1);
+    padding: var(--sp-2) var(--sp-3) calc(var(--sp-4) + env(safe-area-inset-bottom, 0px));
+    font-size: var(--fs-md);
+  }
+  #main.note-mobile-editing .editor-foot {
+    padding-bottom: calc(var(--sp-2) + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* ⑤ 手机端专用控件的显现（基础段默认 display:none） */
+  .note-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    flex: 0 0 auto;
+    min-height: 40px;
+    padding: 0 6px 0 2px;
+    border: 0;
+    border-radius: var(--r-sm);
+    background: none;
+    color: var(--primary);
+    font: inherit;
+    font-size: var(--fs-sm);
+  }
+  .note-back:active { background: var(--surface-2) }
+  .note-folder-toggle {
+    display: inline-flex;
+    align-items: center;
+    min-height: 32px;
+    padding: 0 6px;
+    border: 0;
+    border-radius: var(--r-sm);
+    background: none;
+    color: var(--primary);
+    font: inherit;
+    font-size: var(--fs-sm);
+  }
+  .note-save-state {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    margin-left: auto;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    color: var(--muted-fg);
+    font-size: var(--fs-xs);
+    white-space: nowrap;
+  }
+  .note-save-state.is-dirty { background: var(--warn-wash); color: var(--warn) }
+}
+
+/* 769–900px：顶栏是悬浮式、不在文档流，不扣 52px */
+@media (min-width: 769px) and (max-width: 900px) {
+  #main.note-mobile-editing { --note-topbar-h: 0px }
+}
+
+/* 极窄屏：返回按钮只留箭头，把宽度让给标题 */
+@media (max-width: 360px) {
+  .note-back { padding: 0 4px }
+  .note-back span { display: none }
+}
+
 
 /* 宽容器下笔记三栏各放宽一档，剩余空间全给编辑器（窄屏仍走上面的收窄规则） */
 @media (min-width: 1400px) {
