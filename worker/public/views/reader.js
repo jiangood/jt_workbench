@@ -619,6 +619,8 @@ const TTS_RATES = [0.8, 1, 1.2, 1.5, 2]
 /** 音色（voiceURI）与「读完本章是否接着读下一章」（issue #23） */
 const TTS_VOICE_KEY = 'book:tts:voice'
 const TTS_FOLLOW_KEY = 'book:tts:follow'
+/** 首次打开朗读条时提一次平台边界（锁屏 / 后台行为因系统而异），不做多次打扰 */
+const TTS_HINT_KEY = 'book:tts:hint'
 
 const ttsFollowChapter = () => readStorage(TTS_FOLLOW_KEY) === '1'
 
@@ -1016,6 +1018,10 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted }) {
       if (bar.hidden) {
         bar.hidden = false
         paint()
+        if (!readStorage(TTS_HINT_KEY)) {
+          writeStorage(TTS_HINT_KEY, '1')
+          toast('锁屏 / 切后台后能否继续朗读取决于系统，可能被中断')
+        }
       } else {
         bar.hidden = true
         stop()
