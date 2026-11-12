@@ -40,7 +40,7 @@
 - **低频配置收进弹窗**：页面只留高频操作（浏览 / 立即执行），token、订阅源、屏蔽词、星球勾选这类设置项一律折叠为「配置」按钮 → `showDialog()` 打开（参考 `views/zsxq.js` 的「同步配置」、`views/news.js` 的订阅源/屏蔽词），避免每次进页都先看到一堆设置
 - **删除类按钮收进「更多」下拉**：删除 / 清空 / 移除这类不可逆操作不做成页面或列表行里常驻的按钮（行内一排小图标最易误点），统一放右上角「更多」下拉的最后一项，用 `.more-item.danger` + `icon('trash')`，点击后再 `confirm()` 二次确认；下拉直接用 `lib.js` 的 `moreMenu(id, items, opts)` 拼 HTML + `setupMoreMenus(root)` 接线（点外部 / Esc / 滚动关闭，fixed 定位不被 `.table-scroll` 裁切），视图 `destroy()` 里调 `closeMoreMenu()`（参考 `views/note.js` 编辑器、`views/music.js` 行内操作）。浏览、播放、打开这类高频只读操作仍留在页面上
 - 第三方库来源：**npmmirror CDN**（`registry.npmmirror.com/<pkg>/<ver>/files/...`，国内快）；仅 music-metadata / epub.js 无 CDN 产物，自托管于 `public/vendor/`（esbuild 从 agent 依赖打包），视图里用 `loadScriptOnce()` 按需加载；**禁用 jsdelivr（国内慢）与 bootcdn/staticfile（2024 投毒事件）**
-- **右上角全局操作区**：`index.html` 的 `#top-actions`（桌面端固定浮在内容右上角、手机端排在顶栏右侧）只放全站通用的**次要**操作——主题开关（`lib.js` 的 `setupTheme()`）、音乐快捷播放这类图标按钮，不要往里塞页面操作；页面自己的主操作（「播放全部」「上传」等）仍留在 `.page-head .page-actions`，桌面端 `.page-head` / `.reader-bar` 已预留 44px 内边距避免被浮动区压住
+- **右上角全局操作区**：`index.html` 的 `#top-actions`（桌面端固定浮在内容右上角、手机端排在顶栏右侧）只放全站通用的**次要**操作——音乐快捷播放（`lib.js` 的 `setupQuickMusic()`）、主题开关（`setupTheme()`）这类图标按钮，不要往里塞页面操作；页面自己的主操作（「播放全部」「上传」等）仍留在 `.page-head .page-actions`，桌面端 `.page-head` / `.reader-bar` 已预留 92px 内边距避免被浮动区压住
 - **编码红线：改 public/ 下的 HTML/JS/CSS 一律用编辑工具或 Node 脚本（readFileSync/writeFileSync utf8）；严禁 PowerShell Get-Content/Set-Content**——中文 Windows 默认 GBK 会把 UTF-8 中文写成乱码（已踩坑并污染过一次提交）
 
 ## agent 约定

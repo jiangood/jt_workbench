@@ -336,7 +336,8 @@ textarea:focus-visible {
   gap: var(--sp-2);
   margin-left: auto;
 }
-.theme-toggle {
+.theme-toggle,
+.quick-music {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -350,8 +351,14 @@ textarea:focus-visible {
   cursor: pointer;
   transition: background var(--dur-fast) ease, color var(--dur-fast) ease, border-color var(--dur-fast) ease;
 }
-.theme-toggle:hover { background: var(--surface-2); color: var(--fg); border-color: var(--control-line-hover) }
-.theme-toggle .ico { pointer-events: none }
+.theme-toggle:hover,
+.quick-music:hover { background: var(--surface-2); color: var(--fg); border-color: var(--control-line-hover) }
+.theme-toggle .ico,
+.quick-music .ico { pointer-events: none }
+/* 正在播放：图标转成暂停键，同时用主色标出「此刻有声」，视觉层级仍低于页面主操作 */
+.quick-music.is-playing { color: var(--primary); background: var(--primary-wash) }
+.quick-music:disabled { opacity: .55; cursor: default }
+.quick-music:disabled:hover { background: var(--surface); color: var(--muted-fg); border-color: var(--border) }
 
 /* 侧栏底部：桌面收起/展开（窄屏由 CSS 隐藏，仍走抽屉） */
 .sidebar-foot {
@@ -439,10 +446,11 @@ textarea:focus-visible {
     /* 顶栏本身不挡内容，只有操作区可点 */
     pointer-events: auto;
   }
-  .topbar .theme-toggle { box-shadow: var(--shadow-sm) }
-  /* 页头右侧留位：浮动操作区不压在页面主操作（「播放全部」等）上 */
+  .topbar .theme-toggle,
+  .topbar .quick-music { box-shadow: var(--shadow-sm) }
+  /* 页头右侧留位：浮动操作区（音乐 + 主题两个按钮）不压在页面主操作（「播放全部」等）上 */
   .page-head,
-  .reader-bar { padding-right: 44px }
+  .reader-bar { padding-right: 92px }
 }
 .scrim { display: none }
 

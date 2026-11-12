@@ -7,6 +7,7 @@ import {
   scrollToTop,
   setupDialog,
   setupDrawer,
+  setupQuickMusic,
   setupTableScroll,
   setupTheme,
 } from './lib.js'
@@ -154,6 +155,7 @@ setupDrawer()
 setupTheme()
 setupDialog()
 initPlayer()
+setupQuickMusic()
 initUploads()
 window.addEventListener('hashchange', render)
 render()

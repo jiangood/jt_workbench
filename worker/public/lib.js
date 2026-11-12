@@ -33,6 +33,8 @@ const ICONS = {
   more: '<circle cx="12" cy="5" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="12" cy="19" r="1.3"/>',
   download: '<path d="M12 4v12"/><path d="m7 11 5 5 5-5"/><path d="M4 20h16"/>',
   play: '<path d="M7 4.5v15l12-7.5-12-7.5Z"/>',
+  pause:
+    '<rect x="8" y="5" width="3" height="14" rx="1" fill="currentColor" stroke="none"/><rect x="13" y="5" width="3" height="14" rx="1" fill="currentColor" stroke="none"/>',
   prev: '<path d="M18 5v14L8 12l10-7Z"/><path d="M6 5v14"/>',
   next: '<path d="M6 5v14l10-7L6 5Z"/><path d="M18 5v14"/>',
   order: '<path d="M4 6h11M4 12h11M4 18h7"/><path d="M18 9v9"/><path d="m15 15 3 3 3-3"/>',
@@ -411,6 +413,67 @@ export function setupTheme() {
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
     if (stored()) return
     apply(e.matches ? 'dark' : 'light')
+  })
+}
+
+/**
+ * 右上角音乐快捷按钮：一键播放 / 暂停，不用先进「音乐」页。
+ * - 有队列且在播 → 暂停；队列里停在某首 → 继续播；
+ * - 队列为空（首次打开 / 清空过）→ 拉一次列表，从第一首开始播；
+ * - 列表也空 → toast 说明，不留「点了没反应」。
+ */
+export function setupQuickMusic() {
+  const host = document.getElementById('top-actions')
+  if (!host) return
+
+  host.insertAdjacentHTML(
+    'afterbegin',
+    '<button class="quick-music" id="quick-music" type="button" aria-label="播放音乐" title="播放音乐"><span class="quick-music-icon"></span></button>',
+  )
+  const btn = document.getElementById('quick-music')
+  const slot = btn.querySelector('.quick-music-icon')
+  const audio = audioEl()
+  let fetching = false
+
+  const paint = () => {
+    const playing = player.isPlaying
+    slot.innerHTML = icon(playing ? 'pause' : 'play', 18)
+    // 有当前曲目但没在播时，点的是「继续播放」，提示要跟着状态变
+    const label = playing ? '暂停音乐' : player.currentId != null ? '继续播放音乐' : '播放音乐'
+    btn.setAttribute('aria-label', label)
+    btn.title = label
+    btn.classList.toggle('is-playing', playing)
+  }
+  paint()
+  player.onChange(paint)
+  audio?.addEventListener('play', paint)
+  audio?.addEventListener('pause', paint)
+
+  btn.addEventListener('click', async () => {
+    if (fetching) return
+    if (player.isPlaying) return player.pause()
+    if (player.currentId != null) return player.resume()
+
+    // 队列空：按需拉列表（不预取，避免每个页面进来都多一次请求）
+    fetching = true
+    btn.disabled = true
+    btn.setAttribute('aria-busy', 'true')
+    try {
+      const data = await api('/api/music/list')
+      const tracks = (data?.tracks || []).filter((t) => t && t.id != null)
+      if (!tracks.length) {
+        toast('音乐列表还是空的，先到「音乐」页上传', true)
+        return
+      }
+      player.playQueue(tracks, 0)
+    } catch (err) {
+      toast(err?.message || '读取音乐列表失败', true)
+    } finally {
+      fetching = false
+      btn.disabled = false
+      btn.removeAttribute('aria-busy')
+      paint()
+    }
   })
 }
 
@@ -957,6 +1020,21 @@ export const player = {
   },
   get mode() {
     return modeKey
+  },
+  /** 当前是否真的在出声（无曲目 / 暂停 / 播完都算否） */
+  get isPlaying() {
+    const audio = audioEl()
+    return !!audio && !!audio.dataset.id && !audio.paused && !audio.ended
+  },
+
+  /** 继续播放当前曲目（快捷按钮从暂停恢复）；play 事件会把按钮图标刷回来 */
+  resume() {
+    const audio = audioEl()
+    if (!audio || !audio.dataset.id) return
+    audio.play().catch(() => toast('浏览器阻止了自动播放，请再点一下', true))
+  },
+  pause() {
+    audioEl()?.pause()
   },
 
   /** 单曲播放：已在队列里就跳过去，否则用单曲队列替换（兼容旧调用） */
