@@ -73,7 +73,7 @@ const statusBadge = (s) => `<span class="badge ${STATUS[s]?.cls ?? 'muted'}">${s
 /** 豆瓣图床带 Referer 防盗链，封面统一走 Worker 代理 */
 const coverUrl = (url) => (url ? `/api/book/cover?url=${encodeURIComponent(url)}` : '')
 
-/** 封面底部进度条：pct 是 0–100 的整数（pdf 由浏览器原生查看器承载，取不到页码，所以没有进度） */
+/** 封面底部进度条：pct 是 0–100 的整数 */
 function progressBar(pct) {
   const value = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)))
   return `<span class="book-progress" role="img" aria-label="阅读进度 ${value}%">
@@ -202,7 +202,7 @@ function resultsHTML(shown, sections, showGroupHead, hasBooks) {
   return emptyState(
     hasBooks
       ? '当前筛选下还没有书'
-      : '书架空空如也，点「添加图书」从豆瓣建条目，或直接上传 epub / pdf',
+      : '书架空空如也，点「添加图书」从豆瓣建条目，或直接上传 epub',
   )
 }
 
@@ -243,7 +243,7 @@ export async function render(main) {
         <button class="btn" id="batch-book">${icon('queue')}批量添加</button>
         <label class="btn">
           ${icon('upload')}上传文件
-          <input class="sr-only" type="file" id="up" accept=".epub,.pdf" multiple>
+          <input class="sr-only" type="file" id="up" accept=".epub" multiple>
         </label>
       </div>
     </div>
@@ -938,7 +938,7 @@ function uploadOptions(main, params = {}) {
     params,
     prepare: (file) => parseEpubMeta(file),
     url: (qs) => `/api/book/upload?${qs}`,
-    // 后端给 epub/pdf 统一按字节流处理，不信任浏览器猜的 MIME
+    // 后端按字节流处理，不信任浏览器猜的 MIME
     contentType: () => 'application/octet-stream',
     // 字节发完后 Worker 还要同步豆瓣，进度条会停在 100%，必须显式告诉用户还在处理
     processingLabel: '处理中（匹配豆瓣信息…）',
@@ -951,7 +951,7 @@ function uploadOptions(main, params = {}) {
 function pickFile(bookId, main) {
   const input = document.createElement('input')
   input.type = 'file'
-  input.accept = '.epub,.pdf'
+  input.accept = '.epub'
   input.onchange = () => {
     const file = input.files?.[0]
     if (!file) return
