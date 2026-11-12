@@ -272,9 +272,9 @@ function footerHtml({ prev = '上一页', next = '下一页', font = false, stat
       <button class="btn sm reader-nav" type="button" data-prev aria-label="${esc(prev)}">
         ${icon('chevron', 14, 'flip')}<span>${esc(prev)}</span>
       </button>
-      <div class="reader-progress" data-progress role="progressbar" aria-label="阅读进度"
-           aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-        <span class="reader-track"><i data-bar></i></span>
+      <div class="reader-progress" data-progress>
+        <span class="reader-track" data-seek role="slider" tabindex="0" aria-label="阅读进度"
+              aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i data-bar></i></span>
         <span class="reader-progress-text" data-progress-text>0%</span>
         ${stat ? '<span class="reader-stat small muted" data-stat></span>' : ''}
       </div>
@@ -301,7 +301,8 @@ function setProgress(root, ratio, text, valuetext = '') {
   const safe = Number.isFinite(ratio) ? Math.max(0, Math.min(1, ratio)) : 0
   const pct = Math.round(safe * 100)
   const bar = root.querySelector('[data-bar]')
-  const box = root.querySelector('[data-progress]')
+  // 进度条是可拖动的 slider（issue #13）：ARIA 写在滑块上而不是外层容器
+  const box = root.querySelector('[data-seek]') ?? root.querySelector('[data-progress]')
   const label = root.querySelector('[data-progress-text]')
   if (bar) bar.style.width = `${pct}%`
   if (box) {
@@ -309,6 +310,82 @@ function setProgress(root, ratio, text, valuetext = '') {
     if (valuetext) box.setAttribute('aria-valuetext', `${valuetext} ${pct}%`)
   }
   if (label) label.textContent = text ?? `${pct}%`
+}
+
+/**
+ * 进度条拖动 / 键盘跳转（issue #13）。onSeek(ratio) 由各阅读器提供。
+ * 拖动过程只预览百分比，松手（或键盘）才真正跳转，避免翻页抖动。
+ * 返回 teardown：阅读器销毁时要解绑，否则切页后还有指针监听。
+ */
+function setupSeek(root, onSeek) {
+  const track = root.querySelector('[data-seek]')
+  if (!track) return () => {}
+  const label = root.querySelector('[data-progress-text]')
+  const bar = root.querySelector('[data-bar]')
+  let dragPointer = null
+
+  const ratioAt = (clientX) => {
+    const rect = track.getBoundingClientRect()
+    return rect.width > 0 ? Math.min(1, Math.max(0, (clientX - rect.left) / rect.width)) : 0
+  }
+  const preview = (ratio) => {
+    const pct = Math.round(Math.min(1, Math.max(0, ratio)) * 100)
+    if (bar) bar.style.width = `${pct}%`
+    if (label) label.textContent = `${pct}%`
+    track.setAttribute('aria-valuenow', String(pct))
+  }
+  const onDown = (e) => {
+    if (e.button !== undefined && e.button !== 0) return
+    dragPointer = e.pointerId
+    track.dataset.drag = '1'
+    track.setPointerCapture?.(e.pointerId)
+    // 点一下就聚焦：拖完可以直接用方向键微调
+    track.focus({ preventScroll: true })
+    preview(ratioAt(e.clientX))
+  }
+  const onMove = (e) => {
+    if (dragPointer === null) return
+    preview(ratioAt(e.clientX))
+  }
+  const onUp = (e) => {
+    if (dragPointer === null) return
+    dragPointer = null
+    delete track.dataset.drag
+    track.releasePointerCapture?.(e.pointerId)
+    onSeek(ratioAt(e.clientX))
+  }
+  const onCancel = () => {
+    dragPointer = null
+    delete track.dataset.drag
+  }
+  const onKey = (e) => {
+    const cur = (Number(track.getAttribute('aria-valuenow')) || 0) / 100
+    // Shift 大步（10%），默认 2%；Home/End 到首尾
+    const step = e.shiftKey ? 0.1 : 0.02
+    let next = null
+    if (e.key === 'ArrowRight' || e.key === 'ArrowUp') next = cur + step
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') next = cur - step
+    else if (e.key === 'Home') next = 0
+    else if (e.key === 'End') next = 1
+    if (next === null) return
+    // 别让方向键同时触发翻页（阅读器在 document / body 上也监听方向键）
+    e.preventDefault()
+    e.stopPropagation()
+    onSeek(Math.min(1, Math.max(0, next)))
+  }
+
+  track.addEventListener('pointerdown', onDown)
+  track.addEventListener('pointermove', onMove)
+  track.addEventListener('pointerup', onUp)
+  track.addEventListener('pointercancel', onCancel)
+  track.addEventListener('keydown', onKey)
+  return () => {
+    track.removeEventListener('pointerdown', onDown)
+    track.removeEventListener('pointermove', onMove)
+    track.removeEventListener('pointerup', onUp)
+    track.removeEventListener('pointercancel', onCancel)
+    track.removeEventListener('keydown', onKey)
+  }
 }
 
 /**
@@ -617,6 +694,30 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
     const rendition = epubBook.renderTo(view, { width: '100%', height: '100%', spread: 'none' })
     const go = (dir) => Promise.resolve(rendition[dir]()).catch(() => {})
 
+    /* 进度条跳转（issue #13）：优先用 epub 位置表精确跳；生成失败退化为按 spine 序号定位 */
+    let locationsTask = null
+    const seekEpub = async (ratio) => {
+      locationsTask ??= epubBook.ready
+        .then(() => epubBook.locations.generate(1200))
+        .then(() => true)
+        .catch(() => false)
+      const ready = await locationsTask
+      if (!alive()) return
+      if (ready) {
+        const cfi = epubBook.locations.cfiFromPercentage(Math.min(1, Math.max(0, ratio)))
+        if (cfi) {
+          rendition.display(cfi)
+          return
+        }
+      }
+      const total = epubBook.spine?.spineItems?.length ?? 0
+      if (!total) return
+      const idx = Math.min(total - 1, Math.max(0, Math.floor(ratio * total)))
+      const section = epubBook.spine.get(idx)
+      if (section) rendition.display(section.href)
+    }
+    const stopSeek = setupSeek(stage, seekEpub)
+
     // epub 是 iframe 里的独立文档：背景 / 字号除了写进 rendition 主题，还要直接刷已渲染的 iframe，
     // 否则 themes API 只对翻页后的新内容生效，当前页不变色
     let epubFontSize = Math.max(14, Math.min(26, Number(readStorage(EPUB_FONT_KEY)) || 21))
@@ -919,6 +1020,7 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
     document.addEventListener('keydown', onKey)
     epubDispose = () => {
       tocSide?.destroy()
+      stopSeek()
       clearTimeout(saveTimer)
       document.removeEventListener('keydown', onKey)
       view.removeEventListener('wheel', onWheel)
@@ -1325,6 +1427,17 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
     }, 300)
   }
 
+  /** 进度条拖动 / 键盘跳转：全书字符比例 → 章号 + 章内比例（issue #13） */
+  const seekTxt = (ratio) => {
+    if (!chapters.length) return
+    const base = chapters[0]?.start ?? 0
+    const span = Math.max(1, totalChars - base)
+    const hit = locateChar(base + Math.min(1, Math.max(0, ratio)) * span)
+    index = hit.index
+    paint(hit.ratio)
+  }
+  const stopSeek = setupSeek(root, seekTxt)
+
   // ---------- 分章 / 目录 ----------
 
   /** 把整本文字切成行并分章；chapter.start/chars 是用于总进度的字符区间 */
@@ -1641,6 +1754,7 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
       disposed = true
       closeCtx()
       tocSide?.destroy()
+      stopSeek()
       clearTimeout(saveTimer)
       body.removeEventListener('scroll', onScroll)
       body.removeEventListener('contextmenu', onContextMenu)

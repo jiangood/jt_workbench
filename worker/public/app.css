@@ -1976,18 +1976,45 @@ body:has(.playerbar:not([hidden])) .reader-stage {
   flex: 1 1 auto;
   min-width: 48px;
   height: 4px;
-  overflow: hidden;
   border-radius: var(--r-full);
   background: var(--surface-3);
+  cursor: pointer;
+  /* 拖动进度时不要顺带滚动页面 / 触发翻页手势（issue #13） */
+  touch-action: none;
 }
+/* 视觉条只有 4px，把触控热区上下各扩 9px，手机上不用精准点按 */
+.reader-track::before {
+  content: '';
+  position: absolute;
+  inset: -9px 0;
+}
+.reader-track:focus-visible { outline: 2px solid var(--ring); outline-offset: 5px }
 .reader-track > i {
   display: block;
+  position: relative;
   width: 0;
   height: 100%;
   border-radius: inherit;
   background: var(--primary);
   transition: width var(--dur-base) ease;
 }
+.reader-track > i::after {
+  content: '';
+  position: absolute;
+  right: -5px;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--primary);
+  box-shadow: 0 0 0 2px var(--surface);
+  transform: translateY(-50%);
+  opacity: 0;
+  transition: opacity var(--dur-fast) ease;
+}
+.reader-track:hover > i::after,
+.reader-track:focus-visible > i::after,
+.reader-track[data-drag='1'] > i::after { opacity: 1 }
 .reader-progress-text {
   flex: 0 0 auto;
   min-width: 3em;
