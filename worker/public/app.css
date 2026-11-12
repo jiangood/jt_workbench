@@ -1891,7 +1891,7 @@ body:has(.playerbar:not([hidden])) .reader-stage {
 .reader-fab:hover { color: var(--primary); border-color: var(--border-strong) }
 .reader-fab .ico { pointer-events: none }
 
-/* 阅读设置弹窗：字号 / 行距 / 背景，改动即时生效 */
+/* 阅读设置弹窗：字号 / 字体 / 字重 / 行距 / 段距 / 宽度 / 背景，改动即时生效 */
 .reader-setting { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-3) }
 .reader-setting:last-child { margin-bottom: 0 }
 .reader-setting-label { flex: 0 0 3em; color: var(--muted-fg); font-size: var(--fs-sm) }
@@ -2053,7 +2053,7 @@ body:has(.playerbar:not([hidden])) .reader-root[data-immersive="1"] .reader-stag
 .reader-view {
   flex: 1 1 auto;
   width: 100%;
-  max-width: 800px;
+  max-width: var(--reader-width, 800px);
   min-height: 0;
   overflow: hidden;
 }
@@ -2231,18 +2231,19 @@ body:has(.playerbar:not([hidden])) .reader-root[data-immersive="1"] .reader-stag
   flex: 1 1 auto;
   min-height: 0;
   width: 100%;
-  max-width: 800px;
+  max-width: var(--reader-width, 800px);
   margin-inline: auto;
   overflow-y: auto;
   padding: var(--sp-4) var(--sp-4) var(--sp-7);
-  font-family: "PingFang SC", -apple-system, "SF UI Text", "Lucida Grande", STheiti, "Microsoft YaHei", sans-serif;
+  font-family: var(--reader-font, "PingFang SC", -apple-system, "SF UI Text", "Lucida Grande", STheiti, "Microsoft YaHei", sans-serif);
   font-size: 21px;
+  font-weight: var(--reader-weight, 400);
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
 .txt-body:focus-visible { outline: 2px solid var(--border-strong); outline-offset: 2px }
 /* 一行一段：TXT 的段间空行只当分段标记，间距交给 margin，避免「空行 + margin」双重空档 */
-.txt-body p { margin: 0 0 1em; text-align: justify; text-indent: 2em }
+.txt-body p { margin: 0 0 var(--txt-para, 1em); text-align: justify; text-indent: 2em }
 .txt-body p.txt-head { margin: 1.4em 0 1em; text-indent: 0; text-align: center; font-weight: 650 }
 .txt-body p:last-child { margin-bottom: 0 }
 

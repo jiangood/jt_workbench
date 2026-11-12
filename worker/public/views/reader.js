@@ -14,9 +14,9 @@
  * - pdf：浏览器原生查看器（Worker 透传 Range，渐进加载）
  *
  * 版式：微信读书式沉浸页——body.reading 时全局侧栏 / 顶栏隐藏（app.js 挂类），阅读页
- * 自带顶栏（书名 + 右上角「首页 / 我的书架」），正文栏宽 800px，翻页 / 进度下沉页脚，
- * 目录 / 书签 / 语音朗读 / 字号 / 背景（白·米黄·护眼·夜间）收进右侧悬浮工具栏，字号与位置存 localStorage。
- * 位置 / 字号只影响记忆，不影响阅读；销毁时释放 epub 实例与定时器。
+ * 自带顶栏（书名 + 右上角「首页 / 我的书架」），正文栏宽默认 800px（可调 640/800/1000），
+ * 翻页 / 进度下沉页脚，目录 / 书签 / 语音朗读 / 字号 / 字体 / 背景（白·米黄·护眼·夜间）收进右侧
+ * 悬浮工具栏，字号与位置存 localStorage。位置 / 字号只影响记忆，不影响阅读；销毁时释放 epub 实例与定时器。
  */
 import {
   api,
@@ -88,6 +88,94 @@ function readViewMode() {
   return readStorage(VIEW_MODE_KEY) === 'scroll' ? 'scroll' : 'paged'
 }
 
+/* ---------------- 正文排版（issue #23）：字体 / 字重 / 段距 / 宽度 ---------------- */
+
+/** 字体：默认跟随系统；衬线适合长篇；无衬线是移动端最常见的中文正文 */
+const READER_FONT_KEY = 'book:font'
+const FONT_OPTIONS = [
+  { value: 'default', label: '默认' },
+  { value: 'serif', label: '衬线' },
+  { value: 'sans', label: '无衬线' },
+]
+const FONT_STACKS = {
+  default: '"PingFang SC", -apple-system, "SF UI Text", "Lucida Grande", STheiti, "Microsoft YaHei", sans-serif',
+  serif: '"Songti SC", "Source Han Serif SC", "Noto Serif CJK SC", "Noto Serif SC", SimSun, Georgia, serif',
+  sans: '"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif',
+}
+
+/** 字重：400 为原书/系统默认，500 / 600 用于夜间或小屏更清楚的正文 */
+const READER_WEIGHT_KEY = 'book:weight'
+const WEIGHT_OPTIONS = [
+  { value: 400, label: '常规' },
+  { value: 500, label: '中等' },
+  { value: 600, label: '加粗' },
+]
+
+/** 段距（em，只作用于 TXT；epub 跟随原书排版） */
+const TXT_PARA_KEY = 'book:txt:para'
+const PARA_OPTIONS = [
+  { value: 0.6, label: '小' },
+  { value: 1, label: '标准' },
+  { value: 1.5, label: '大' },
+]
+
+/** 正文栏宽：窄屏由 CSS 自适应（max-width 不起作用），宽屏才有区别 */
+const READER_WIDTH_KEY = 'book:width'
+const WIDTH_OPTIONS = [
+  { value: 640, label: '窄' },
+  { value: 800, label: '标准' },
+  { value: 1000, label: '宽' },
+]
+const DEFAULT_READER_WIDTH = 800
+
+function readOption(key, options, fallback) {
+  const saved = readStorage(key)
+  const hit = options.find((o) => String(o.value) === saved)
+  return hit ? hit.value : fallback
+}
+
+const readFontFamily = () => readOption(READER_FONT_KEY, FONT_OPTIONS, 'default')
+const readFontWeight = () => Number(readOption(READER_WEIGHT_KEY, WEIGHT_OPTIONS, 400)) || 400
+const readParaGap = () => Number(readOption(TXT_PARA_KEY, PARA_OPTIONS, 1)) || 1
+const readTextWidth = () => Number(readOption(READER_WIDTH_KEY, WIDTH_OPTIONS, DEFAULT_READER_WIDTH)) || DEFAULT_READER_WIDTH
+
+/** 一行分段按钮：label + data-<key>，aria-pressed 标当前值 */
+function segBlockHtml(label, key, options, current) {
+  return `<div class="reader-setting"><span class="reader-setting-label">${esc(label)}</span>
+      <div class="reader-seg" role="group" aria-label="${esc(label)}">${options
+        .map(
+          (o) =>
+            `<button class="reader-seg-btn" type="button" data-${key}="${esc(String(o.value))}" aria-pressed="${String(o.value) === String(current)}">${esc(o.label)}</button>`,
+        )
+        .join('')}</div>
+    </div>`
+}
+
+/** 接线：点分段按钮 → onChange(值)，并同步 aria-pressed（重开弹窗前不需要重绘整块） */
+function wireSeg(dlg, key, options, onChange) {
+  dlg.body.querySelectorAll(`[data-${key}]`).forEach((b) => {
+    b.onclick = () => {
+      const hit = options.find((o) => String(o.value) === b.dataset[key])
+      if (!hit) return
+      onChange(hit.value)
+      dlg.body
+        .querySelectorAll(`[data-${key}]`)
+        .forEach((x) => x.setAttribute('aria-pressed', String(x.dataset[key] === String(hit.value))))
+    }
+  })
+}
+
+/** 排版挂在 .reader-root 的 CSS 变量上：TXT 正文与 EPUB 外层容器共用一套（epub iframe 另行覆盖） */
+function applyReaderType(root, { family, weight, width } = {}) {
+  if (!root) return
+  const fam = family ?? readFontFamily()
+  const wt = weight ?? readFontWeight()
+  const w = width ?? readTextWidth()
+  root.style.setProperty('--reader-font', FONT_STACKS[fam] || FONT_STACKS.default)
+  root.style.setProperty('--reader-weight', String(wt))
+  root.style.setProperty('--reader-width', `${w}px`)
+}
+
 /** 页面切换动效：只作用于外层容器，不动 iframe 内容；prefers-reduced-motion 由 CSS 关掉 */
 function playTurnEffect(el, effect, dir) {
   if (!el || !effect || effect === 'none') return
@@ -137,14 +225,28 @@ function fabHtml() {
 }
 
 /**
- * 阅读设置弹窗：字号 / 行距（txt）/ 自动翻页 / 背景 / 全屏与常亮，改动即时生效、无需保存。
+ * 阅读设置弹窗：模式 / 字号 / 字体 / 字重 / 行距 / 段距 / 宽度 / 自动翻页 / 背景 / 翻页动效 / 显示。
  * font = { value, min, max, onFont }；line = { value, onLine }（epub 行距跟随原书，不传）；
+ * family / weight / para / width = { value, onChange }（para 仅 txt；width 只在宽屏可见差异）
  * auto = { value, onChange }（秒，0 = 关闭）；actions = [{ id, label, pressed, onToggle }]
  * turn = { value, onChange }（none / fade / slide，翻页动效）
  * mode = { value, onChange }（paged / scroll，仅 epub）
  * onTheme(id) 由调用方接到背景切换（txt 只换令牌，epub 还要刷 iframe 主题）。
  */
-function openReaderSettings({ theme, onTheme, font = null, line = null, auto = null, turn = null, mode = null, actions = [] } = {}) {
+function openReaderSettings({
+  theme,
+  onTheme,
+  font = null,
+  line = null,
+  family = null,
+  weight = null,
+  para = null,
+  width = null,
+  auto = null,
+  turn = null,
+  mode = null,
+  actions = [],
+} = {}) {
   const fontBlock = font
     ? `<div class="reader-setting"><span class="reader-setting-label">字号</span>
          <button class="btn sm" type="button" data-fs="-1" aria-label="缩小字号">A−</button>
@@ -152,6 +254,8 @@ function openReaderSettings({ theme, onTheme, font = null, line = null, auto = n
          <button class="btn sm" type="button" data-fs="1" aria-label="放大字号">A+</button>
        </div>`
     : ''
+  const familyBlock = family ? segBlockHtml('字体', 'family', FONT_OPTIONS, family.value) : ''
+  const weightBlock = weight ? segBlockHtml('字重', 'weight', WEIGHT_OPTIONS, weight.value) : ''
   const lineBlock = line
     ? `<div class="reader-setting"><span class="reader-setting-label">行距</span>
          <div class="reader-seg" role="group" aria-label="行距">${line.options
@@ -162,6 +266,8 @@ function openReaderSettings({ theme, onTheme, font = null, line = null, auto = n
            .join('')}</div>
        </div>`
     : ''
+  const paraBlock = para ? segBlockHtml('段距', 'para', PARA_OPTIONS, para.value) : ''
+  const widthBlock = width ? segBlockHtml('宽度', 'width', WIDTH_OPTIONS, width.value) : ''
   const modeBlock = mode
     ? `<div class="reader-setting"><span class="reader-setting-label">模式</span>
          <div class="reader-seg" role="group" aria-label="阅读模式">
@@ -203,9 +309,10 @@ function openReaderSettings({ theme, onTheme, font = null, line = null, auto = n
        </div>`
     : ''
 
-  const dlg = showDialog(`<h2>阅读设置</h2>${modeBlock}${fontBlock}${lineBlock}${autoBlock}${swatchBlock}${turnBlock}${actionBlock}`, {
-    label: '阅读设置',
-  })
+  const dlg = showDialog(
+    `<h2>阅读设置</h2>${modeBlock}${fontBlock}${familyBlock}${weightBlock}${lineBlock}${paraBlock}${widthBlock}${autoBlock}${swatchBlock}${turnBlock}${actionBlock}`,
+    { label: '阅读设置' },
+  )
   if (font) {
     dlg.body.querySelectorAll('[data-fs]').forEach((b) => {
       b.onclick = () => {
@@ -218,6 +325,18 @@ function openReaderSettings({ theme, onTheme, font = null, line = null, auto = n
       }
     })
   }
+  if (family) {
+    wireSeg(dlg, 'family', FONT_OPTIONS, (v) => {
+      family.value = v
+      family.onChange?.(v)
+    })
+  }
+  if (weight) {
+    wireSeg(dlg, 'weight', WEIGHT_OPTIONS, (v) => {
+      weight.value = v
+      weight.onChange?.(v)
+    })
+  }
   if (line) {
     dlg.body.querySelectorAll('[data-line]').forEach((b) => {
       b.onclick = () => {
@@ -227,6 +346,18 @@ function openReaderSettings({ theme, onTheme, font = null, line = null, auto = n
           .querySelectorAll('[data-line]')
           .forEach((x) => x.setAttribute('aria-pressed', String(Number(x.dataset.line) === line.value)))
       }
+    })
+  }
+  if (para) {
+    wireSeg(dlg, 'para', PARA_OPTIONS, (v) => {
+      para.value = v
+      para.onChange?.(v)
+    })
+  }
+  if (width) {
+    wireSeg(dlg, 'width', WIDTH_OPTIONS, (v) => {
+      width.value = v
+      width.onChange?.(v)
     })
   }
   if (mode) {
@@ -1484,7 +1615,9 @@ function flattenToc(items, depth = 0, out = []) {
 
 async function openEpubReader(id, version, fileUrl, stage, setChapter) {
   const alive = () => stage.isConnected
-  const root = stage.closest('.reader-root')
+  const root = stage.closest('.reader-root') || stage
+  // 排版变量先落盘到 .reader-root：iframe 宽度按 --reader-width 测量，渲染前设好才不会先宽后窄
+  applyReaderType(root)
   const say = progressStage(stage, '正在打开 epub…')
 
   try {
@@ -1614,6 +1747,10 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
     // epub 是 iframe 里的独立文档：背景 / 字号除了写进 rendition 主题，还要直接刷已渲染的 iframe，
     // 否则 themes API 只对翻页后的新内容生效，当前页不变色
     let epubFontSize = Math.max(14, Math.min(26, Number(readStorage(EPUB_FONT_KEY)) || 21))
+    /** 正文排版（issue #23）：字体 / 字重 / 栏宽，通过 themes + 已渲染 iframe 双写 */
+    let fontFamily = readFontFamily()
+    let fontWeight = readFontWeight()
+    let pageWidth = readTextWidth()
     const epubThemeColors = {
       paper: null, // 白：跟随原书自带样式（epub 自带排版）
       sepia: { color: '#38301f', background: '#f6f0e0' },
@@ -1631,6 +1768,11 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
           rendition.themes.override('background', '')
         }
         rendition.themes.fontSize(`${epubFontSize}px`)
+        // 字体 / 字重：默认（原书 / 400）时清掉覆盖，避免残留上一次的设置
+        if (fontFamily === 'default') rendition.themes.removeOverride('font-family')
+        else rendition.themes.font(FONT_STACKS[fontFamily] || FONT_STACKS.default)
+        if (fontWeight === 400) rendition.themes.removeOverride('font-weight')
+        else rendition.themes.override('font-weight', String(fontWeight), true)
       } catch {
         /* 主题接口不可用时按原书样式显示，不影响阅读 */
       }
@@ -1645,6 +1787,9 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
           }
           paint('color', colors?.color ?? '')
           paint('background', colors?.background ?? '')
+          // 字体 / 字重只写 body：标题、引文等元素自带样式仍然优先（不暴力覆盖原书层级）
+          doc.body.style.fontFamily = fontFamily === 'default' ? '' : FONT_STACKS[fontFamily] || ''
+          doc.body.style.fontWeight = fontWeight === 400 ? '' : String(fontWeight)
         })
       } catch {
         /* iframe 还没渲染好：relocated 后会再刷一遍 */
@@ -1678,6 +1823,36 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
             epubFontSize = n
             writeStorage(EPUB_FONT_KEY, String(n))
             paintEpubTheme()
+          },
+        },
+        family: {
+          value: fontFamily,
+          onChange: (v) => {
+            fontFamily = v
+            writeStorage(READER_FONT_KEY, v)
+            paintEpubTheme()
+          },
+        },
+        weight: {
+          value: fontWeight,
+          onChange: (v) => {
+            fontWeight = Number(v) || 400
+            writeStorage(READER_WEIGHT_KEY, String(fontWeight))
+            paintEpubTheme()
+          },
+        },
+        width: {
+          value: pageWidth,
+          onChange: (v) => {
+            pageWidth = Number(v) || DEFAULT_READER_WIDTH
+            writeStorage(READER_WIDTH_KEY, String(pageWidth))
+            applyReaderType(root, { width: pageWidth })
+            // epub.js 用 ResizeObserver 重新排版；这里补一次主动 resize，避免个别版本不响应容器宽度变化
+            try {
+              rendition.resize()
+            } catch {
+              /* 尺寸接口不可用：等下一次窗口变化 / 翻页自然重排 */
+            }
           },
         },
         mode: { value: viewMode, onChange: setViewMode },
@@ -2369,6 +2544,9 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
     ${footerHtml({ prev: '上一章', next: '下一章' })}`
 
   const root = stage
+  // 背景令牌 / 沉浸模式 / 排版变量都挂在最外层 .reader-root 上：stage 只是它的子节点，
+  // 属性写在 stage 上 CSS 匹配不到（TXT 之前换背景、进沉浸模式没反应就是这个原因）
+  const themeRoot = stage.closest('.reader-root') || stage
   const body = root.querySelector('[data-body]')
   const prevBtn = root.querySelector('[data-prev]')
   const nextBtn = root.querySelector('[data-next]')
@@ -2384,8 +2562,8 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
   let immersive = false
   const toggleImmersive = () => {
     immersive = !immersive
-    if (immersive) root.dataset.immersive = '1'
-    else delete root.dataset.immersive
+    if (immersive) themeRoot.dataset.immersive = '1'
+    else delete themeRoot.dataset.immersive
     if (immersive) toast('沉浸阅读：点屏幕中间恢复工具栏')
   }
 
@@ -2430,6 +2608,11 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
 
   let fontSize = Number(readStorage(TXT_FONT_KEY)) || 21
   let lineHeight = Number(readStorage(TXT_LINE_KEY)) || 1.5
+  /** 正文排版（issue #23）：字体 / 字重 / 段距 / 栏宽 */
+  let fontFamily = readFontFamily()
+  let fontWeight = readFontWeight()
+  let paraGap = readParaGap()
+  let pageWidth = readTextWidth()
   let saveTimer = 0
   let rafPending = false
   let disposed = false
@@ -2453,6 +2636,9 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
   function paintFont() {
     body.style.fontSize = `${fontSize}px`
     body.style.lineHeight = String(lineHeight)
+    // 字体 / 字重 / 宽度走 .reader-root 的 CSS 变量（与 EPUB 共用），段距只影响 TXT
+    applyReaderType(themeRoot, { family: fontFamily, weight: fontWeight, width: pageWidth })
+    themeRoot.style.setProperty('--txt-para', `${paraGap}em`)
   }
 
   // ---------- 位置 / 进度 ----------
@@ -2895,8 +3081,8 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
     openToc()
   }
   tocBtn.onclick = showToc
-  // 悬浮工具栏：目录 / 阅读设置（字号 + 行距 + 背景）/ 背景循环；先刷一次主题钮图标
-  setReaderTheme(root, root.dataset.readerTheme || 'paper')
+  // 悬浮工具栏：目录 / 书签 / 朗读 / 阅读设置 / 背景循环；先刷一次主题钮图标
+  setReaderTheme(themeRoot, themeRoot.dataset.readerTheme || 'paper')
   stage.querySelector('[data-fab-toc]').onclick = showToc
   // 书签：txt 记章号 + 章内滚动比例（重新生成目录后仍能定位）
   stage.querySelector('[data-fab-mark]').onclick = () =>
@@ -2934,7 +3120,7 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
   )
   stage.querySelector('[data-fab-set]').onclick = () => {
     openReaderSettings({
-      theme: root.dataset.readerTheme || 'paper',
+      theme: themeRoot.dataset.readerTheme || 'paper',
       font: {
         value: fontSize,
         min: 14,
@@ -2945,6 +3131,22 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
           writeStorage(TXT_FONT_KEY, String(n))
         },
       },
+      family: {
+        value: fontFamily,
+        onChange: (v) => {
+          fontFamily = v
+          paintFont()
+          writeStorage(READER_FONT_KEY, v)
+        },
+      },
+      weight: {
+        value: fontWeight,
+        onChange: (v) => {
+          fontWeight = Number(v) || 400
+          paintFont()
+          writeStorage(READER_WEIGHT_KEY, String(fontWeight))
+        },
+      },
       line: {
         value: lineHeight,
         options: LINE_OPTIONS,
@@ -2952,6 +3154,22 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
           lineHeight = v
           paintFont()
           writeStorage(TXT_LINE_KEY, String(v))
+        },
+      },
+      para: {
+        value: paraGap,
+        onChange: (v) => {
+          paraGap = Number(v) || 1
+          paintFont()
+          writeStorage(TXT_PARA_KEY, String(paraGap))
+        },
+      },
+      width: {
+        value: pageWidth,
+        onChange: (v) => {
+          pageWidth = Number(v) || DEFAULT_READER_WIDTH
+          paintFont()
+          writeStorage(READER_WIDTH_KEY, String(pageWidth))
         },
       },
       auto: { value: autoSeconds, onChange: setAuto },
@@ -2966,10 +3184,10 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
         { id: 'fullscreen', label: '全屏', pressed: Boolean(document.fullscreenElement), onToggle: toggleFullscreen },
         { id: 'wake', label: '常亮', pressed: Boolean(wakeLock), onToggle: toggleScreenWake },
       ],
-      onTheme: (id) => setReaderTheme(root, id),
+      onTheme: (id) => setReaderTheme(themeRoot, id),
     })
   }
-  stage.querySelector('[data-fab-theme]').onclick = () => cycleTheme(root)
+  stage.querySelector('[data-fab-theme]').onclick = () => cycleTheme(themeRoot)
 
   // 整本下载 + 解码 + 分章：URL 带版本号，服务端长缓存，第二次打开基本秒开
   ;(async () => {
