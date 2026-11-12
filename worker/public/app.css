@@ -2177,7 +2177,8 @@ body:has(.playerbar:not([hidden])) .reader-root[data-immersive="1"] .reader-stag
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
-.txt-body:focus-visible { outline: 2px solid var(--border-strong); outline-offset: 2px }
+/* 方向键滚动是容器内的常规交互，不亮聚焦边框（显式置空，避免被全局 :focus-visible 兜底画环） */
+.txt-body:focus-visible { outline: none }
 /* 滚动条细一点：没有页脚进度条了，粗滚动条很抢眼（微信读书也是细条） */
 .txt-body { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent }
 .txt-body::-webkit-scrollbar { width: 6px }
