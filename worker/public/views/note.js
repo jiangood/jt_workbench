@@ -21,8 +21,136 @@ let searchResults = []
 let searchSeq = 0
 let searchTimer = 0
 
+// ---------------- 脏状态 / 草稿（issue #20） ----------------
+/**
+ * 编辑器是否与「最后一次落库（或打开）时的内容」不一致。
+ * 用快照对比而不是「敲一下就脏」：把内容改回原样就不该再拦人。
+ */
+let dirty = false
+/** 当前编辑器实例 { id, titleEl, contentEl, labelEl, snapshot }；null = 空面板 */
+let editorRef = null
+
+const DRAFT_PREFIX = 'note:draft:'
+const DRAFT_DEBOUNCE = 2000
+let draftTimer = 0
+
+function draftKey(id) {
+  return `${DRAFT_PREFIX}${id}`
+}
+
+function readDraft(id) {
+  if (id == null) return null
+  try {
+    const raw = localStorage.getItem(draftKey(id))
+    if (!raw) return null
+    const draft = JSON.parse(raw)
+    return draft && typeof draft === 'object' ? draft : null
+  } catch {
+    return null
+  }
+}
+
+function writeDraft(draft) {
+  if (draft.id == null) return
+  try {
+    localStorage.setItem(draftKey(draft.id), JSON.stringify(draft))
+  } catch {
+    /* 隐私模式 / 配额满：草稿只是兜底，写不进去不影响正常编辑 */
+  }
+}
+
+function dropDraft(id) {
+  clearTimeout(draftTimer)
+  draftTimer = 0
+  if (id == null) return
+  try {
+    localStorage.removeItem(draftKey(id))
+  } catch {
+    /* 同上 */
+  }
+}
+
+/** 编辑器当前值：脏判断、草稿、快照统一从这里取，避免两处各读一套 */
+function editorValue() {
+  if (!editorRef) return null
+  return {
+    id: editorRef.id,
+    title: editorRef.titleEl.value,
+    content: editorRef.contentEl.value,
+    folderId: editorRef.labelEl?.dataset.folderId || '',
+  }
+}
+
+/** 立刻把当前编辑内容落成草稿（防抖到点 / 刷新 / 切页时调用） */
+function flushDraft() {
+  const value = editorValue()
+  if (!dirty || !value || !editorRef?.snapshot) return
+  writeDraft({ ...value, base: editorRef.snapshot, ts: Date.now() })
+}
+
+function scheduleDraft() {
+  if (editorRef?.id == null) return
+  clearTimeout(draftTimer)
+  draftTimer = setTimeout(flushDraft, DRAFT_DEBOUNCE)
+}
+
+/** 输入 / 移动目录后重算脏状态；脏了排一次防抖草稿，回到原样则清掉草稿 */
+function syncDirty() {
+  const value = editorValue()
+  if (!value || !editorRef?.snapshot) {
+    dirty = false
+    return false
+  }
+  const base = editorRef.snapshot
+  dirty = value.title !== base.title || value.content !== base.content || value.folderId !== base.folderId
+  if (dirty) scheduleDraft()
+  else dropDraft(editorRef.id)
+  return dirty
+}
+
+/**
+ * 某部分已落库（整篇保存 / 只改了目录）后对齐快照。
+ * 只改目录时保留旧的 title/content 基线，正文里还没保存的修改继续算脏。
+ */
+function syncBaseline(patch = {}) {
+  if (!editorRef) return false
+  const value = editorValue()
+  const base = editorRef.snapshot ?? { title: '', content: '', folderId: '' }
+  editorRef.snapshot = {
+    title: patch.title ?? base.title,
+    content: patch.content ?? base.content,
+    folderId: patch.folderId ?? value.folderId,
+  }
+  return syncDirty()
+}
+
+/**
+ * 切换 / 丢弃前的守卫：脏了先问一句，取消就保持当前编辑器原样（返回 false）。
+ * 确认放弃时顺手清掉草稿——用户已明确表示不要这些修改。
+ */
+function confirmDiscard() {
+  if (!dirty) return true
+  if (!confirm('这篇笔记有未保存的修改，确定放弃？')) return false
+  // 用户明确说不要了：草稿直接清掉，免得换个编辑器后又弹「恢复草稿」。
+  // dirty 先留着——万一随后取数失败、编辑器没换掉，至少还能再提示一次。
+  dropDraft(editorRef?.id ?? null)
+  return true
+}
+
+/** 刷新 / 关标签页：能做的只有拦一下 + 确保草稿已落盘 */
+function onBeforeUnload(e) {
+  if (!dirty) return
+  flushDraft()
+  e.preventDefault()
+  e.returnValue = ''
+  return ''
+}
+
 export async function render(main, params = {}) {
   alive = true
+  // 本视图自己的卸载守卫；destroy() 里解除，避免视图切换后残留
+  window.removeEventListener('beforeunload', onBeforeUnload)
+  window.addEventListener('beforeunload', onBeforeUnload)
   searchQuery = ''
   searchResults = []
   searchSeq += 1
@@ -55,7 +183,10 @@ export async function render(main, params = {}) {
       <div class="note-pane note-pane-editor" id="editor"></div>
     </div>`
 
-  main.querySelector('#new').onclick = () => openEditor(main, null)
+  main.querySelector('#new').onclick = () => {
+    if (!confirmDiscard()) return
+    openEditor(main, null)
+  }
   main.querySelector('#folder-manage').onclick = () => openFolderManager(main)
   bindFolderTree(main)
   bindSearch(main)
@@ -338,11 +469,16 @@ function renderNotes(main) {
   list.querySelectorAll('[data-id]').forEach((a) => {
     a.onclick = async (e) => {
       e.preventDefault()
+      const id = Number(a.dataset.id)
+      // 同一篇：脏状态下来回点别用服务端内容覆盖正在改的正文
+      if (id === currentId && dirty) return
+      // 换一篇：脏了先确认，取消就保持当前编辑器与列表选中态不动
+      if (!confirmDiscard()) return
       const loaded = await run(null, () => api(`/api/note/${a.dataset.id}`))
       if (!loaded.ok) return
       list.querySelectorAll('[data-id]').forEach((x) => x.classList.remove('active'))
       a.classList.add('active')
-      currentId = Number(a.dataset.id)
+      currentId = id
       openEditor(main, loaded.data.note)
     }
   })
@@ -554,6 +690,10 @@ function attachmentsOf(n) {
 
 function emptyEditor(editor) {
   closeMoreMenu()
+  clearTimeout(draftTimer)
+  draftTimer = 0
+  editorRef = null
+  dirty = false
   editor.innerHTML = '<div class="editor-empty"><div class="empty">从列表里选一篇笔记，或点「新建」</div></div>'
 }
 
@@ -645,10 +785,26 @@ function openEditor(main, n) {
   const titleEl = editor.querySelector('#e-title')
   const msgEl = editor.querySelector('#e-msg')
   const labelEl = editor.querySelector('#e-folder-label')
+  const contentEl = editor.querySelector('#e-content')
+
+  // 新编辑器 = 新基线：脏状态与草稿都从这份快照重新算
+  editorRef = {
+    id: n?.id != null ? Number(n.id) : null,
+    titleEl,
+    contentEl,
+    labelEl,
+    snapshot: { title: n?.title ?? '', content: n?.content ?? '', folderId: labelEl.dataset.folderId || '' },
+  }
+  dirty = false
+  clearTimeout(draftTimer)
+  draftTimer = 0
+
   titleEl.addEventListener('input', () => {
     msgEl.textContent = ''
     titleEl.removeAttribute('aria-invalid')
+    syncDirty()
   })
+  contentEl.addEventListener('input', syncDirty)
 
   // 「更多」下拉：删除笔记等破坏性操作收进菜单，点外部 / Esc 自动关
   setupMoreMenus(editor)
@@ -685,6 +841,9 @@ function openEditor(main, n) {
       }
       close()
       renderFolderLabel(labelEl, pick)
+      // 老笔记的目录已经落库，只对齐这部分基线；新笔记的目录还是本地态，算脏
+      if (n) syncBaseline({ folderId: pick != null ? String(pick) : '' })
+      else syncDirty()
       toast(n ? `已移动到「${folderPathName(pick)}」` : `保存后归入「${folderPathName(pick)}」`)
       // 目录计数与列表跟着变；正文不动，免得光标跳走
       if (n) await rerender(refreshAll, main)
@@ -704,14 +863,19 @@ function openEditor(main, n) {
     msgEl.textContent = ''
     titleEl.removeAttribute('aria-invalid')
     const pick = labelEl.dataset.folderId
+    const content = contentEl.value
     const body = JSON.stringify({
       id: n?.id,
       title,
-      content: editor.querySelector('#e-content').value,
+      content,
       folderId: pick ? Number(pick) : null,
     })
     const res = await run(btn, () => api('/api/note/save', { method: 'POST', body }))
     if (!res.ok) return
+    // 已落库：基线对齐 + 清草稿，之后切页不再误报「未保存」
+    // 标题提交前会 trim，输入框里若留了空格先对齐，否则会立刻又变「脏」
+    if (titleEl.value !== title) titleEl.value = title
+    syncBaseline({ title, content, folderId: pick })
     toast('已保存')
     await rerender(refreshAll, main)
     // 新笔记落库后才有 id，重新载入成「已存在」态；老笔记不重绘编辑器，免得光标跳走
@@ -748,8 +912,13 @@ function openEditor(main, n) {
       onSettled: async (summary) => {
         if (!alive || !summary.ok) return
         await rerender(refreshAll, main)
+        // 上传期间可能已经切到别的笔记：别再把它顶掉
+        if (currentId !== Number(n.id)) return
         const loaded = await run(null, () => api(`/api/note/${n.id}`))
-        if (loaded.ok) openEditor(main, loaded.data.note)
+        if (!loaded.ok) return
+        // 重绘编辑器会丢掉正在输入的内容，脏了先问；取消就保留当前编辑器
+        if (!confirmDiscard()) return
+        openEditor(main, loaded.data.note)
       },
     })
   }
@@ -760,9 +929,34 @@ function openEditor(main, n) {
     const res = await run(btn, () => api(`/api/note/${n.id}`, { method: 'DELETE' }))
     if (!res.ok) return
     toast('已删除')
+    dropDraft(Number(n.id))
     currentId = null
     emptyEditor(editor)
     await rerender(refreshAll, main)
+  }
+
+  // 上次没保存的草稿：服务端内容没变才提示恢复，变了说明已在别处存过，旧草稿直接丢
+  const draft = readDraft(editorRef.id)
+  if (draft) {
+    const base = draft.base && typeof draft.base === 'object' ? draft.base : null
+    const unchanged =
+      !base ||
+      (base.title === (n?.title ?? '') &&
+        base.content === (n?.content ?? '') &&
+        (base.folderId ?? '') === (labelEl.dataset.folderId || ''))
+    if (!unchanged) {
+      dropDraft(editorRef.id)
+    } else if (confirm('发现上次未保存的草稿，恢复到编辑器？')) {
+      titleEl.value = String(draft.title ?? '')
+      contentEl.value = String(draft.content ?? '')
+      if (draft.folderId === '' || (draft.folderId && folderById.has(Number(draft.folderId)))) {
+        renderFolderLabel(labelEl, draft.folderId ? Number(draft.folderId) : null)
+      }
+      syncDirty()
+      toast('已恢复草稿，记得保存')
+    } else {
+      dropDraft(editorRef.id)
+    }
   }
 }
 
@@ -771,4 +965,12 @@ export function destroy() {
   closeMoreMenu()
   clearTimeout(searchTimer)
   searchSeq += 1
+  window.removeEventListener('beforeunload', onBeforeUnload)
+  // hash 路由切页已经发生、无法回退，只能做到「不静默丢」：
+  // 把没落盘的内容同步写进草稿，下次打开同一篇还能选择恢复。
+  flushDraft()
+  clearTimeout(draftTimer)
+  draftTimer = 0
+  editorRef = null
+  dirty = false
 }
