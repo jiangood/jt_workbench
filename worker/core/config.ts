@@ -31,6 +31,8 @@ export interface ConfigField {
   options?: ConfigOption[]
   /** 后台分组：mail 合并渲染成一张卡片，node 渲染在「计算节点」页 */
   group?: string
+  /** 仅后端存储，不在「参数与密钥」列表展示（由业务页单独维护，如知识星球 token） */
+  hidden?: boolean
   /** 值缺失时自动随机生成（首次读取即落库） */
   generate?: () => string
 }
@@ -136,6 +138,7 @@ export const CONFIG_FIELDS: ConfigField[] = [
     label: '知识星球 token',
     kind: 'secret',
     maxLen: 1024,
+    hidden: true, // 统一从「知识星球」页的「同步配置」维护，不再出现在全局参数页
     hint: 'wx.zsxq.com 登录后从请求头取；下发 zsxq_sync 任务时自动注入 payload，留空则任务报「未配置 token」',
   },
 ]
@@ -301,7 +304,8 @@ export async function describeConfig(env: Bindings, key: string): Promise<Config
 
 export async function listConfig(env: Bindings): Promise<ConfigItem[]> {
   const rows = await readRows(env)
-  return CONFIG_FIELDS.map((f) => describeFromRow(f, rows?.get(f.key)))
+  // hidden 字段仍可通过 findField / getConfig 读写，只是不在后台全局参数页展示
+  return CONFIG_FIELDS.filter((f) => !f.hidden).map((f) => describeFromRow(f, rows?.get(f.key)))
 }
 
 export async function setConfig(env: Bindings, key: string, raw: string): Promise<ConfigItem> {

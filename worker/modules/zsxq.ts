@@ -95,7 +95,7 @@ zsxq.get('/groups', async (c) => {
   })
 })
 
-/** 保存 / 清除知识星球 token（仍存 D1 app_config，后台「参数与密钥」同步可见） */
+/** 保存 / 清除知识星球 token（仍存 D1 app_config，但不在「参数与密钥」展示，统一由本页维护） */
 zsxq.post('/token', async (c) => {
   const b = await c.req.json<{ token?: string }>()
   const field = findField('zsxq_token')

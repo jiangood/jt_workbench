@@ -134,7 +134,7 @@ function openConfig(main, g, job) {
 
   const { close, body } = showDialog(
     `<h2>同步配置</h2>
-     <p class="small muted">token 存于参数中心，Worker 下发 zsxq_sync 任务时注入 payload，节点侧无需环境变量。</p>
+     <p class="small muted">token 存于 D1，只在本页维护；Worker 下发 zsxq_sync 任务时注入 payload，节点侧无需环境变量。</p>
 
      <label class="form-label" for="token">知识星球 token</label>
      <div class="flex wrap center">

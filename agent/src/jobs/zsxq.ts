@@ -11,12 +11,12 @@ const syncPayloadSchema = z
     groupIds: z.array(z.string().min(1)).max(50).optional(),
     count: z.number().int().min(1).max(30).default(20),
     endTime: z.string().optional(), // 分页游标（YYYY-MM-DDTHH:mm:ss.SSS+0800）
-    token: z.string().min(1, '缺少知识星球 token：请到后台「参数与密钥」填写'),
+    token: z.string().min(1, '缺少知识星球 token：请到「知识星球」页的「同步配置」填写'),
   })
   .refine((v) => (v.groupIds?.length ?? 0) > 0 || !!v.groupId, { message: '缺少 groupId' })
 
 const groupsPayloadSchema = z.object({
-  token: z.string().min(1, '缺少知识星球 token：请到后台「参数与密钥」填写'),
+  token: z.string().min(1, '缺少知识星球 token：请到「知识星球」页的「同步配置」填写'),
 })
 
 export const zsxqHandler: JobHandler = async (payload, ctx) => {

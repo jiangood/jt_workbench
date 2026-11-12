@@ -185,9 +185,6 @@ export async function render(main, params = {}) {
       </div>
       <div id="cfg-list" class="mt-2" style="max-width: 860px"></div>
       <div id="cfg-note" class="small mt-2" role="status" style="max-width: 860px"></div>
-      <div class="small muted mt-2" style="max-width: 860px">
-        知识星球 token 也在这里维护：下发 <code>zsxq_sync</code> 任务时由 Worker 注入 payload，agent 侧无需任何环境变量。
-      </div>
     </section>
 
     <section class="tab-pane" ${paneAttrs('account')}>
