@@ -202,7 +202,7 @@ function resultsHTML(shown, sections, showGroupHead, hasBooks) {
   return emptyState(
     hasBooks
       ? '当前筛选下还没有书'
-      : '书架空空如也，点「添加图书」从豆瓣建条目，或直接上传 epub / pdf / txt',
+      : '书架空空如也，点「添加图书」从豆瓣建条目，或直接上传 epub / pdf',
   )
 }
 
@@ -243,7 +243,7 @@ export async function render(main) {
         <button class="btn" id="batch-book">${icon('queue')}批量添加</button>
         <label class="btn">
           ${icon('upload')}上传文件
-          <input class="sr-only" type="file" id="up" accept=".epub,.pdf,.txt" multiple>
+          <input class="sr-only" type="file" id="up" accept=".epub,.pdf" multiple>
         </label>
       </div>
     </div>
@@ -938,7 +938,7 @@ function uploadOptions(main, params = {}) {
     params,
     prepare: (file) => parseEpubMeta(file),
     url: (qs) => `/api/book/upload?${qs}`,
-    // 后端给 epub/pdf/txt 统一按字节流处理，不信任浏览器猜的 MIME
+    // 后端给 epub/pdf 统一按字节流处理，不信任浏览器猜的 MIME
     contentType: () => 'application/octet-stream',
     // 字节发完后 Worker 还要同步豆瓣，进度条会停在 100%，必须显式告诉用户还在处理
     processingLabel: '处理中（匹配豆瓣信息…）',
@@ -951,7 +951,7 @@ function uploadOptions(main, params = {}) {
 function pickFile(bookId, main) {
   const input = document.createElement('input')
   input.type = 'file'
-  input.accept = '.epub,.pdf,.txt'
+  input.accept = '.epub,.pdf'
   input.onchange = () => {
     const file = input.files?.[0]
     if (!file) return
