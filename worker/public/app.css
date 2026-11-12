@@ -703,8 +703,11 @@ tr.active .track-name { color: var(--primary); font-weight: 600 }
 .text-end { text-align: right }
 .text-center { text-align: center }
 
-/* 表格横向滚动容器：只在可能溢出时开 overflow（开了就自成滚动容器，桌面端 sticky 表头会失效） */
+/* 表格横向滚动容器：只在可能溢出时开 overflow（开了就自成滚动容器，桌面端 sticky 表头会失效）。
+ * position: relative 让 .sr-only 这类绝对定位后代以本容器为包含块——否则它们会以 .mainwrap 为
+ * 包含块、逃过 overflow 裁剪，按表格内的静态位置把整页撑宽（手机端音乐页多出几十像素横向滚动）。 */
 .table-scroll {
+  position: relative;
   max-width: 100%;
   border-radius: var(--r-lg);
 }
@@ -2487,11 +2490,12 @@ hr.sep { border: 0; border-top: 1px solid var(--border); margin: var(--sp-5) 0 }
 
 /* 音乐页 / 播放条：窄屏优先保证标题和操作可见，播放速度之类的高级项不做 */
 @media (max-width: 640px) {
-  /* 播放条改两行：第一行标题 + 控制，第二行原生进度条；底部留白全靠这个变量 */
+  /* 播放条改两行：第一行标题 + 控制，第二行原生进度条；底部留白全靠这个变量。
+   * .np 必须是 flex-basis 0，否则长曲名会按内容宽度占满整行、把控制按钮挤到第二行（三行、105px）。 */
   :root { --playerbar-h: 80px }
   .playerbar { padding: 4px var(--sp-2) 6px }
   .player-inner { flex-wrap: wrap; row-gap: 2px; gap: var(--sp-2) }
-  .np { flex: 1 1 auto }
+  .np { flex: 1 1 0; min-width: 0 }
   .np-sub { display: none }
   .player-ctrls .icon-btn { width: 30px; height: 30px }
   .player-inner audio { order: 3; flex: 1 0 100%; height: 32px }

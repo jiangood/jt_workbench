@@ -112,9 +112,9 @@ function shellHtml() {
         <p class="page-sub" id="music-sum">tag 由浏览器解析，切页不断播</p>
       </div>
       <div class="page-actions">
-        <button class="btn sm" id="play-all" type="button" disabled>${icon('play', 14)}播放全部</button>
+        <button class="btn sm primary" id="play-all" type="button" disabled>${icon('play', 14)}播放全部</button>
         <button class="btn sm" id="play-shuffle" type="button" disabled>${icon('shuffle', 14)}随机播放</button>
-        <label class="btn sm primary">
+        <label class="btn sm">
           ${icon('upload')}上传
           <input class="sr-only" type="file" id="up" accept="audio/*,.ape" multiple>
         </label>
