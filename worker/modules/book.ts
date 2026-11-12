@@ -320,8 +320,26 @@ book.post('/:id/sync', async (c) => {
 book.post('/upload', async (c) => {
   const filename = c.req.query('filename')
   if (!filename) throw new ApiError(400, 400, 'filename required')
-  const fmt = bookFormat(filename)
   const action = c.req.query('action')
+
+  // part / abort 只带 key + uploadId，不碰格式：放在 epub 校验之前，
+  // 让发布前用旧格式（pdf / txt）发起的残留分片也能正常清理
+  if (action === 'part') {
+    const key = ownKey('book', c.req.query('key'))
+    const uploadId = c.req.query('uploadId')
+    if (!uploadId) throw new ApiError(400, 400, 'uploadId required')
+    if (!c.req.raw.body) throw new ApiError(400, 400, 'empty body')
+    return ok(await uploadPart(c.env, key, uploadId, Number(c.req.query('partNumber')), c.req.raw.body))
+  }
+  if (action === 'abort') {
+    const key = ownKey('book', c.req.query('key'))
+    const uploadId = c.req.query('uploadId')
+    if (uploadId) await abortMultipart(c.env, key, uploadId)
+    return ok(null)
+  }
+
+  // 书籍只收 EPUB：init / complete / 单请求都会在写 R2 之前被拦下
+  const fmt = bookFormat(filename)
 
   // ---- 分片上传（>100MB 的书）：init → part × N → complete ----
   if (action === 'init') {
@@ -332,13 +350,6 @@ book.post('/upload', async (c) => {
     }
     return ok(await startMultipart(c.env, 'book', filename, c.req.header('content-type') ?? null))
   }
-  if (action === 'part') {
-    const key = ownKey('book', c.req.query('key'))
-    const uploadId = c.req.query('uploadId')
-    if (!uploadId) throw new ApiError(400, 400, 'uploadId required')
-    if (!c.req.raw.body) throw new ApiError(400, 400, 'empty body')
-    return ok(await uploadPart(c.env, key, uploadId, Number(c.req.query('partNumber')), c.req.raw.body))
-  }
   if (action === 'complete') {
     const key = ownKey('book', c.req.query('key'))
     const uploadId = c.req.query('uploadId')
@@ -346,12 +357,6 @@ book.post('/upload', async (c) => {
     const parts = parseParts(await c.req.json().catch(() => null))
     const stored = await completeMultipart(c.env, key, uploadId, parts, filename, c.req.query('ct'))
     return ok(await saveBookFile(c, stored, fmt))
-  }
-  if (action === 'abort') {
-    const key = ownKey('book', c.req.query('key'))
-    const uploadId = c.req.query('uploadId')
-    if (uploadId) await abortMultipart(c.env, key, uploadId)
-    return ok(null)
   }
   if (action) throw new ApiError(400, 400, '不支持的上传操作')
 

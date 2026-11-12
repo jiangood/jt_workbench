@@ -142,7 +142,7 @@ export interface ServeOptions {
 }
 
 /**
- * 取文件：透传 Range 头（音频拖动进度条 / PDF 分段 / 阅读器按章拉取）
+ * 取文件：透传 Range 头（音频拖动进度条 / 阅读器按章拉取）
  * filename 有值时会带 Content-Disposition，浏览器另存 / 下载时用原始文件名（含后缀），
  * 否则 URL 里的 /read/:id 会被当成文件名存下来。
  */
@@ -276,6 +276,7 @@ function contentDisposition(filename: string): string {
   return `inline; filename="${fallback}"; filename*=UTF-8''${encoded}`
 }
 
+/** 扩展名 → Content-Type：书籍只收 EPUB，但历史附件 / 遗留书籍下载仍按原类型下发 */
 function guessType(filename: string): string {
   const ext = filename.split('.').pop()?.toLowerCase() ?? ''
   const map: Record<string, string> = {

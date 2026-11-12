@@ -216,7 +216,7 @@ export function downloadText(filename, text, mime = 'text/plain;charset=utf-8') 
 
 /**
  * 每本书在本机的累计阅读时长（毫秒）。只存 localStorage，不上报、不做跨设备合并：
- * 统计口径是「阅读页可见且有交互」的净时长，无法可靠计时的情况（如 PDF 原生查看器）不计。
+ * 统计口径是「EPUB 阅读页可见且有交互」的净时长，切后台 / 闲置不计。
  */
 const BOOK_STATS_PREFIX = 'book:stats:'
 

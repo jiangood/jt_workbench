@@ -73,6 +73,9 @@ const statusBadge = (s) => `<span class="badge ${STATUS[s]?.cls ?? 'muted'}">${s
 /** 豆瓣图床带 Referer 防盗链，封面统一走 Worker 代理 */
 const coverUrl = (url) => (url ? `/api/book/cover?url=${encodeURIComponent(url)}` : '')
 
+/** 书籍只支持 EPUB：遗留的 pdf / txt 记录仍可下载，但不再进阅读页 */
+const isReadable = (b) => b.fmt === 'epub'
+
 /** 封面底部进度条：pct 是 0–100 的整数 */
 function progressBar(pct) {
   const value = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)))
@@ -94,8 +97,9 @@ function bookCard(b) {
   // 本机累计阅读时长（issue #23）：没有记录 / 不足 1 分钟不占位
   const readTime = b.hasFile ? fmtReadTime(readBookStats(b.id).ms) : ''
   // 有文件时封面本身就是阅读入口；工具栏里再留一个小图标，照顾「看不出封面能点」的人
-  const coverTag = b.hasFile ? 'a' : 'div'
-  const coverAttrs = b.hasFile
+  const readable = b.hasFile && isReadable(b)
+  const coverTag = readable ? 'a' : 'div'
+  const coverAttrs = readable
     ? ` href="#/reader?id=${esc(b.id)}" title="阅读《${label}》" aria-label="阅读《${label}》"`
     : ''
   return `
@@ -117,19 +121,22 @@ function bookCard(b) {
                   : ''
               }
               ${
-                b.hasFile
-                  ? `<span class="badge muted">${esc((b.fmt || '').toUpperCase())}</span>`
-                  : '<span class="badge warn">待上传</span>'
+                !b.hasFile
+                  ? '<span class="badge warn">待上传</span>'
+                  : readable
+                    ? '<span class="badge muted">EPUB</span>'
+                    : '<span class="badge warn">格式已停用</span>'
               }
             </div>
             <div class="book-actions">
               <div class="book-tools">
                 ${
-                  b.hasFile
+                  readable
                     ? `<a class="btn sm key" href="#/reader?id=${esc(b.id)}"
                           title="阅读《${label}》" aria-label="阅读《${label}》">${icon('book', 14)}</a>`
                     : `<button class="btn sm key" data-upload="${esc(b.id)}"
-                          title="上传《${label}》的文件" aria-label="上传《${label}》的文件">${icon('upload', 14)}</button>`
+                          title="${b.hasFile ? '更换为 EPUB 文件' : `上传《${label}》的文件`}"
+                          aria-label="${b.hasFile ? '更换为 EPUB 文件' : `上传《${label}》的文件`}">${icon(b.hasFile ? 'refresh' : 'upload', 14)}</button>`
                 }
                 <button class="btn sm" data-e="${esc(b.id)}" title="编辑" aria-label="编辑《${label}》">${icon('edit', 14)}</button>
                 <button class="btn sm" data-sync="${esc(b.id)}" title="用豆瓣信息更新书名 / 作者 / 封面 / 简介 / 评分"

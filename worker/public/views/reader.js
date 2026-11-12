@@ -32,7 +32,7 @@ const epubPosKey = (id) => `book:epub:pos:${id}`
 const marksKey = (id) => `book:marks:${id}`
 const MARK_LIMIT = 200
 
-/* ---------------- 阅读设置：背景 / 字号 / 行距 ---------------- */
+/* ---------------- 阅读设置：背景 / 字号 / 翻页 ---------------- */
 
 /** 背景主题（微信读书四色系）：夜间底色对齐 rgb(28,28,29)，米黄 / 护眼为常用护眼色 */
 const READER_THEME_KEY = 'book:theme'
@@ -72,7 +72,7 @@ function readViewMode() {
   return readStorage(VIEW_MODE_KEY) === 'scroll' ? 'scroll' : 'paged'
 }
 
-/* ---------------- 正文排版（issue #23）：字体 / 字重 / 段距 / 宽度 ---------------- */
+/* ---------------- 正文排版（issue #23）：字体 / 字重 / 宽度 ---------------- */
 
 /** 字体：默认跟随系统；衬线适合长篇；无衬线是移动端最常见的中文正文 */
 const READER_FONT_KEY = 'book:font'
@@ -200,9 +200,9 @@ function fabHtml() {
 }
 
 /**
- * 阅读设置弹窗：模式 / 字号 / 字体 / 字重 / 行距 / 段距 / 宽度 / 自动翻页 / 背景 / 翻页动效 / 显示。
- * font = { value, min, max, onFont }；line = { value, onLine }（epub 行距跟随原书，不传）；
- * family / weight / para / width = { value, onChange }（width 只在宽屏可见差异）
+ * 阅读设置弹窗：模式 / 字号 / 字体 / 字重 / 宽度 / 自动翻页 / 背景 / 翻页动效 / 显示。
+ * font = { value, min, max, onFont }；
+ * family / weight / width = { value, onChange }（width 只在宽屏可见差异）
  * auto = { value, onChange }（秒，0 = 关闭）；actions = [{ id, label, pressed, onToggle }]
  * turn = { value, onChange }（none / fade / slide，翻页动效）
  * mode = { value, onChange }（paged / scroll，仅 epub）
@@ -212,10 +212,8 @@ function openReaderSettings({
   theme,
   onTheme,
   font = null,
-  line = null,
   family = null,
   weight = null,
-  para = null,
   width = null,
   auto = null,
   turn = null,
@@ -231,17 +229,6 @@ function openReaderSettings({
     : ''
   const familyBlock = family ? segBlockHtml('字体', 'family', FONT_OPTIONS, family.value) : ''
   const weightBlock = weight ? segBlockHtml('字重', 'weight', WEIGHT_OPTIONS, weight.value) : ''
-  const lineBlock = line
-    ? `<div class="reader-setting"><span class="reader-setting-label">行距</span>
-         <div class="reader-seg" role="group" aria-label="行距">${line.options
-           .map(
-             (o) =>
-               `<button class="reader-seg-btn" type="button" data-line="${o.value}" aria-pressed="${o.value === line.value}">${esc(o.label)}</button>`,
-           )
-           .join('')}</div>
-       </div>`
-    : ''
-  const paraBlock = para ? segBlockHtml('段距', 'para', PARA_OPTIONS, para.value) : ''
   const widthBlock = width ? segBlockHtml('宽度', 'width', WIDTH_OPTIONS, width.value) : ''
   const modeBlock = mode
     ? `<div class="reader-setting"><span class="reader-setting-label">模式</span>
@@ -285,7 +272,7 @@ function openReaderSettings({
     : ''
 
   const dlg = showDialog(
-    `<h2>阅读设置</h2>${modeBlock}${fontBlock}${familyBlock}${weightBlock}${lineBlock}${paraBlock}${widthBlock}${autoBlock}${swatchBlock}${turnBlock}${actionBlock}`,
+    `<h2>阅读设置</h2>${modeBlock}${fontBlock}${familyBlock}${weightBlock}${widthBlock}${autoBlock}${swatchBlock}${turnBlock}${actionBlock}`,
     { label: '阅读设置' },
   )
   if (font) {
@@ -310,23 +297,6 @@ function openReaderSettings({
     wireSeg(dlg, 'weight', WEIGHT_OPTIONS, (v) => {
       weight.value = v
       weight.onChange?.(v)
-    })
-  }
-  if (line) {
-    dlg.body.querySelectorAll('[data-line]').forEach((b) => {
-      b.onclick = () => {
-        line.value = Number(b.dataset.line)
-        line.onLine(line.value)
-        dlg.body
-          .querySelectorAll('[data-line]')
-          .forEach((x) => x.setAttribute('aria-pressed', String(Number(x.dataset.line) === line.value)))
-      }
-    })
-  }
-  if (para) {
-    wireSeg(dlg, 'para', PARA_OPTIONS, (v) => {
-      para.value = v
-      para.onChange?.(v)
     })
   }
   if (width) {
@@ -392,9 +362,6 @@ function openReaderSettings({
   })
   return dlg
 }
-
-/** 一屏约 1–2KB，12000 字足够翻好几屏；没有章节标题的书按这个长度分节 */
-const SECTION_CHARS = 12000
 
 /* ---------------- 书签（issue #13） ---------------- */
 
@@ -1230,16 +1197,17 @@ export async function render(main, params) {
     return
   }
 
-  // 打开即记一次「最近阅读」：书架默认排序按它倒序置顶；待读 → 阅读中，失败静默不挡阅读
+  // 打开即记一次「最近阅读」：书架默认排序按它倒序置顶；待读 → 阅读中，失败静默不挡阅读。
+  // 只对能打开的格式上报：已停用的遗留格式不该被标成「阅读中」、也不该挤进「最近阅读」
+  if (book.fmt !== 'epub') {
+    stage.innerHTML = message('这本书是已停用的旧格式（PDF / TXT 等），不再支持在线阅读；回书架点「更换文件」重新上传 EPUB。')
+    return
+  }
   api(`/api/book/${id}/reading`, { method: 'POST' }).catch(() => {})
 
   // 进度回写书架卡片：epub 阅读器翻页 / 滚动时调用
   reportProgress = progressReporter(id)
 
-  if (book.fmt !== 'epub') {
-    stage.innerHTML = message('该文件格式已不再支持，请上传 EPUB 文件。')
-    return
-  }
   // 阅读计时：统计 EPUB 阅读页的活跃时长
   readingTimer = createReadingTimer(id)
   await openEpubReader(id, version, fileUrl, stage, setChapter)

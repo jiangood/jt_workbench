@@ -19,7 +19,7 @@ app.onError((err) => onError(err))
 app.notFound(notFound)
 
 // ---------- 安全响应头（issue #21）----------
-// 静态页走 assets 层，由 public/_headers 下发同一份策略；改这里要同步改那边（只有 frame-ancestors 不同）。
+// 静态页走 assets 层，由 public/_headers 下发同一份策略；改这里要同步改那边。
 //
 // 策略依据（public/ 全量外链核查结果）：
 // - script / style / 库全部自托管（/vendor），没有任何 CDN；内联只有 index.html / login.html 首屏定主题那两段
@@ -28,40 +28,32 @@ app.notFound(notFound)
 // - font：epub.js 把书内资源转成 blob URL；media：音乐走 /api/music/play/:id（self）
 // - connect：所有请求都是同源 /api/*；epub.js 内部资源也可能 fetch(blob:)
 // - 没有 web worker，worker-src 只是给 blob 兜底
-function buildCsp(frameAncestors: "'none'" | "'self'", objectSrc: "'none'" | "'self'"): string {
-  return [
-    "default-src 'self'",
-    "script-src 'self' 'unsafe-inline'",
-    "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob: https:",
-    "font-src 'self' data: blob:",
-    "media-src 'self' blob:",
-    "connect-src 'self' blob:",
-    "frame-src 'self' blob: data:",
-    "worker-src 'self' blob:",
-    `object-src ${objectSrc}`,
-    "base-uri 'self'",
-    "form-action 'self'",
-    `frame-ancestors ${frameAncestors}`,
-  ].join('; ')
-}
-
-const CSP = buildCsp("'none'", "'none'")
-/** /api/book/read/:id 会被本站 iframe 当 PDF 查看器打开：只放同源嵌入，并允许内置 PDF 插件（Chrome 按插件处理） */
-const CSP_SELF_FRAME = buildCsp("'self'", "'self'")
-const SELF_FRAMED_PATH = /^\/api\/book\/read\//
+// - 书籍只有 EPUB：阅读器用 fetch() 取整本，不再把 /api/book/read/:id 嵌进 iframe，故 object-src / frame-ancestors 一律关死
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob: https:",
+  "font-src 'self' data: blob:",
+  "media-src 'self' blob:",
+  "connect-src 'self' blob:",
+  "frame-src 'self' blob: data:",
+  "worker-src 'self' blob:",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ')
 
 // 注册在旧链接重定向之前：301 响应也要带安全头
 app.use('*', async (c, next) => {
   await next()
-  // XFO / frame-ancestors 若设 DENY/none，浏览器会拒绝在站内 iframe 里渲染 PDF，故单条路径放行同源
-  const framed = SELF_FRAMED_PATH.test(c.req.path)
-  c.header('content-security-policy', framed ? CSP_SELF_FRAME : CSP)
+  c.header('content-security-policy', CSP)
   // 不加 includeSubDomains / preload：同一 zone 下还有另一个项目，避免把 HSTS 强加到它的子域
   c.header('strict-transport-security', 'max-age=31536000')
   c.header('x-content-type-options', 'nosniff')
   c.header('referrer-policy', 'same-origin')
-  c.header('x-frame-options', framed ? 'SAMEORIGIN' : 'DENY')
+  c.header('x-frame-options', 'DENY')
 })
 
 // 旧的多页链接 → SPA hash 路由（页面文件已删，请求落到 Worker）

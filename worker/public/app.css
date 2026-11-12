@@ -1894,7 +1894,7 @@ body:has(.playerbar:not([hidden])) .reader-stage {
 .reader-fab:hover { color: var(--primary); border-color: var(--border-strong) }
 .reader-fab .ico { pointer-events: none }
 
-/* 阅读设置弹窗：字号 / 字体 / 字重 / 行距 / 段距 / 宽度 / 背景，改动即时生效 */
+/* 阅读设置弹窗：字号 / 字体 / 字重 / 宽度 / 背景，改动即时生效 */
 .reader-setting { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-3) }
 .reader-setting:last-child { margin-bottom: 0 }
 .reader-setting-label { flex: 0 0 3em; color: var(--muted-fg); font-size: var(--fs-sm) }
@@ -2024,19 +2024,14 @@ body:has(.playerbar:not([hidden])) .reader-root[data-immersive="1"] .reader-stag
 @keyframes wb-turn-fade { from { opacity: .2 } to { opacity: 1 } }
 @keyframes wb-turn-next { from { opacity: .3; transform: translateX(18px) } to { opacity: 1; transform: none } }
 @keyframes wb-turn-prev { from { opacity: .3; transform: translateX(-18px) } to { opacity: 1; transform: none } }
-.reader-view.turn-fade,
-.txt-body.turn-fade { animation: wb-turn-fade 200ms ease }
-.reader-view.turn-slide.turn-next,
-.txt-body.turn-slide.turn-next { animation: wb-turn-next 220ms ease }
-.reader-view.turn-slide.turn-prev,
-.txt-body.turn-slide.turn-prev { animation: wb-turn-prev 220ms ease }
+.reader-view.turn-fade { animation: wb-turn-fade 200ms ease }
+.reader-view.turn-slide.turn-next { animation: wb-turn-next 220ms ease }
+.reader-view.turn-slide.turn-prev { animation: wb-turn-prev 220ms ease }
 @media (prefers-reduced-motion: reduce) {
   .reader-view.turn-fade,
-  .reader-view.turn-slide,
-  .txt-body.turn-fade,
-  .txt-body.turn-slide { animation: none !important }
+  .reader-view.turn-slide { animation: none !important }
 }
-/* epub / txt 共用：正文 + 右侧目录两栏；窄屏目录隐藏，正文占满 */
+/* epub：正文 + 右侧目录两栏；窄屏目录隐藏，正文占满 */
 .reader-body {
   display: flex;
   flex: 1 1 auto;
@@ -2060,7 +2055,6 @@ body:has(.playerbar:not([hidden])) .reader-root[data-immersive="1"] .reader-stag
   overflow: hidden;
 }
 .reader-view iframe { border: 0 }
-.reader-frame { flex: 1 1 auto; min-height: 0; width: 100%; border: 0 }
 
 /* 阅读进度：顶栏百分比（旧版可拖动进度条已按需求去掉，只剩数字）；epub 另有「第 x / y 节」 */
 .reader-progress-text {
@@ -2159,43 +2153,12 @@ body:has(.playerbar:not([hidden])) .reader-root[data-immersive="1"] .reader-stag
 }
 .reader-toc-side .reader-toc-hint { margin: 0; padding: 0 var(--sp-3) var(--sp-2) }
 
-/* TXT 阅读器：编码在浏览器端识别，只渲染当前章节（大文件不卡）。
- * 排版对齐微信读书正文：21px / 行距 1.5 / 两端对齐 / 段距 1em / 首行缩进 2 字 / 栏宽 800px */
-.reader-body > .txt-reader { flex: 1 1 auto; min-height: 0; padding: var(--sp-3) }
-.txt-reader { display: flex; flex-direction: column }
-.txt-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  width: 100%;
-  max-width: var(--reader-width, 800px);
-  margin-inline: auto;
-  overflow-y: auto;
-  padding: var(--sp-4) var(--sp-4) var(--sp-7);
-  font-family: var(--reader-font, "PingFang SC", -apple-system, "SF UI Text", "Lucida Grande", STheiti, "Microsoft YaHei", sans-serif);
-  font-size: 21px;
-  font-weight: var(--reader-weight, 400);
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-/* 方向键滚动是容器内的常规交互，不亮聚焦边框（显式置空，避免被全局 :focus-visible 兜底画环） */
-.txt-body:focus-visible { outline: none }
-/* 滚动条细一点：没有页脚进度条了，粗滚动条很抢眼（微信读书也是细条） */
-.txt-body { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent }
-.txt-body::-webkit-scrollbar { width: 6px }
-.txt-body::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: var(--r-full) }
-.txt-body::-webkit-scrollbar-track { background: transparent }
-/* 一行一段：TXT 的段间空行只当分段标记，间距交给 margin，避免「空行 + margin」双重空档 */
-.txt-body p { margin: 0 0 var(--txt-para, 1em); text-align: justify; text-indent: 2em }
-.txt-body p.txt-head { margin: 1.4em 0 1em; text-indent: 0; text-align: center; font-weight: 650 }
-.txt-body p:last-child { margin-bottom: 0 }
-
 /* 阅读页窄屏：目录走弹窗不占位，工具钮列改回悬浮、贴右下角上方，底部让出系统手势区（safe-area） */
 @media (max-width: 640px) {
   .reader-page { padding: 0 }
   .reader-top { padding: 0 var(--sp-3) }
   .reader-top .page-sub .reader-stat { display: none }
   .reader-top-links { gap: var(--sp-3) }
-  .reader-body > .txt-reader { padding: var(--sp-2) }
   .reader-body { position: relative }
   .reader-fabs {
     position: absolute;
