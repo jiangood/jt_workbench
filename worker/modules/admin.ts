@@ -24,7 +24,8 @@ const ONLINE_MS = 30 * 60_000 // 3× poll 间隔容错（v4.6）
 const EXPORT_WINDOW_MS = 7 * 86400_000 // 与「任务运行」页一致：最近 7 天
 const EXPORT_LIMIT = 300 // 失败记录上限（防止一次导出过大）
 
-const SECRET_FIELD = /token|secret|passw|api[-_]?key|authorization|cookie/i
+// 按 key 名过滤：token / key / secret / password 一类字段一律打码（issue #10 也复用同一份规则）
+const SECRET_FIELD = /token|secret|passw|key|authorization|cookie/i
 
 /** payload 脱敏：导出文件可能被拿去给 AI 分析，密钥类字段一律打码 */
 function redactPayload(raw: string | null): unknown {
@@ -36,7 +37,9 @@ function redactPayload(raw: string | null): unknown {
     return raw
   }
   const walk = (value: unknown, depth = 0): unknown => {
-    if (depth > 5 || value === null || typeof value !== 'object') return value
+    if (value === null || typeof value !== 'object') return value
+    // 防御异常深的 JSON：超过 20 层整块打码，宁可少给信息也不原样外泄
+    if (depth > 20) return '***'
     if (Array.isArray(value)) return value.map((item) => walk(item, depth + 1))
     const out: Record<string, unknown> = {}
     for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
@@ -93,6 +96,13 @@ const JOB_TYPE_LABEL: Record<string, string> = {
   stock_eod: '收盘行情',
   zsxq_sync: '星球同步',
   zsxq_groups: '星球列表',
+  reminder_scan: '提醒扫描',
+}
+
+/** 未知类型原样返回：新任务类型上线时列表不至于显示空白 */
+function jobTypeLabel(type: string | null): string {
+  if (!type) return '—'
+  return JOB_TYPE_LABEL[type] ?? type
 }
 
 function jobDisplayName(jobId: number, type: string | null, sourceName: string | null): string {
@@ -292,6 +302,153 @@ admin.get('/runs/export', async (c) => {
     truncated: failures.length === EXPORT_LIMIT,
     failures,
     jobs: (jobs.results ?? []).map((job) => ({ ...job, payload: redactPayload(job.payload) })),
+  })
+})
+
+// ---------- 定时任务（issue #10）：job 列表 + 单任务 Agent 执行日志（只读，不新增存储） ----------
+
+const JOB_RESULT_MAX = 200 // 列表里的最近结果 / 错误摘要上限（详情弹窗里看执行记录原文）
+const RUNS_DEFAULT_LIMIT = 50
+const RUNS_MAX_LIMIT = 100
+
+interface JobListRow {
+  id: number
+  type: string
+  payload: string | null
+  cron: string | null
+  enabled: number
+  status: string
+  attempts: number
+  nextRunAt: number | null
+  lastRunAt: number | null
+  nodeId: string | null
+  result: string | null
+  failStreak?: number | null
+  sourceName: string | null
+  lastOk: number | null
+}
+
+/**
+ * job.fail_streak 由迁移 0023 新增：本地旧库 / 回滚窗口里可能还没有这一列。
+ * 先用 PRAGMA 探测，探测失败（或返回空）按「无此列」处理，查询侧再兜底一次，绝不让接口 500。
+ */
+async function hasJobFailStreak(db: D1Database): Promise<boolean> {
+  try {
+    const info = await db.prepare('PRAGMA table_info(job)').all<{ name: string }>()
+    return (info.results ?? []).some((row) => row.name === 'fail_streak')
+  } catch {
+    return false
+  }
+}
+
+function clip(text: string | null, max: number): string | null {
+  if (!text) return null
+  return text.length > max ? `${text.slice(0, max)}…` : text
+}
+
+/** 任务列表：配置 + 最近一次结果，payload 脱敏后只给结构（长 URL 由前端截断 + title 补全） */
+async function jobsPayload(env: Env['Bindings']) {
+  const db = env.DB
+  const streakCol = (await hasJobFailStreak(db)) ? ', j.fail_streak AS failStreak' : ''
+  const sql = (withStreak: string) => `
+    SELECT j.id, j.type, j.payload, j.cron, j.enabled, j.status, j.attempts,
+           j.next_run_at AS nextRunAt, j.last_run_at AS lastRunAt,
+           j.node_id AS nodeId, j.result${withStreak},
+           s.name AS sourceName,
+           (SELECT r.ok FROM job_run r WHERE r.job_id = j.id ORDER BY r.run_at DESC LIMIT 1) AS lastOk
+    FROM job j
+    LEFT JOIN news_source s
+      ON j.type = 'rss_fetch'
+     AND s.id = json_extract(CASE WHEN json_valid(j.payload) THEN j.payload ELSE '{}' END, '$.sourceId')
+    ORDER BY j.enabled DESC, j.id`
+
+  let rows: JobListRow[]
+  try {
+    rows = (await db.prepare(sql(streakCol)).all<JobListRow>()).results ?? []
+  } catch (err) {
+    // PRAGMA 与实际 schema 不一致（或列名改动）时退回不带 fail_streak 的查询
+    console.error('list jobs with fail_streak failed, retry without it:', String(err))
+    rows = (await db.prepare(sql('')).all<JobListRow>()).results ?? []
+  }
+
+  return {
+    generatedAt: Date.now(),
+    jobs: rows.map((row) => {
+      const payload = redactPayload(row.payload)
+      return {
+        id: row.id,
+        type: row.type,
+        typeLabel: jobTypeLabel(row.type),
+        // 解析失败的 payload 不原样回传（可能含未脱敏的 token 文本），前端只展示「—」
+        payload: payload !== null && typeof payload === 'object' ? payload : null,
+        sourceName: row.sourceName ?? null,
+        cron: row.cron ?? null,
+        enabled: row.enabled === 1,
+        status: row.status,
+        attempts: row.attempts ?? 0,
+        failStreak: row.failStreak ?? 0,
+        nextRunAt: row.nextRunAt ?? null,
+        lastRunAt: row.lastRunAt ?? null,
+        lastOk: row.lastOk == null ? null : !!row.lastOk,
+        nodeId: row.nodeId ?? null,
+        result: clip(row.result, JOB_RESULT_MAX),
+      }
+    }),
+  }
+}
+
+/** 定时任务列表（只读）：job_run 保留 90 天由 core/tick.ts 清理，这里不新增存储 */
+admin.get('/jobs', async (c) => ok(await jobsPayload(c.env)))
+
+/** 单任务最近执行日志（默认 50 条，最多 100）：执行时间 / 节点 / 版本 / 结果 / 错误原文 */
+admin.get('/jobs/:id/runs', async (c) => {
+  const id = Number(c.req.param('id'))
+  if (!Number.isInteger(id) || id <= 0) return fail(400, 400, 'invalid job id')
+  const raw = Number(c.req.query('limit'))
+  const limit = Number.isFinite(raw) && raw > 0 ? Math.min(RUNS_MAX_LIMIT, Math.floor(raw)) : RUNS_DEFAULT_LIMIT
+
+  const [job, runs] = await Promise.all([
+    c.env.DB
+      .prepare('SELECT id, type, cron, enabled, status FROM job WHERE id = ?')
+      .bind(id)
+      .first<{ id: number; type: string; cron: string | null; enabled: number; status: string }>(),
+    c.env.DB
+      .prepare(
+        `SELECT id, ok, message, ms, run_at AS runAt, node_id AS nodeId, agent_version AS agentVersion
+         FROM job_run WHERE job_id = ? ORDER BY run_at DESC LIMIT ?`,
+      )
+      .bind(id, limit)
+      .all<{
+        id: number
+        ok: number
+        message: string | null
+        ms: number | null
+        runAt: number
+        nodeId: string | null
+        agentVersion: string | null
+      }>(),
+  ])
+  if (!job) return fail(404, 404, `任务 #${id} 不存在（可能已删除）`)
+
+  return ok({
+    job: {
+      id: job.id,
+      type: job.type,
+      typeLabel: jobTypeLabel(job.type),
+      cron: job.cron ?? null,
+      enabled: job.enabled === 1,
+      status: job.status,
+    },
+    limit,
+    runs: (runs.results ?? []).map((row) => ({
+      id: row.id,
+      ok: !!row.ok,
+      message: row.message ?? null,
+      ms: row.ms ?? null,
+      runAt: row.runAt,
+      nodeId: row.nodeId ?? null,
+      agentVersion: row.agentVersion ?? null,
+    })),
   })
 })
 

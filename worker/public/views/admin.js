@@ -10,10 +10,38 @@ let stopTabs = null
 
 const TABS = [
   { id: 'nodes', label: '计算节点' },
+  { id: 'jobs', label: '定时任务' },
   { id: 'runs', label: '任务运行' },
   { id: 'config', label: '参数与密钥' },
   { id: 'account', label: '账号安全' },
 ]
+
+/** 任务类型兜底名称：后端 typeLabel 已给可读名，旧 Worker 时退回本地映射 */
+const JOB_TYPE_FALLBACK = {
+  rss_fetch: '资讯抓取',
+  stock_eod: '收盘行情',
+  zsxq_sync: '星球同步',
+  zsxq_groups: '星球列表',
+  reminder_scan: '提醒扫描',
+}
+
+/** 长文本截断：完整值放 title，列表里只留摘要 */
+function truncate(text, max) {
+  const value = String(text ?? '')
+  return value.length > max ? `${value.slice(0, max - 1)}…` : value
+}
+
+/** 相对时间（复制自资讯页 agoText 的小版本）：未来时间显示「N 分钟后」，下次运行也用同一个函数 */
+function relTime(ts) {
+  const t = Number(ts) || 0
+  if (!t) return '—'
+  const diff = Date.now() - t
+  const min = Math.floor(Math.abs(diff) / 60_000)
+  if (min < 1) return '刚刚'
+  const text =
+    min < 60 ? `${min} 分钟` : min < 1440 ? `${Math.floor(min / 60)} 小时` : `${Math.floor(min / 1440)} 天`
+  return diff >= 0 ? `${text}前` : `${text}后`
+}
 
 const pad2 = (n) => String(n).padStart(2, '0')
 
@@ -109,9 +137,11 @@ function errorReportName(ts) {
 }
 
 export async function render(main, params = {}) {
-  const [nodes, cfg] = await Promise.all([
+  const [nodes, cfg, jobsInit] = await Promise.all([
     api('/api/admin/nodes'),
     api('/api/admin/config'),
+    // 旧库 / 接口异常时不让整页挂掉：在「定时任务」区域里单独提示
+    api('/api/admin/jobs').catch((err) => ({ jobs: [], error: err.message })),
   ])
 
   const activeTab = TABS.some((t) => t.id === params.tab) ? params.tab : 'nodes'
@@ -121,7 +151,7 @@ export async function render(main, params = {}) {
     <div class="page-head">
       <div>
         <h1 class="page-title">系统管理</h1>
-        <p class="page-sub">节点、任务运行与参数维护（参数全部存 D1，可随时改）</p>
+        <p class="page-sub">定时任务、节点与执行日志、参数维护（参数全部存 D1，可随时改）</p>
       </div>
     </div>
 
@@ -143,6 +173,21 @@ export async function render(main, params = {}) {
       <div class="small mt-2" id="node-msg" role="status"></div>
 
       <div id="node-cfg" class="mt-3" style="max-width: 980px"></div>
+    </section>
+
+    <section class="tab-pane" ${paneAttrs('jobs')}>
+      <div class="section-head" style="margin-top: 0">
+        <h2>定时任务</h2>
+        <button class="btn sm" id="jobs-refresh" type="button">${icon('refresh', 14)}刷新</button>
+      </div>
+      <div class="small muted" style="max-width: 900px">
+        配置存 D1 <code>job</code> 表，执行记录 <code>job_run</code> 保留最近 90 天；点任意一行查看该任务最近 50 次 Agent 执行日志。
+      </div>
+      <table>
+        <thead><tr><th>类型</th><th>目标</th><th>频率</th><th>状态</th><th>下次运行</th><th>上次运行</th><th>最近结果</th><th></th></tr></thead>
+        <tbody id="jobs-body"></tbody>
+      </table>
+      <div class="small mt-2" id="jobs-msg" role="status"></div>
     </section>
 
     <section class="tab-pane" ${paneAttrs('runs')}>
@@ -223,6 +268,155 @@ export async function render(main, params = {}) {
       downloadText(errorReportName(data.exportedAt), buildErrorReport(data), 'text/markdown;charset=utf-8')
       toast(`已导出 ${data.failures.length} 条失败记录`)
     })
+
+  // ---------- 定时任务：配置 + Agent 执行日志（issue #10；只读，不自动轮询） ----------
+  let jobsData = jobsInit
+  let jobList = jobsData.jobs ?? []
+  const jobsBody = main.querySelector('#jobs-body')
+  const jobsMsg = main.querySelector('#jobs-msg')
+  const jobsRefresh = main.querySelector('#jobs-refresh')
+
+  const jobSay = (text, bad = false) => {
+    jobsMsg.className = bad ? 'small mt-2 danger-text' : 'small mt-2'
+    jobsMsg.textContent = text
+  }
+
+  const jobName = (job) => job.typeLabel || JOB_TYPE_FALLBACK[job.type] || job.type || `任务 #${job.id}`
+
+  /** 目标：payload 里优先 sourceId（显示源名）/ url；其它类型只列字段名，不把 payload 全文带进页面 */
+  const jobTarget = (job) => {
+    const p = job.payload
+    if (!p || typeof p !== 'object') return { text: '—', full: '' }
+    const url = typeof p.url === 'string' ? p.url : ''
+    if (p.sourceId !== undefined && p.sourceId !== null && p.sourceId !== '') {
+      return { text: job.sourceName ? `${job.sourceName}（${p.sourceId}）` : `源 ${p.sourceId}`, full: url }
+    }
+    if (url) return { text: url, full: url }
+    const keys = Object.keys(p)
+    return { text: keys.length ? keys.join('、') : '—', full: '' }
+  }
+
+  /** 状态：停用 / 熔断暂停 / 失败 / 执行中 / 已完成 / 等待调度 */
+  const jobState = (job) => {
+    if (!job.enabled) return { pill: 'warn', text: job.status === 'failed' ? '已暂停' : '已停用' }
+    if (job.status === 'failed') return { pill: 'bad', text: '失败' }
+    if (job.status === 'leased') return { pill: '', text: '执行中' }
+    if (job.status === 'done') return { pill: 'ok', text: '已完成' }
+    if ((job.failStreak ?? 0) > 0) return { pill: 'warn', text: '等待重试' }
+    return { pill: '', text: '等待调度' }
+  }
+
+  /** 失败 / 暂停 / 最近一次失败的行走红字（.danger-text，不新增 CSS） */
+  const jobIssue = (job) => !job.enabled || job.status === 'failed' || job.lastOk === false
+
+  const paintJobs = () => {
+    if (jobsData.error) {
+      jobsBody.innerHTML = `<tr><td colspan="8" class="muted">读取失败：${esc(jobsData.error)}</td></tr>`
+      jobSay('定时任务读取失败，可稍后点「刷新」重试', true)
+      return
+    }
+    if (!jobList.length) {
+      jobsBody.innerHTML = '<tr><td colspan="8" class="muted">还没有定时任务</td></tr>'
+      jobSay('共 0 个任务')
+      return
+    }
+    jobsBody.innerHTML = jobList
+      .map((job) => {
+        const st = jobState(job)
+        const target = jobTarget(job)
+        const result = job.result || ''
+        const streak = job.failStreak ?? 0
+        return `
+        <tr${jobIssue(job) ? ' class="danger-text"' : ''} data-job="${esc(job.id)}" style="cursor: pointer">
+          <td class="small">${esc(jobName(job))} <span class="muted mono">#${esc(job.id)}</span></td>
+          <td class="small"${target.full ? ` title="${esc(target.full)}"` : ''}>${esc(truncate(target.text, 42))}</td>
+          <td class="small mono">${job.cron ? esc(job.cron) : '<span class="muted">一次性</span>'}</td>
+          <td class="small"><span class="pill ${st.pill}"><span class="dot"></span>${esc(st.text)}</span>${
+            job.status !== 'failed' && streak > 0 ? ` <span class="muted">连续失败 ${esc(streak)} 轮</span>` : ''
+          }</td>
+          <td class="small" title="${esc(fmtTime(job.nextRunAt))}">${esc(relTime(job.nextRunAt))}</td>
+          <td class="small" title="${esc(fmtTime(job.lastRunAt))}">${esc(relTime(job.lastRunAt))}</td>
+          <td class="small"${result ? ` title="${esc(result)}"` : ''}>${
+            result ? esc(truncate(result, 48)) : '<span class="muted">—</span>'
+          }</td>
+          <td class="nowrap"><button class="btn sm" type="button" data-runs="${esc(job.id)}">执行日志</button></td>
+        </tr>`
+      })
+      .join('')
+    const paused = jobList.filter((job) => jobIssue(job)).length
+    jobSay(`共 ${jobList.length} 个任务${paused ? `，${paused} 个失败 / 停用` : ''}`)
+  }
+
+  const loadJobs = async (btn) => {
+    const res = await run(btn, () => api('/api/admin/jobs'), { silent: true })
+    if (!res.ok) return jobSay(res.error.message, true)
+    jobsData = res.data
+    jobList = res.data.jobs ?? []
+    paintJobs()
+    jobSay(`已刷新 · 共 ${jobList.length} 个任务 · ${fmtTime(res.data.generatedAt)}`)
+  }
+
+  /** 执行日志表：错误原文超过 160 字折叠成 details，展开可看全（节点最多上报 1000 字） */
+  const runsTableHtml = (runs) =>
+    runs.length
+      ? runs
+          .map(
+            (r) => `
+        <tr${r.ok ? '' : ' class="danger-text"'}>
+          <td class="small nowrap">${fmtTime(r.runAt)}<div class="muted">${esc(relTime(r.runAt))}</div></td>
+          <td>${r.ok ? '<span class="pill ok"><span class="dot"></span>OK</span>' : '<span class="pill bad"><span class="dot"></span>FAIL</span>'}</td>
+          <td class="small nowrap">${r.ms != null ? `${esc(r.ms)}ms` : '—'}</td>
+          <td class="small mono">${esc(r.nodeId || '—')}<div class="muted">agent ${esc(r.agentVersion || '—')}</div></td>
+          <td class="small" style="white-space: normal; overflow-wrap: anywhere">${
+            r.message
+              ? r.message.length > 160
+                ? `<details><summary>${esc(truncate(r.message, 160))}</summary><div class="mt-2">${esc(r.message)}</div></details>`
+                : esc(r.message)
+              : '<span class="muted">—</span>'
+          }</td>
+        </tr>`,
+          )
+          .join('')
+      : '<tr><td colspan="5" class="muted">还没有执行记录（任务可能刚创建，或记录已过 90 天保留期）</td></tr>'
+
+  const openRuns = async (job, btn) => {
+    const res = await run(btn, () => api(`/api/admin/jobs/${job.id}/runs?limit=50`), { silent: true })
+    if (!res.ok) return jobSay(res.error.message, true)
+    const target = jobTarget(job)
+    const { body } = showDialog(
+      `
+      <h2>${esc(jobName(job))} <span class="muted mono">#${esc(job.id)}</span></h2>
+      <div class="small muted">
+        目标 ${esc(truncate(target.text, 120))} · 频率 ${job.cron ? `<code>${esc(job.cron)}</code>` : '一次性'}
+        · 执行记录保留 90 天，最多显示 50 条
+      </div>
+      ${
+        job.result
+          ? `<div class="small mt-2${job.lastOk === false ? ' danger-text' : ''}">最近结果：${esc(job.result)}</div>`
+          : ''
+      }
+      <div class="table-scroll mt-2">
+        <table>
+          <thead><tr><th>时间</th><th>结果</th><th>耗时</th><th>节点</th><th>错误 / 摘要</th></tr></thead>
+          <tbody>${runsTableHtml(res.data.runs ?? [])}</tbody>
+        </table>
+      </div>
+      <div class="dlg-foot"><button class="btn sm" data-close type="button">关闭</button></div>`,
+      { xl: true },
+    )
+    body.onclick = (e) => {
+      if (e.target.closest('[data-close]')) closeModal()
+    }
+  }
+
+  paintJobs()
+  jobsRefresh.onclick = (e) => loadJobs(e.currentTarget)
+  jobsBody.onclick = (e) => {
+    const row = e.target.closest('tr[data-job]')
+    if (!row) return
+    const job = jobList.find((j) => String(j.id) === row.dataset.job)
+    if (job) openRuns(job, e.target.closest('button') || row)
+  }
 
   // ---------- 节点登记（添加即入库 + 长期有效的接入方式，v4.13） ----------
   let nodeList = nodes.nodes ?? []
