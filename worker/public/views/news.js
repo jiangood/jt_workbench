@@ -18,6 +18,18 @@ function sourceName(id) {
   return sourceIdx[id] || id
 }
 
+/** 人类可读的相对时间（资讯页顶部「上次同步」用；不引第三方库） */
+function agoText(ts) {
+  const t = Number(ts) || 0
+  if (!t) return '尚未同步'
+  const min = Math.floor(Math.max(0, Date.now() - t) / 60_000)
+  if (min < 1) return '刚刚'
+  if (min < 60) return `${min} 分钟前`
+  const hours = Math.floor(min / 60)
+  if (hours < 24) return `${hours} 小时前`
+  return `${Math.floor(hours / 24)} 天前`
+}
+
 function matchBlocks(item) {
   const text = `${item.title || ''} ${item.author || ''}`
   return blocks.some((b) => {
@@ -41,6 +53,18 @@ export async function render(main) {
   unreadCount = Number(itemData.unread ?? 0)
   const visible = itemData.items.filter((i) => !matchBlocks(i))
 
+  // 抓取健康度（issue #16）：上次同步时间 + 被熔断暂停 / 连续失败的源，一行可见
+  const lastSync = sources.reduce((max, s) => Math.max(max, Number(s.lastRunAt) || 0), 0)
+  const paused = sources.filter((s) => s.jobEnabled === 0 && s.jobStatus === 'failed')
+  const failing = sources.filter((s) => s.jobEnabled !== 0 && Number(s.failStreak) > 0)
+  const problems = [
+    ...paused.map((s) => `${esc(s.name)}（已暂停）`),
+    ...failing.map((s) => `${esc(s.name)}（连续失败 ${Number(s.failStreak)} 次）`),
+  ]
+  // 一次都没跑过（新库 / 刚加源）时别谎报「正常」，用中性 pill
+  const syncState = problems.length ? 'warn' : lastSync ? 'ok' : ''
+  const syncText = problems.length ? '抓取异常' : lastSync ? '抓取正常' : '等待首次同步'
+
   main.innerHTML = `
     <div class="page-head">
       <div>
@@ -53,6 +77,10 @@ export async function render(main) {
         <button class="btn sm" id="btn-blocks">${icon('close')}屏蔽词</button>
       </div>
     </div>
+    <p class="small mt-1">
+      <span class="pill${syncState ? ' ' + syncState : ''}"><span class="dot"></span>${syncText}</span>
+      <span class="muted">上次同步 ${esc(agoText(lastSync))}${problems.length ? ` · ${problems.join('、')}` : ''}</span>
+    </p>
     <div class="list" id="items">
       ${
         visible
@@ -150,18 +178,40 @@ async function setRead(main, id, read) {
 
 function showSources(main) {
   const rows = sources
-    .map(
-      (s) => `
+    .map((s) => {
+      const streak = Number(s.failStreak) || 0
+      const paused = s.jobEnabled === 0 && s.jobStatus === 'failed'
+      const lastError = String(s.lastError || '').slice(0, 120)
+      const state = paused
+        ? `<span class="pill warn"><span class="dot"></span>已暂停</span> <span class="muted">${esc(lastError || '连续 3 次失败')}</span>`
+        : `<span class="muted">上次同步 ${esc(agoText(s.lastRunAt))}${streak ? ` · 连续失败 ${streak} 次` : ''}${streak && lastError ? ` · ${esc(lastError)}` : ''}</span>`
+      return `
     <div class="flex between center bb">
       <div>
         <strong>${esc(s.name)}</strong> <span class="muted small">${esc(s.itemCount)} 条</span>
         <div class="small muted truncate" style="max-width: 380px">${esc(s.url)}</div>
+        <div class="small truncate" style="max-width: 380px">${state}</div>
       </div>
-      <div><input type="checkbox" ${s.enabled ? 'checked' : ''} data-id="${esc(s.id)}"></div>
-    </div>`,
-    )
+      <div class="flex center">
+        ${paused ? `<button class="btn sm" data-resume="${esc(s.id)}">恢复抓取</button>` : ''}
+        <input type="checkbox" ${s.enabled ? 'checked' : ''} data-id="${esc(s.id)}" aria-label="启用 ${esc(s.name)}">
+      </div>
+    </div>`
+    })
     .join('')
   showDialog(`<h2>订阅源</h2>${rows}`)
+  // 熔断暂停的源：一键恢复（服务端会清零连败并立即排一次抓取）
+  document.querySelectorAll('#dlg [data-resume]').forEach((btn) => {
+    btn.onclick = async () => {
+      const res = await run(btn, () =>
+        api(`/api/news/sources/${btn.dataset.resume}`, { method: 'PUT', body: JSON.stringify({ enabled: true }) }),
+      )
+      if (!res.ok) return
+      await rerender(render, main)
+      showSources(main)
+      toast('已恢复抓取')
+    }
+  })
   document.querySelectorAll('#dlg input[type=checkbox]').forEach((cb) => {
     cb.onchange = async () => {
       const res = await run(cb, () =>

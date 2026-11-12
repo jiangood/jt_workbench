@@ -3,8 +3,16 @@
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { ok, ApiError, type Env } from '../core/envelope'
+import { normalizeCron } from '../core/node'
 
 const PAGE_SIZE = 30
+
+/**
+ * rss_fetch 默认频率：每 2 小时整点。
+ * 入库前必须归一化为标准 5 段——Quartz 的 `?` 在 croner 里会被替换成「解析时刻的日期分量」，
+ * 曾把 next_run_at 排到 5 天后（issue #16）。这里保留 Quartz 写法但走 normalizeCron 落库。
+ */
+const RSS_CRON = normalizeCron('0 0 */2 * * ?')
 
 export const news = new Hono<Env>()
 
@@ -97,11 +105,20 @@ news.post('/unread', (c) => setReadFlag(c, false))
 // ---------- 订阅源 ----------
 
 news.get('/sources', async (c) => {
+  // 顺带带出抓取任务状态（上次运行 / 连续失败 / 是否被熔断暂停），资讯页顶部提示与订阅源弹窗共用
   const sources = await c.env.DB
     .prepare(
       `SELECT s.id, s.name, s.type, s.url, s.category, s.sort, s.enabled,
-              (SELECT count(*) FROM news_item i WHERE i.source_id = s.id) AS itemCount
-       FROM news_source s ORDER BY s.sort`,
+              (SELECT count(*) FROM news_item i WHERE i.source_id = s.id) AS itemCount,
+              j.last_run_at AS lastRunAt, j.fail_streak AS failStreak,
+              j.enabled AS jobEnabled, j.status AS jobStatus, j.result AS lastError
+       FROM news_source s
+       LEFT JOIN job j ON j.id = (
+         SELECT jj.id FROM job jj
+         WHERE jj.type = 'rss_fetch' AND jj.payload LIKE '%"sourceId":"' || s.id || '"%'
+         ORDER BY jj.id LIMIT 1
+       )
+       ORDER BY s.sort`,
     )
     .all()
   return ok({ sources: sources.results })
@@ -125,16 +142,17 @@ news.post('/sources', async (c) => {
   await c.env.DB
     .prepare(
       `INSERT INTO job (type, payload, cron, enabled, status, next_run_at)
-       SELECT 'rss_fetch', json_object('sourceId', ?, 'url', ?), '0 0 */2 * * ?', 1, 'pending', 1
+       SELECT 'rss_fetch', json_object('sourceId', ?, 'url', ?), ?, 1, 'pending', 1
        WHERE NOT EXISTS (SELECT 1 FROM job WHERE type = 'rss_fetch' AND payload LIKE '%' || ? || '%')`,
     )
-    .bind(b.id, b.url, b.id)
+    .bind(b.id, b.url, RSS_CRON, b.id)
     .run()
   return ok({ id: b.id })
 })
 
 news.put('/sources/:id', async (c) => {
   const b = await c.req.json<{ enabled?: boolean; name?: string; url?: string; sort?: number }>()
+  const id = c.req.param('id')
   await c.env.DB
     .prepare(
       `UPDATE news_source SET
@@ -144,9 +162,31 @@ news.put('/sources/:id', async (c) => {
     )
     .bind(
       b.enabled === undefined ? null : (b.enabled ? 1 : 0),
-      b.name ?? null, b.url ?? null, b.sort ?? null, c.req.param('id'),
+      b.name ?? null, b.url ?? null, b.sort ?? null, id,
     )
     .run()
+  // 抓取任务跟随订阅源开关；重新启用 = 解除熔断（清零连败、立即到期）。
+  // leased 的行保持原样：正在跑的这一次交给 complete/fail 自己收尾，避免 409 丢结果。
+  if (b.enabled === true) {
+    await c.env.DB
+      .prepare(
+        `UPDATE job SET enabled = 1,
+           status = CASE WHEN status IN ('failed', 'done') THEN 'pending' ELSE status END,
+           attempts = CASE WHEN status = 'leased' THEN attempts ELSE 0 END,
+           fail_streak = CASE WHEN status = 'leased' THEN fail_streak ELSE 0 END,
+           next_run_at = CASE WHEN status = 'leased' THEN next_run_at ELSE ? END,
+           lease_until = CASE WHEN status = 'leased' THEN lease_until ELSE NULL END,
+           node_id = CASE WHEN status = 'leased' THEN node_id ELSE NULL END
+         WHERE type = 'rss_fetch' AND payload LIKE '%' || ? || '%'`,
+      )
+      .bind(Date.now(), id)
+      .run()
+  } else if (b.enabled === false) {
+    await c.env.DB
+      .prepare(`UPDATE job SET enabled = 0 WHERE type = 'rss_fetch' AND payload LIKE '%' || ? || '%'`)
+      .bind(id)
+      .run()
+  }
   return ok(null)
 })
 
