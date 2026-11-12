@@ -363,16 +363,15 @@ export function setupDrawer() {
   })
 }
 
-/** 主题开关：首屏脚本已定 data-theme，这里只负责按钮、持久化与跟随系统 */
+/** 主题开关：按钮挂在全站右上角操作区；首屏脚本已定 data-theme，这里只负责图标、持久化与跟随系统 */
 export function setupTheme() {
   const root = document.documentElement
-  const sidebar = document.getElementById('sidebar')
-  if (!sidebar) return
+  const host = document.getElementById('top-actions')
+  if (!host) return
 
-  const host = sidebar.querySelector('.sidebar-foot') || sidebar
   host.insertAdjacentHTML(
     'beforeend',
-    '<button class="theme-toggle" id="theme-toggle" type="button" aria-pressed="false" aria-label="深色模式"><span class="theme-icon"></span><span>深色模式</span></button>',
+    '<button class="theme-toggle" id="theme-toggle" type="button" aria-pressed="false" aria-label="切换到深色模式"><span class="theme-icon"></span></button>',
   )
   const btn = document.getElementById('theme-toggle')
   const iconSlot = btn.querySelector('.theme-icon')
@@ -390,6 +389,9 @@ export function setupTheme() {
     const dark = theme === 'dark'
     root.dataset.theme = dark ? 'dark' : 'light'
     btn.setAttribute('aria-pressed', String(dark))
+    const label = dark ? '切换到浅色模式' : '切换到深色模式'
+    btn.setAttribute('aria-label', label)
+    btn.title = label
     iconSlot.innerHTML = icon(dark ? 'sun' : 'moon', 18)
   }
 

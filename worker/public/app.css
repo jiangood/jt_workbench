@@ -328,25 +328,30 @@ textarea:focus-visible {
 .navlink[aria-current="page"] .ico,
 .navlink.active .ico { opacity: 1 }
 
-/* 侧栏底部的主题开关：桌面常驻，移动端随抽屉出现 */
-.theme-toggle {
+/* 全站右上角操作区：桌面浮在内容右上角，手机挂在顶栏右侧（见文件末尾的顶栏样式）。
+ * 只放次要操作（主题开关等），图标按钮、不抢页面主操作（如「播放全部」）的注意力。 */
+.top-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-height: 36px;
-  margin-top: auto;
-  padding: 7px 10px;
-  border: 1px solid transparent;
-  border-radius: var(--r-md);
-  background: none;
-  color: var(--muted-fg);
-  font-family: inherit;
-  font-size: var(--fs-md);
-  text-align: left;
-  cursor: pointer;
-  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
+  gap: var(--sp-2);
+  margin-left: auto;
 }
-.theme-toggle:hover { background: var(--surface-2); color: var(--fg) }
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--muted-fg);
+  cursor: pointer;
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease, border-color var(--dur-fast) ease;
+}
+.theme-toggle:hover { background: var(--surface-2); color: var(--fg); border-color: var(--control-line-hover) }
+.theme-toggle .ico { pointer-events: none }
 
 /* 侧栏底部：桌面收起/展开（窄屏由 CSS 隐藏，仍走抽屉） */
 .sidebar-foot {
@@ -355,7 +360,6 @@ textarea:focus-visible {
   gap: 2px;
   margin-top: auto;
 }
-.sidebar-foot .theme-toggle { margin-top: 0 }
 .nav-collapse {
   display: flex;
   align-items: center;
@@ -411,6 +415,35 @@ textarea:focus-visible {
 
 .topbar { display: none }
 
+/* 桌面：顶栏退化为右上角操作区的锚点——固定、零高度，不占版面（导航在左侧栏）。
+ * 手机端顶栏仍然常驻，操作区直接排在标题右侧（见文件末尾 @media max-width:768px）。 */
+@media (min-width: 769px) {
+  .topbar {
+    display: flex;
+    position: fixed;
+    top: 0;
+    right: 0;
+    z-index: 25;
+    height: 0;
+    padding: 0;
+    background: none;
+    border: 0;
+    align-items: flex-start;
+    pointer-events: none;
+  }
+  .topbar > #nav-toggle,
+  .topbar > .brand-inline { display: none }
+  .topbar .top-actions {
+    align-self: flex-start;
+    margin: var(--sp-4) var(--sp-5) 0 0;
+    /* 顶栏本身不挡内容，只有操作区可点 */
+    pointer-events: auto;
+  }
+  .topbar .theme-toggle { box-shadow: var(--shadow-sm) }
+  /* 页头右侧留位：浮动操作区不压在页面主操作（「播放全部」等）上 */
+  .page-head,
+  .reader-bar { padding-right: 44px }
+}
 .scrim { display: none }
 
 /* 播放条出现时给内容留位，避免最后一行被盖住 */
