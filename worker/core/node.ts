@@ -99,7 +99,36 @@ async function claimPipeline(env: Bindings, nodeId: string, now: number): Promis
     const token = await getConfig(env, 'zsxq_token')
     if (token) payload.token = token
   }
+  // 全量采集断点：把每个星球的回溯游标一并下发（agent 无状态，游标只存 D1）
+  if (row.type === 'zsxq_sync') payload.cursors = await zsxqCursors(db, payload)
   return [{ id: row.id, type: row.type, payload }]
+}
+
+/**
+ * 读取 zsxq_sync_state，按 payload 里启用的星球拼成 { [groupId]: { cursor, done } }。
+ * 表还没建（迁移未 apply）/ 查询失败一律当没有游标：agent 从头回溯，幂等入库，不影响领任务。
+ */
+async function zsxqCursors(
+  db: D1Database,
+  payload: Record<string, unknown>,
+): Promise<Record<string, { cursor: string | null; done: boolean }>> {
+  const raw = Array.isArray(payload.groupIds) ? payload.groupIds : [payload.groupId]
+  const ids = raw.filter((id): id is string => typeof id === 'string' && id !== '')
+  if (!ids.length) return {}
+  try {
+    const placeholders = ids.map(() => '?').join(',')
+    const res = await db
+      .prepare(`SELECT group_id AS groupId, cursor, done FROM zsxq_sync_state WHERE group_id IN (${placeholders})`)
+      .bind(...ids)
+      .all<{ groupId: string; cursor: string | null; done: number }>()
+    const out: Record<string, { cursor: string | null; done: boolean }> = {}
+    for (const r of res.results ?? []) {
+      out[r.groupId] = { cursor: r.cursor ?? null, done: r.done === 1 }
+    }
+    return out
+  } catch {
+    return {}
+  }
 }
 
 /** ① upsert node_state 心跳（每次 poll 必做，含被限频的重复 poll） */

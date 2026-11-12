@@ -203,31 +203,161 @@ function asZsxqGroupItem(item: unknown): ZsxqGroupItem | null {
   }
 }
 
-interface ZsxqItem {
-  topicId: string
-  groupId: string
-  groupName?: string | null
-  title?: string | null
-  talkText?: string | null
-  images?: Array<{ u: string; w?: number | null; h?: number | null }> | null
-  files?: Array<{ name: string; size: number }> | null
-  createTime?: number | null
+/* ---------------- 知识星球（issue #7 全量采集） ----------------
+ * zsxq_sync 一条通道传三类 items，用 kind 分流：
+ *   缺省 / 'topic' → 帖子（旧 agent 没有 kind，按帖子处理）
+ *   'comment'      → 评论（评论附件带 topicId + commentId，落 zsxq_file）
+ *   'sync_state'   → 每个星球的回溯游标（cursor = 下一轮的 end_time，done=1 表示到历史尽头）
+ * 旧 agent 只回传帖子且没有 authorId / isOwner / commentsCount 之类字段：全部按默认值兜底（0 / null），
+ * 不认识的 kind 直接忽略，绝不让一条未知 item 把整批入库搞挂。
+ */
+
+interface ZsxqFileRef {
+  /** 数字字符串（zsxq file_id）；旧数据没有 fileId → null（只留在帖子的 files JSON 里） */
+  fileId: string | null
+  name: string | null
+  size: number | null
+  isOwner: number
 }
 
-function asZsxqItem(item: unknown): ZsxqItem | null {
+interface ZsxqTopicItem {
+  topicId: string
+  groupId: string
+  groupName: string | null
+  title: string | null
+  talkText: string | null
+  images: Array<{ u: string; w?: number | null; h?: number | null }> | null
+  files: ZsxqFileRef[]
+  authorId: string | null
+  authorName: string | null
+  isOwner: number
+  commentsCount: number
+  likesCount: number
+  createTime: number | null
+}
+
+interface ZsxqCommentItem {
+  commentId: string
+  topicId: string
+  groupId: string
+  authorId: string | null
+  authorName: string | null
+  isOwner: number
+  text: string | null
+  images: Array<{ u: string; w?: number | null; h?: number | null }> | null
+  files: ZsxqFileRef[]
+  createTime: number | null
+}
+
+interface ZsxqStateItem {
+  groupId: string
+  cursor: string | null
+  done: number
+  note: string | null
+}
+
+function asText(v: unknown): string | null {
+  if (typeof v === 'string') return v || null
+  if (typeof v === 'number' && Number.isFinite(v)) return String(v)
+  return null
+}
+
+function asFlag(v: unknown): number {
+  return v === true || v === 1 || v === '1' ? 1 : 0
+}
+
+function asCount(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0
+}
+
+/** files 数组：fileId 可选（旧 agent 只有 name/size），isOwner 缺省继承帖子/评论的作者身份 */
+function asZsxqFiles(raw: unknown, fallbackOwner: number): ZsxqFileRef[] {
+  if (!Array.isArray(raw)) return []
+  const out: ZsxqFileRef[] = []
+  for (const f of raw) {
+    if (typeof f !== 'object' || f === null) continue
+    const it = f as Record<string, unknown>
+    const id = it.fileId ?? it.file_id
+    out.push({
+      fileId:
+        typeof id === 'number' && Number.isFinite(id)
+          ? String(id)
+          : typeof id === 'string' && /^\d+$/.test(id)
+            ? id
+            : null,
+      name: typeof it.name === 'string' ? it.name : null,
+      size: numOrNull(it.size),
+      isOwner: it.isOwner === undefined ? fallbackOwner : asFlag(it.isOwner),
+    })
+  }
+  return out
+}
+
+function asZsxqTopicItem(item: unknown): ZsxqTopicItem | null {
   if (typeof item !== 'object' || item === null) return null
   const it = item as Record<string, unknown>
-  if (typeof it.topicId !== 'string' || typeof it.groupId !== 'string') return null
+  if (typeof it.topicId !== 'string' || !it.topicId) return null
+  if (typeof it.groupId !== 'string' || !it.groupId) return null
+  const isOwner = asFlag(it.isOwner)
   return {
     topicId: it.topicId,
     groupId: it.groupId,
     groupName: typeof it.groupName === 'string' && it.groupName ? it.groupName : null,
     title: typeof it.title === 'string' ? it.title : null,
     talkText: typeof it.talkText === 'string' ? it.talkText : null,
-    images: Array.isArray(it.images) ? it.images : null,
-    files: Array.isArray(it.files) ? it.files : null,
-    createTime: typeof it.createTime === 'number' ? it.createTime : null,
+    images: Array.isArray(it.images)
+      ? (it.images as Array<{ u: string; w?: number | null; h?: number | null }>)
+      : null,
+    files: asZsxqFiles(it.files, isOwner),
+    authorId: asText(it.authorId),
+    authorName: asText(it.authorName),
+    isOwner,
+    commentsCount: asCount(it.commentsCount),
+    likesCount: asCount(it.likesCount),
+    createTime: numOrNull(it.createTime),
   }
+}
+
+function asZsxqCommentItem(item: unknown): ZsxqCommentItem | null {
+  if (typeof item !== 'object' || item === null) return null
+  const it = item as Record<string, unknown>
+  if (typeof it.commentId !== 'string' || !it.commentId) return null
+  if (typeof it.topicId !== 'string' || !it.topicId) return null
+  if (typeof it.groupId !== 'string' || !it.groupId) return null
+  const isOwner = asFlag(it.isOwner)
+  return {
+    commentId: it.commentId,
+    topicId: it.topicId,
+    groupId: it.groupId,
+    authorId: asText(it.authorId),
+    authorName: asText(it.authorName),
+    isOwner,
+    text: typeof it.text === 'string' ? it.text : null,
+    images: Array.isArray(it.images)
+      ? (it.images as Array<{ u: string; w?: number | null; h?: number | null }>)
+      : null,
+    files: asZsxqFiles(it.files, isOwner),
+    createTime: numOrNull(it.createTime),
+  }
+}
+
+function asZsxqStateItem(item: unknown): ZsxqStateItem | null {
+  if (typeof item !== 'object' || item === null) return null
+  const it = item as Record<string, unknown>
+  if (typeof it.groupId !== 'string' || !it.groupId) return null
+  return {
+    groupId: it.groupId,
+    cursor: typeof it.cursor === 'string' && it.cursor ? it.cursor : null,
+    done: asFlag(it.done),
+    note: typeof it.note === 'string' && it.note ? it.note.slice(0, 300) : null,
+  }
+}
+
+/** kind 分流键：缺省按帖子处理（旧 agent 兼容） */
+function zsxqKind(item: unknown): string {
+  if (typeof item !== 'object' || item === null) return ''
+  const k = (item as Record<string, unknown>).kind
+  return typeof k === 'string' && k ? k : 'topic'
 }
 
 /** 按任务类型入库；返回插入行数。未注册类型返回 null（调用方按 fail 处理） */
@@ -293,36 +423,171 @@ export async function ingest(
     return results.reduce((n, r) => n + (r.meta.changes ?? 0), 0)
   }
   if (type === 'zsxq_sync') {
-    const rows = items.map(asZsxqItem).filter((r): r is ZsxqItem => r !== null)
-    if (!rows.length) return 0
-    await db.batch([
-      // 星球名随 items 捎带（agent 同步时顺带查 groups.list）；缺失时保留旧名
-      ...rows.map((r) =>
+    const topics: ZsxqTopicItem[] = []
+    const comments: ZsxqCommentItem[] = []
+    const states: ZsxqStateItem[] = []
+    for (const item of items) {
+      const kind = zsxqKind(item)
+      if (kind === 'comment') {
+        const c = asZsxqCommentItem(item)
+        if (c) comments.push(c)
+      } else if (kind === 'sync_state') {
+        const s = asZsxqStateItem(item)
+        if (s) states.push(s)
+      } else if (kind === 'topic') {
+        const t = asZsxqTopicItem(item)
+        if (t) topics.push(t)
+      }
+      // 其它 kind：agent 先升级的窗口，忽略即可（不让整批入库失败）
+    }
+    if (!topics.length && !comments.length && !states.length) return 0
+
+    // 星球名随 items 捎带（agent 同步时顺带查 groups.list）；缺失时保留旧名
+    const groups = new Map<string, string | null>()
+    for (const t of topics) {
+      if (!groups.get(t.groupId) || groups.get(t.groupId) === null) groups.set(t.groupId, t.groupName)
+    }
+    for (const c of comments) if (!groups.has(c.groupId)) groups.set(c.groupId, null)
+
+    const stmts: D1PreparedStatement[] = []
+    for (const [id, name] of groups) {
+      stmts.push(
         db
           .prepare(
             `INSERT INTO zsxq_group (id, name) VALUES (?, ?)
              ON CONFLICT (id) DO UPDATE SET name = COALESCE(excluded.name, name)`,
           )
-          .bind(r.groupId, r.groupName),
-      ),
-      ...rows.map((r) =>
+          .bind(id, name),
+      )
+    }
+
+    // 帖子：作者身份 / 星主标记 / 互动计数是新列，旧 agent 不传就按 0、null 兜底
+    // is_owner 与两个计数只增不减：某轮拿不到星主（isOwner=0）或老 agent 传 0 时，不会把已知结果抹掉
+    for (const t of topics) {
+      stmts.push(
         db
           .prepare(
-            `INSERT INTO zsxq_topic (id, group_id, title, talk_text, images, files, create_time, fetched_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            `INSERT INTO zsxq_topic
+               (id, group_id, title, talk_text, images, files, author_id, author_name,
+                is_owner, comments_count, likes_count, create_time, fetched_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT (id) DO UPDATE SET
-               title = excluded.title, talk_text = excluded.talk_text, images = excluded.images,
-               files = excluded.files, create_time = excluded.create_time, fetched_at = excluded.fetched_at`,
+               group_id = excluded.group_id,
+               title = excluded.title,
+               talk_text = COALESCE(excluded.talk_text, talk_text),
+               images = COALESCE(excluded.images, images),
+               files = COALESCE(excluded.files, files),
+               author_id = COALESCE(excluded.author_id, author_id),
+               author_name = COALESCE(excluded.author_name, author_name),
+               is_owner = MAX(is_owner, excluded.is_owner),
+               comments_count = MAX(comments_count, excluded.comments_count),
+               likes_count = MAX(likes_count, excluded.likes_count),
+               create_time = COALESCE(excluded.create_time, create_time),
+               fetched_at = excluded.fetched_at`,
           )
           .bind(
-            r.topicId, r.groupId, r.title, r.talkText,
-            r.images ? JSON.stringify(r.images) : null,
-            r.files ? JSON.stringify(r.files) : null,
-            r.createTime, now,
+            t.topicId, t.groupId, t.title, t.talkText,
+            t.images ? JSON.stringify(t.images) : null,
+            t.files.length ? JSON.stringify(t.files.map(fileJson)) : null,
+            t.authorId, t.authorName, t.isOwner, t.commentsCount, t.likesCount,
+            t.createTime, now,
           ),
-      ),
-    ])
-    return rows.length
+      )
+      for (const f of t.files) {
+        if (!f.fileId) continue
+        stmts.push(
+          zsxqFileStmt(db, f, {
+            topicId: t.topicId, commentId: null, groupId: t.groupId, createTime: t.createTime, now,
+          }),
+        )
+      }
+    }
+
+    for (const c of comments) {
+      stmts.push(
+        db
+          .prepare(
+            `INSERT INTO zsxq_comment
+               (id, topic_id, group_id, author_id, author_name, is_owner, text, images, create_time, fetched_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (id) DO UPDATE SET
+               topic_id = excluded.topic_id,
+               group_id = excluded.group_id,
+               author_id = COALESCE(excluded.author_id, author_id),
+               author_name = COALESCE(excluded.author_name, author_name),
+               is_owner = MAX(is_owner, excluded.is_owner),
+               text = COALESCE(excluded.text, text),
+               images = COALESCE(excluded.images, images),
+               create_time = COALESCE(excluded.create_time, create_time),
+               fetched_at = excluded.fetched_at`,
+          )
+          .bind(
+            c.commentId, c.topicId, c.groupId, c.authorId, c.authorName, c.isOwner,
+            c.text, c.images ? JSON.stringify(c.images) : null, c.createTime, now,
+          ),
+      )
+      // 评论附件：topic_id = 所属帖子，comment_id = 评论（备份任务按这个归属回写 r2_key）
+      for (const f of c.files) {
+        if (!f.fileId) continue
+        stmts.push(
+          zsxqFileStmt(db, f, {
+            topicId: c.topicId, commentId: c.commentId, groupId: c.groupId, createTime: c.createTime, now,
+          }),
+        )
+      }
+    }
+
+    // 回溯游标：cursor 只前进到 agent 处理完的位置；done=1 = 已到历史尽头
+    for (const s of states) {
+      stmts.push(
+        db
+          .prepare(
+            `INSERT INTO zsxq_sync_state (group_id, cursor, done, note, updated_at)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT (group_id) DO UPDATE SET
+               cursor = COALESCE(excluded.cursor, cursor),
+               done = excluded.done,
+               note = excluded.note,
+               updated_at = excluded.updated_at`,
+          )
+          .bind(s.groupId, s.cursor, s.done, s.note, now),
+      )
+    }
+
+    const results = await db.batch(stmts)
+    return results.reduce((n, r) => n + (r.meta.changes ?? 0), 0)
   }
   return null // unknown type：Worker 先升级 / agent 先升级窗口的安全兜底（验收场景 #5）
+}
+
+/** 帖子 files 列的 JSON 形态（契约：[{fileId, name, size}]；没有 fileId 的老数据省掉该键） */
+function fileJson(f: ZsxqFileRef): { fileId?: number; name: string | null; size: number | null } {
+  const out: { fileId?: number; name: string | null; size: number | null } = { name: f.name, size: f.size }
+  const id = f.fileId ? Number(f.fileId) : NaN
+  if (Number.isSafeInteger(id)) out.fileId = id
+  return out
+}
+
+/** 附件 upsert：只认领归属与元数据，r2_key / backup_status / error 由备份任务维护，这里绝不覆盖 */
+function zsxqFileStmt(
+  db: D1Database,
+  f: ZsxqFileRef,
+  ctx: { topicId: string | null; commentId: string | null; groupId: string | null; createTime: number | null; now: number },
+): D1PreparedStatement {
+  return db
+    .prepare(
+      `INSERT INTO zsxq_file
+         (id, topic_id, comment_id, group_id, name, size, is_owner, create_time, fetched_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (id) DO UPDATE SET
+         topic_id = COALESCE(excluded.topic_id, topic_id),
+         comment_id = COALESCE(excluded.comment_id, comment_id),
+         group_id = COALESCE(excluded.group_id, group_id),
+         name = COALESCE(excluded.name, name),
+         size = COALESCE(excluded.size, size),
+         is_owner = MAX(is_owner, excluded.is_owner),
+         create_time = COALESCE(excluded.create_time, create_time),
+         fetched_at = excluded.fetched_at`,
+    )
+    .bind(f.fileId, ctx.topicId, ctx.commentId, ctx.groupId, f.name, f.size, f.isOwner, ctx.createTime, ctx.now)
 }

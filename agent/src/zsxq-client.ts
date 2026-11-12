@@ -13,21 +13,66 @@ const BASE = 'https://api.zsxq.com'
 const MAX_ATTEMPTS = 3
 const RETRY_DELAYS_MS = [3_000, 10_000] // 第 2/3 次尝试前的等待（1059 频繁时更需要留出间隙）
 
+/** 知识星球用户（星主判定靠 user_id；name 只用于展示） */
+export interface ZsxqUser {
+  user_id?: number
+  name?: string
+}
+
+/** 图片三档尺寸；原图拿不到时退 large / middle（老代码同一套兜底） */
+export interface ZsxqImage {
+  original?: { url: string; width: number; height: number }
+  large?: { url: string }
+  middle?: { url: string }
+  thumbnail_url?: string
+}
+
+export interface ZsxqFileRef {
+  file_id: number
+  name: string
+  size: number
+}
+
 export interface ZsxqTopic {
   topic_id: number
   title?: string
   type: string
   create_time: string
+  likes_count?: number
+  comments_count?: number
+  /** 部分类型（提问 / 作业）的 owner 在 topic 顶层，talk 里没有 */
+  owner?: ZsxqUser
   talk?: {
+    owner?: ZsxqUser
     text?: string
-    images?: Array<{ original?: { url: string; width: number; height: number }; large?: { url: string }; middle?: { url: string }; thumbnail_url?: string }>
-    files?: Array<{ file_id: number; name: string; size: number }>
+    images?: ZsxqImage[]
+    files?: ZsxqFileRef[]
   }
+}
+
+/** 评论：只取正文与作者，回复链（repliee）按需再展开 */
+export interface ZsxqComment {
+  comment_id: number
+  create_time: string
+  owner?: ZsxqUser
+  text?: string
+  images?: ZsxqImage[]
+  files?: ZsxqFileRef[]
 }
 
 export interface ZsxqGroup {
   group_id: number
   name: string
+}
+
+/** GET /v2/groups/{id}：星主 user_id 在这里（拿不到不致命，只影响 is_owner 标记） */
+export interface ZsxqGroupDetail {
+  group_id?: number
+  name?: string
+  owner?: ZsxqUser
+  owner_id?: number
+  /** 有的响应把星球裹一层 group */
+  group?: ZsxqGroupDetail
 }
 
 export class ZsxqApiError extends Error {
@@ -117,6 +162,11 @@ export class ZsxqClient {
     return this.call('/v2/groups', undefined, signal)
   }
 
+  /** 星球详情（星主 owner.user_id 唯一来源）；失败由调用方降级处理 */
+  groupDetail(groupId: string, signal?: AbortSignal): Promise<ZsxqGroupDetail> {
+    return this.call(`/v2/groups/${groupId}`, undefined, signal)
+  }
+
   listTopics(
     groupId: string,
     count: number,
@@ -124,6 +174,27 @@ export class ZsxqClient {
     signal?: AbortSignal,
   ): Promise<{ topics: ZsxqTopic[] }> {
     return this.call(`/v2/groups/${groupId}/topics`, { count, scope: 'all', end_time: endTime }, signal)
+  }
+
+  /**
+   * 帖子评论分页：sort=asc 从最早一条开始，end_time 取上一页最后一条的 create_time 继续往后翻。
+   * 字段全部按可选处理——接口偶尔少字段，缺了就跳过，不让整轮同步失败。
+   */
+  listComments(
+    topicId: string,
+    count: number,
+    endTime?: string,
+    signal?: AbortSignal,
+  ): Promise<{ comments: ZsxqComment[] }> {
+    return this.call(`/v2/topics/${topicId}/comments`, { sort: 'asc', count, end_time: endTime }, signal)
+  }
+
+  /**
+   * 附件下载地址（一次性签名 URL，通常几十分钟过期）。
+   * Worker 侧的附件代理走同款调用；agent 本轮只做备用，备份由 Worker 负责。
+   */
+  fileDownloadUrl(fileId: string | number, signal?: AbortSignal): Promise<{ download_url?: string }> {
+    return this.call(`/v2/files/${fileId}/download_url`, undefined, signal)
   }
 }
 
