@@ -14,6 +14,26 @@ function pctHtml(value) {
   return `<span class="${cls}">${sign}${p.toFixed(2)}%</span>`
 }
 
+/** 计划价（入场 / 重仓）：现价高于计划价为盈利（红），低于为折价（绿），同 stock-helper 口径 */
+function planHtml(plan, price) {
+  const v = Number(plan)
+  if (!Number.isFinite(v) || v <= 0) return '<span class="muted">—</span>'
+  const p = Number(price)
+  if (!Number.isFinite(p) || p <= 0) return `<span class="mono">${v.toFixed(2)}</span>`
+  const d = ((p - v) / v) * 100
+  const cls = d > 0 ? 'danger-text' : d < 0 ? 'ok-text' : 'muted'
+  const sign = d > 0 ? '+' : ''
+  return `<span class="mono">${v.toFixed(2)}</span> <span class="small ${cls}">${sign}${d.toFixed(1)}%</span>`
+}
+
+/** 股息率（TTM %）：≥ 5% 高亮作为收息参考（同 stock-helper） */
+function divHtml(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n <= 0) return '<span class="muted">—</span>'
+  const text = `${n.toFixed(2)}%`
+  return n >= 5 ? `<span class="badge">${text}</span>` : `<span class="mono">${text}</span>`
+}
+
 /** Canvas 读不到 CSS 变量，取计算值传给 Chart.js，主题切换才能跟着走 */
 function chartColors() {
   const cs = getComputedStyle(document.documentElement)
@@ -99,7 +119,7 @@ export async function render(main) {
       </div>
     </div>
     <table>
-      <thead><tr><th>代码</th><th>名称</th><th>分组</th><th class="text-end">现价</th><th class="text-end">涨跌</th><th class="text-end">今开</th><th class="text-end">最高/最低</th><th class="text-end">时间</th><th>K线</th><th></th></tr></thead>
+      <thead><tr><th>代码</th><th>名称</th><th>分组</th><th class="text-end">现价</th><th class="text-end">涨跌</th><th class="text-end">今开</th><th class="text-end">最高/最低</th><th class="text-end">入场价</th><th class="text-end">重仓价</th><th class="text-end">股息率</th><th class="text-end">时间</th><th>K线</th><th></th></tr></thead>
       <tbody>
         ${
           watch
@@ -115,22 +135,34 @@ export async function render(main) {
                 <td class="text-end">${!x ? '—' : preOpen ? '<span class="muted">未开盘</span>' : pctHtml(x.changePct)}</td>
                 <td class="text-end mono">${!x || preOpen ? '—' : x.open.toFixed(2)}</td>
                 <td class="text-end mono">${!x || preOpen ? '—' : x.high.toFixed(2) + ' / ' + x.low.toFixed(2)}</td>
+                <td class="text-end">${planHtml(r.entryPrice, x?.price)}</td>
+                <td class="text-end">${planHtml(r.heavyPrice, x?.price)}</td>
+                <td class="text-end">${divHtml(x?.divYield)}</td>
                 <td class="muted small">${esc(x?.time ?? '')}</td>
                 <td><button class="btn sm" data-k="${esc(r.code)}">日线</button></td>
                 <td class="text-end">${moreMenu(
                   `stock-${r.code}`,
-                  [{ label: '删除自选', icon: 'trash', danger: true, attrs: { 'data-d': r.code } }],
+                  [
+                    { label: '编辑计划', icon: 'edit', attrs: { 'data-e': r.code } },
+                    { label: '删除自选', icon: 'trash', danger: true, attrs: { 'data-d': r.code } },
+                  ],
                   { label: `更多操作 ${r.code}`, triggerClass: 'btn sm' },
                 )}</td>
               </tr>`
             })
-            .join('') || '<tr><td colspan="10" class="muted">暂无自选股，先添加一只</td></tr>'
+            .join('') || '<tr><td colspan="13" class="muted">暂无自选股，先添加一只</td></tr>'
         }
       </tbody>
     </table>`
 
   setupMoreMenus(main)
   main.querySelector('#add-stock').onclick = () => openAddDialog(main)
+  main.querySelectorAll('[data-e]').forEach((b) => {
+    b.onclick = () => {
+      const row = watch.find((r) => r.code === b.dataset.e)
+      if (row) openEditDialog(row, main)
+    }
+  })
   main.querySelectorAll('[data-d]').forEach((b) => {
     b.onclick = async () => {
       if (!confirm(`从自选股中移除 ${b.dataset.d}？`)) return
@@ -164,6 +196,12 @@ function openAddDialog(main) {
        <input class="field" id="stock-group" list="stock-group-list" maxlength="50"
               placeholder="选择或输入分组，如 白酒" autocomplete="off">
        <datalist id="stock-group-list">${groups.map((g) => `<option value="${esc(g)}"></option>`).join('')}</datalist>
+       <label class="form-label mt-2" for="stock-entry">入场价（可选）</label>
+       <input class="field" id="stock-entry" type="number" min="0" step="0.01"
+              inputmode="decimal" placeholder="计划入场价，留空不设置">
+       <label class="form-label mt-2" for="stock-heavy">重仓价（可选）</label>
+       <input class="field" id="stock-heavy" type="number" min="0" step="0.01"
+              inputmode="decimal" placeholder="应低于入场价，留空不设置">
        <div class="dlg-foot">
          <button class="btn sm" type="button" data-close>取消</button>
          <button class="btn primary sm" type="submit">确定</button>
@@ -177,6 +215,8 @@ function openAddDialog(main) {
   const list = body.querySelector('#stock-suggest')
   const msg = body.querySelector('#stock-msg')
   const groupEl = body.querySelector('#stock-group')
+  const entryEl = body.querySelector('#stock-entry')
+  const heavyEl = body.querySelector('#stock-heavy')
 
   let options = []
   let selected = null
@@ -318,10 +358,16 @@ function openAddDialog(main) {
       return
     }
     const groupName = groupEl.value.trim()
+    const entryPrice = entryEl.value.trim()
+    const heavyPrice = heavyEl.value.trim()
     const res = await run(form.querySelector('button[type="submit"]'), () =>
       api('/api/stock/watch', {
         method: 'POST',
-        body: JSON.stringify({ code: selected.code, name: selected.name, groupName }),
+        body: JSON.stringify({
+          code: selected.code, name: selected.name, groupName,
+          entryPrice: entryPrice === '' ? null : Number(entryPrice),
+          heavyPrice: heavyPrice === '' ? null : Number(heavyPrice),
+        }),
       }),
     )
     if (!res.ok) return
@@ -332,6 +378,76 @@ function openAddDialog(main) {
 
   body.querySelector('[data-close]').onclick = close
   input.focus()
+}
+
+/** 编辑弹窗：分组 + 入场价 / 重仓价；留空 = 清空，接口按 undefined / null 区分保留与清除 */
+function openEditDialog(r, main) {
+  const groups = [...new Set(watch.map((x) => x.groupName).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh'))
+  const { close, body } = showDialog(
+    `<h2>编辑 ${esc(r.code)}${r.name ? ` ${esc(r.name)}` : ''}</h2>
+     <form id="stock-edit-form" novalidate>
+       <label class="form-label" for="se-group">分组（可选）</label>
+       <input class="field" id="se-group" list="se-group-list" maxlength="50"
+              value="${esc(r.groupName ?? '')}" placeholder="选择或输入分组，留空为未分组" autocomplete="off">
+       <datalist id="se-group-list">${groups.map((g) => `<option value="${esc(g)}"></option>`).join('')}</datalist>
+       <label class="form-label mt-2" for="se-entry">入场价（可选）</label>
+       <input class="field" id="se-entry" type="number" min="0" step="0.01" inputmode="decimal"
+              value="${r.entryPrice ?? ''}" placeholder="计划入场价，留空清除">
+       <label class="form-label mt-2" for="se-heavy">重仓价（可选）</label>
+       <input class="field" id="se-heavy" type="number" min="0" step="0.01" inputmode="decimal"
+              value="${r.heavyPrice ?? ''}" placeholder="应低于入场价，留空清除">
+       <div class="field-error" id="se-msg" role="alert"></div>
+       <div class="dlg-foot">
+         <button class="btn sm" type="button" data-close>取消</button>
+         <button class="btn primary sm" type="submit">保存</button>
+       </div>
+     </form>`,
+    { label: `编辑 ${r.code}` },
+  )
+
+  const form = body.querySelector('#stock-edit-form')
+  const groupEl = body.querySelector('#se-group')
+  const entryEl = body.querySelector('#se-entry')
+  const heavyEl = body.querySelector('#se-heavy')
+  const msgEl = body.querySelector('#se-msg')
+
+  form.onsubmit = async (e) => {
+    e.preventDefault()
+    const entry = entryEl.value.trim()
+    const heavy = heavyEl.value.trim()
+    for (const [el, label] of [[entryEl, '入场价'], [heavyEl, '重仓价']]) {
+      const v = el.value.trim()
+      if (v !== '' && !(Number(v) > 0)) {
+        msgEl.textContent = `${label}需为大于 0 的数字`
+        el.setAttribute('aria-invalid', 'true')
+        el.focus()
+        return
+      }
+    }
+    if (entry !== '' && heavy !== '' && Number(heavy) > Number(entry)) {
+      msgEl.textContent = '重仓价不应高于入场价'
+      heavyEl.setAttribute('aria-invalid', 'true')
+      heavyEl.focus()
+      return
+    }
+    const res = await run(form.querySelector('button[type="submit"]'), () =>
+      api(`/api/stock/watch/${r.code}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          groupName: groupEl.value.trim(),
+          entryPrice: entry === '' ? null : Number(entry),
+          heavyPrice: heavy === '' ? null : Number(heavy),
+        }),
+      }),
+    )
+    if (!res.ok) return
+    close()
+    toast('已保存')
+    await rerender(render, main)
+  }
+
+  body.querySelector('[data-close]').onclick = close
+  groupEl.focus()
 }
 
 async function showDaily(code, btn) {

@@ -12,30 +12,79 @@ export const stock = new Hono<Env>()
 
 stock.get('/watch', async (c) => {
   const rows = await c.env.DB
-    .prepare('SELECT code, name, sort, enabled, group_name AS groupName FROM stock_watch ORDER BY sort, code')
+    .prepare(
+      `SELECT code, name, sort, enabled, group_name AS groupName,
+              entry_price AS entryPrice, heavy_price AS heavyPrice
+       FROM stock_watch ORDER BY sort, code`,
+    )
     .all()
   return ok({ watch: rows.results })
 })
 
 stock.post('/watch', async (c) => {
-  const b = await c.req.json<{ code?: string; name?: string; groupName?: string | null; sort?: number }>()
+  const b = await c.req.json<{
+    code?: string; name?: string; groupName?: string | null; sort?: number
+    entryPrice?: unknown; heavyPrice?: unknown
+  }>()
   const name = b.name?.trim()
   const groupName = typeof b.groupName === 'string' ? b.groupName.trim() : ''
   if (!b.code || !/^(sh|sz|bj)\d{6}$/.test(b.code) || !name) {
     throw new ApiError(400, 400, 'code（sh/sz/bj + 6位数字）与 name 必填')
   }
   if (groupName.length > 50) throw new ApiError(400, 400, '分组名不能超过 50 个字符')
+  const entryPrice = parsePlanPrice(b.entryPrice, '入场价')
+  const heavyPrice = parsePlanPrice(b.heavyPrice, '重仓价')
+  assertPlanOrder(entryPrice, heavyPrice)
   await c.env.DB
     .prepare(
-      `INSERT INTO stock_watch (code, name, sort, group_name) VALUES (?, ?, ?, ?)
+      `INSERT INTO stock_watch (code, name, sort, group_name, entry_price, heavy_price)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT (code) DO UPDATE SET
          name = excluded.name, sort = excluded.sort,
          group_name = excluded.group_name, enabled = 1`,
     )
-    .bind(b.code, name, b.sort ?? 0, groupName || null)
+    .bind(b.code, name, b.sort ?? 0, groupName || null, entryPrice, heavyPrice)
     .run()
   await syncEodJob(c.env.DB)
   return ok({ code: b.code })
+})
+
+/** 计划价 / 分组编辑：只改提交了的字段（undefined = 保留原值，null/'' = 清空） */
+stock.patch('/watch/:code', async (c) => {
+  const code = c.req.param('code')
+  if (!/^(sh|sz|bj)\d{6}$/.test(code)) throw new ApiError(400, 400, 'invalid code')
+  const b = await c.req.json<{
+    groupName?: string | null; entryPrice?: unknown; heavyPrice?: unknown
+  }>()
+
+  const row = await c.env.DB
+    .prepare('SELECT group_name, entry_price, heavy_price FROM stock_watch WHERE code = ?')
+    .bind(code)
+    .first<{ group_name: string | null; entry_price: number | null; heavy_price: number | null }>()
+  if (!row) throw new ApiError(404, 404, '自选股不存在')
+
+  let groupName: string | null | undefined
+  if ('groupName' in b) {
+    groupName = typeof b.groupName === 'string' ? b.groupName.trim() : ''
+    if (groupName.length > 50) throw new ApiError(400, 400, '分组名不能超过 50 个字符')
+    groupName = groupName || null
+  }
+  const entryPrice = parsePlanPrice(b.entryPrice, '入场价')
+  const heavyPrice = parsePlanPrice(b.heavyPrice, '重仓价')
+  const nextEntry = entryPrice === undefined ? row.entry_price : entryPrice
+  const nextHeavy = heavyPrice === undefined ? row.heavy_price : heavyPrice
+  assertPlanOrder(nextEntry, nextHeavy)
+
+  await c.env.DB
+    .prepare('UPDATE stock_watch SET group_name = ?, entry_price = ?, heavy_price = ? WHERE code = ?')
+    .bind(
+      groupName === undefined ? row.group_name : groupName,
+      nextEntry,
+      nextHeavy,
+      code,
+    )
+    .run()
+  return ok({ code })
 })
 
 stock.delete('/watch/:code', async (c) => {
@@ -43,6 +92,22 @@ stock.delete('/watch/:code', async (c) => {
   await syncEodJob(c.env.DB)
   return ok(null)
 })
+
+/** 计划价：undefined = 不改；null / '' = 清空；其余必须 > 0，保留两位小数 */
+function parsePlanPrice(raw: unknown, label: string): number | null | undefined {
+  if (raw === undefined) return undefined
+  if (raw === null || raw === '') return null
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n <= 0) throw new ApiError(400, 400, `${label}需为大于 0 的数字`)
+  return Math.round(n * 100) / 100
+}
+
+/** 重仓价高于入场价属于录入错误（参考 stock-helper 的口径），直接拒绝 */
+function assertPlanOrder(entryPrice: number | null | undefined, heavyPrice: number | null | undefined): void {
+  if (entryPrice != null && heavyPrice != null && heavyPrice > entryPrice) {
+    throw new ApiError(400, 400, '重仓价不应高于入场价')
+  }
+}
 
 // ---------- 股票搜索（东方财富联想优先，失败降级腾讯） ----------
 // 单次联想请求 + 10 分钟 cache，属于展示型按需拉取，和现价/K 线一样留在 Worker。
@@ -200,14 +265,25 @@ stock.get('/quote', async (c) => {
   if (!codes.length) return ok({ quotes: [] })
 
   const cacheKey = `stock:quote:${codes.join(',')}`
-  let body = await cacheGet(c.env.DB, cacheKey)
-  if (!body) {
+  let cached = await cacheGet(c.env.DB, cacheKey)
+  let body = ''
+  let divYields: Record<string, number | null> = {}
+  if (cached) {
+    const parsed = JSON.parse(cached) as string | { sina: string; div: Record<string, number | null> }
+    // 兼容旧格式：升级前的缓存是纯新浪文本
+    if (typeof parsed === 'string') body = parsed
+    else {
+      body = parsed.sina
+      divYields = parsed.div ?? {}
+    }
+  } else {
     const res = await fetch(`https://hq.sinajs.cn/list=${codes.join(',')}`, {
       headers: { referer: 'https://finance.sina.com.cn' },
     })
     if (!res.ok) throw new ApiError(502, 502, `行情源 HTTP ${res.status}`)
     body = decodeGbk(await res.arrayBuffer())
-    await cacheSet(c.env.DB, cacheKey, body, 60_000)
+    divYields = await fetchDivYields(codes)
+    await cacheSet(c.env.DB, cacheKey, JSON.stringify({ sina: body, div: divYields }), 60_000)
   }
 
   const nameOf = new Map(watch.results.map((r) => [r.code, r.name]))
@@ -229,11 +305,32 @@ stock.get('/quote', async (c) => {
       changePct: preOpen || !base ? 0 : (change / base) * 100,
       preOpen,
       open: Number(f[1]), prevClose, high: Number(f[4]), low: Number(f[5]),
+      divYield: divYields[code] ?? null,
       time: `${f[30]} ${f[31]}`,
     }
   })
   return ok({ quotes })
 })
+
+/** 股息率（TTM %，参考 stock-helper 腾讯口径 f[64]）：失败 / 无分红给 null，不阻塞行情主链路 */
+async function fetchDivYields(codes: string[]): Promise<Record<string, number | null>> {
+  try {
+    const res = await fetch(`https://qt.gtimg.cn/q=${codes.join(',')}`, {
+      signal: AbortSignal.timeout(8000),
+    })
+    if (!res.ok) return {}
+    const text = decodeGbk(await res.arrayBuffer())
+    const out: Record<string, number | null> = {}
+    for (const m of text.matchAll(/v_((?:sh|sz|bj)\d{6})="([^"]*)"/g)) {
+      const f = m[2].split('~')
+      const n = f.length > 64 ? Number(f[64]) : NaN
+      out[m[1]] = Number.isFinite(n) && n > 0 ? n : null
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
 
 /** workerd 若不支持 gbk 则退化为 latin1：GBK 字节流里逗号/数字段不受影响，仅中文名乱码（名取自自选表） */
 function decodeGbk(buf: ArrayBuffer): string {
