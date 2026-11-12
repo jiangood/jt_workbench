@@ -1,4 +1,4 @@
-import { api, closeMoreMenu, esc, icon, loadScriptOnce, moreMenu, rerender, rerenderKeepingFocus, run, setupMoreMenus, showDialog, toast } from '../lib.js'
+import { api, closeMoreMenu, esc, fmtReadTime, icon, loadScriptOnce, moreMenu, readBookStats, rerender, rerenderKeepingFocus, run, setupMoreMenus, showDialog, toast } from '../lib.js'
 // 组件叫 filterGroup，和「分组」业务概念无关：本页只用它渲染阅读状态筛选条
 import { emptyState, filterGroup as filterButtons, setupFilter } from '../ui.js'
 import { enqueue } from '../upload.js'
@@ -91,6 +91,8 @@ function bookCard(b) {
   // 只给读到过的书显示进度：0 / 空 = 还没开始，不占封面；已读的书一律按 100% 画（老数据没有 progress 列）
   const progress = b.status === 'read' ? 100 : Number(b.progress)
   const showProgress = b.hasFile && Number.isFinite(progress) && progress > 0
+  // 本机累计阅读时长（issue #23）：没有记录 / 不足 1 分钟不占位
+  const readTime = b.hasFile ? fmtReadTime(readBookStats(b.id).ms) : ''
   // 有文件时封面本身就是阅读入口；工具栏里再留一个小图标，照顾「看不出封面能点」的人
   const coverTag = b.hasFile ? 'a' : 'div'
   const coverAttrs = b.hasFile
@@ -109,6 +111,11 @@ function bookCard(b) {
             <p class="book-by small muted" title="${esc(meta)}">${esc(meta)}</p>
             <div class="book-meta">
               ${b.rating ? `<span class="book-rating small muted">${icon('star', 12)}${esc(b.rating)}</span>` : ''}
+              ${
+                readTime
+                  ? `<span class="book-read-time small muted" title="本机累计阅读 ${esc(readTime)}">${icon('clock', 12)}${esc(readTime)}</span>`
+                  : ''
+              }
               ${
                 b.hasFile
                   ? `<span class="badge muted">${esc((b.fmt || '').toUpperCase())}</span>`

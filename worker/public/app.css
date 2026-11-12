@@ -1123,6 +1123,12 @@ a.book-cover:focus-visible {
   white-space: nowrap;
 }
 .book-rating .ico { color: var(--accent) }
+.book-read-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+}
 .book-actions {
   display: flex;
   flex-direction: column;

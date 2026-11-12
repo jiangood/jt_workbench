@@ -19,6 +19,7 @@
  * 悬浮工具栏，字号与位置存 localStorage。位置 / 字号只影响记忆，不影响阅读；销毁时释放 epub 实例与定时器。
  */
 import {
+  addBookReadTime,
   api,
   closeMoreMenu,
   esc,
@@ -1285,6 +1286,8 @@ export async function render(main, params) {
     stage.innerHTML = `<iframe class="reader-frame" src="${esc(fileUrl)}" title="${esc(title)}"></iframe>`
     return
   }
+  // 阅读计时（#23）：只统计 epub / txt；PDF 原生查看器收不到滚动与按键
+  readingTimer = createReadingTimer(id)
   if (book.fmt === 'txt') {
     openTxtReader(id, title, version, fileUrl, book.size, stage, setChapter, book.filename)
     return
@@ -1454,6 +1457,74 @@ function progressReporter(id) {
 
 /** 当前阅读器的进度上报器（切页 destroy 时 flush 掉最后一格） */
 let reportProgress = null
+
+/**
+ * 本机阅读计时（issue #23）：只累计「页面可见 + 最近 5 分钟有交互」的净时长。
+ * 每 5 秒结算一次，攒够 15 秒落盘一次；切后台 / 隐藏标签页立即停止累计，
+ * 离开阅读页 stop() 把最后一段补齐。PDF 原生查看器拿不到这些事件，不计。
+ */
+function createReadingTimer(id) {
+  const IDLE_MS = 300_000
+  const FLUSH_MS = 15_000
+  let lastTick = Date.now()
+  let lastActive = lastTick
+  let pending = 0
+  let stopped = false
+
+  const visible = () => document.visibilityState !== 'hidden'
+  const active = () => visible() && Date.now() - lastActive < IDLE_MS
+  const markActive = () => {
+    lastActive = Date.now()
+  }
+  const flush = () => {
+    if (pending < 1000) return
+    addBookReadTime(id, pending)
+    pending = 0
+  }
+  const tick = () => {
+    const now = Date.now()
+    const elapsed = now - lastTick
+    lastTick = now
+    // 相邻两次 tick 间隔异常（休眠 / 长时间卡顿）不按整段计入
+    if (elapsed > 0 && elapsed <= 60_000 && active()) pending += elapsed
+    if (pending >= FLUSH_MS) flush()
+  }
+
+  const timer = window.setInterval(tick, 5000)
+  const onVisibility = () => {
+    const now = Date.now()
+    if (!visible()) {
+      // 切后台 / 锁屏：把隐藏前那几秒算进去（此时 visibilityState 已是 hidden，不能再用 active()）
+      const elapsed = now - lastTick
+      if (elapsed > 0 && elapsed <= 60_000 && now - lastActive < IDLE_MS) pending += elapsed
+      flush()
+    }
+    // 回到前台不补算隐藏期间的时间，只把基准点挪到现在
+    lastTick = now
+  }
+  const onActivity = () => markActive()
+  const activityEvents = ['pointerdown', 'keydown', 'wheel']
+  document.addEventListener('visibilitychange', onVisibility)
+  for (const name of activityEvents) document.addEventListener(name, onActivity, { passive: true })
+  // scroll 不冒泡：捕获阶段监听，正文滚动也算活跃
+  document.addEventListener('scroll', onActivity, { passive: true, capture: true })
+
+  return {
+    stop() {
+      if (stopped) return
+      stopped = true
+      tick()
+      flush()
+      clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisibility)
+      for (const name of activityEvents) document.removeEventListener(name, onActivity)
+      document.removeEventListener('scroll', onActivity, { capture: true })
+    },
+  }
+}
+
+/** 当前阅读页的计时器（切页 destroy 时结算） */
+let readingTimer = null
 
 /** 目录行 DOM：弹窗与右侧栏共用，避免两套结构走偏 */
 function tocRowsHtml(rows, current) {
@@ -3343,6 +3414,12 @@ export function destroy() {
     /* 已释放 */
   }
   txtReader = null
+  try {
+    readingTimer?.stop()
+  } catch {
+    /* 统计失败不影响离开页面 */
+  }
+  readingTimer = null
   try {
     reportProgress?.flush()
   } catch {

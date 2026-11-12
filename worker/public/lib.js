@@ -212,6 +212,47 @@ export function downloadText(filename, text, mime = 'text/plain;charset=utf-8') 
   setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }
 
+/* ---------------- 本地阅读统计（issue #23） ---------------- */
+
+/**
+ * 每本书在本机的累计阅读时长（毫秒）。只存 localStorage，不上报、不做跨设备合并：
+ * 统计口径是「阅读页可见且有交互」的净时长，无法可靠计时的情况（如 PDF 原生查看器）不计。
+ */
+const BOOK_STATS_PREFIX = 'book:stats:'
+
+export function readBookStats(id) {
+  try {
+    const raw = JSON.parse(localStorage.getItem(BOOK_STATS_PREFIX + id) || 'null')
+    return raw && typeof raw === 'object'
+      ? { ms: Math.max(0, Number(raw.ms) || 0), last: Math.max(0, Number(raw.last) || 0) }
+      : { ms: 0, last: 0 }
+  } catch {
+    return { ms: 0, last: 0 }
+  }
+}
+
+/** 累加阅读时长（不足 1 秒不写，避免频繁触发 localStorage 写入）；返回最新统计 */
+export function addBookReadTime(id, ms) {
+  const add = Math.round(Number(ms) || 0)
+  if (add < 1000) return readBookStats(id)
+  const next = { ms: readBookStats(id).ms + add, last: Date.now() }
+  try {
+    localStorage.setItem(BOOK_STATS_PREFIX + id, JSON.stringify(next))
+  } catch {
+    /* 隐私模式 / 配额满：统计失败不影响阅读 */
+  }
+  return next
+}
+
+/** 阅读时长文案：< 1 分钟不显示，< 1 小时按分钟，超过按小时（1 位小数） */
+export function fmtReadTime(ms) {
+  const min = Math.floor((Number(ms) || 0) / 60_000)
+  if (min < 1) return ''
+  if (min < 60) return `${min} 分钟`
+  const hours = min / 60
+  return hours < 10 ? `${hours.toFixed(1)} 小时` : `${Math.round(hours)} 小时`
+}
+
 const scripts = new Map()
 
 /** 第三方库按需加载（同一地址只加载一次），返回 Promise */
