@@ -23,7 +23,7 @@ const ROUTES = [
   { path: '/note', title: '笔记', icon: 'note', wide: true, skeleton: 'list', load: () => import('./views/note.js') },
   { path: '/music', title: '音乐', icon: 'music', wide: true, skeleton: 'table', load: () => import('./views/music.js') },
   { path: '/book', title: '书架', icon: 'book', wide: true, skeleton: 'cards', load: () => import('./views/book.js') },
-  // 阅读页：独立路由不进侧栏，入口是书架卡片的「阅读」；activePath 让侧栏继续高亮「书架」
+  // 阅读页：独立路由不进侧栏，入口是书架卡片的封面（或封面下的小阅读图标）；activePath 让侧栏继续高亮「书架」
   {
     path: '/reader',
     title: '阅读',
@@ -87,6 +87,9 @@ async function render() {
   const initial = isFirstRender
   isFirstRender = false
   const { path, params } = parseHash()
+  // 阅读页是沉浸布局：无左侧菜单 / 全局顶栏（阅读页自带顶栏，右上角「首页 / 我的书架」）。
+  // 在路由层挂 body.reading 而不是阅读视图里挂：视图渲染失败时也能正确还原全局壳。
+  document.body.classList.toggle('reading', path === '/reader')
   // 进阅读页自动收起主导航，把横向空间让给正文 + 右侧目录；离开时还原
   if (path !== lastPath) {
     autoCollapseNav(path === '/reader')

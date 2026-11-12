@@ -13,6 +13,7 @@ const ICONS = {
   book: '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v14H6.5A2.5 2.5 0 0 0 4 19.5V5.5Z"/><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20v4H6.5"/>',
   star: '<circle cx="12" cy="12" r="9"/><path d="m12 7.5 1.5 3 3 1.5-3 1.5-1.5 3-1.5-3-3-1.5 3-1.5 1.5-3Z"/>',
   gear: '<circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v2.6M12 18.9v2.6M2.5 12h2.6M18.9 12h2.6M5.3 5.3l1.9 1.9M16.8 16.8l1.9 1.9M18.7 5.3l-1.9 1.9M7.2 16.8l-1.9 1.9"/>',
+  copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>',
   menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
   close: '<path d="M6 6 18 18M18 6 6 18"/>',
   upload: '<path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>',
@@ -477,12 +478,9 @@ export function setupQuickMusic() {
   })
 }
 
-/** 弹窗：点遮罩关闭 + 打开时回到顶部 */
+/** 弹窗：关闭后回到顶部（点遮罩 / 点外部不关闭，只能按 Esc 或显式关闭） */
 export function setupDialog() {
   const dlg = document.getElementById('dlg')
-  dlg.addEventListener('click', (e) => {
-    if (e.target === dlg) dlg.close()
-  })
   dlg.addEventListener('close', () => {
     dlg.scrollTop = 0
   })
@@ -527,7 +525,8 @@ export function closeMoreMenu() {
 
 /**
  * 「更多」下拉的 HTML：图标触发按钮 + 菜单容器。
- * items: [{ label, icon, danger, disabled, attrs }]，删除 / 清空 / 移除放最后一项并标 danger。
+ * items: [{ label, icon, danger, disabled, href, attrs }]，删除 / 清空 / 移除放最后一项并标 danger；
+ * 带 href 的项渲染成 <a>（下载这类不需要 JS 的动作）。
  * opts: { label: 按钮可访问名, triggerClass: 触发按钮 class（默认 icon-btn）, iconSize }
  */
 export function moreMenu(id, items, opts = {}) {
@@ -538,9 +537,15 @@ export function moreMenu(id, items, opts = {}) {
       const attrs = Object.entries(it.attrs || {})
         .map(([k, v]) => ` ${k}="${esc(v)}"`)
         .join('')
-      return `<button class="more-item${it.danger ? ' danger' : ''}" type="button" role="menuitem"${
+      const cls = `more-item${it.danger ? ' danger' : ''}`
+      const inner = `${it.icon ? icon(it.icon, 14) : ''}${esc(it.label)}`
+      if (it.href)
+        return `<a class="${cls}" href="${esc(it.href)}" role="menuitem"${
+          it.disabled ? ' aria-disabled="true" tabindex="-1"' : ''
+        }${attrs}>${inner}</a>`
+      return `<button class="${cls}" type="button" role="menuitem"${
         it.disabled ? ' disabled' : ''
-      }${attrs}>${it.icon ? icon(it.icon, 14) : ''}${esc(it.label)}</button>`
+      }${attrs}>${inner}</button>`
     })
     .join('')
   return `<span class="more">

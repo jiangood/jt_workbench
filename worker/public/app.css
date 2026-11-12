@@ -448,9 +448,9 @@ textarea:focus-visible {
   }
   .topbar .theme-toggle,
   .topbar .quick-music { box-shadow: var(--shadow-sm) }
-  /* 页头右侧留位：浮动操作区（音乐 + 主题两个按钮）不压在页面主操作（「播放全部」等）上 */
-  .page-head,
-  .reader-bar { padding-right: 92px }
+  /* 页头右侧留位：浮动操作区（音乐 + 主题两个按钮）不压在页面主操作（「播放全部」等）上；
+   * 阅读页是沉浸布局（body.reading），自带顶栏，不吃这份留位 */
+  .page-head { padding-right: 92px }
 }
 .scrim { display: none }
 
@@ -458,6 +458,17 @@ textarea:focus-visible {
 body:has(.playerbar:not([hidden])) .mainwrap {
   padding-bottom: calc(var(--playerbar-h) + var(--sp-4));
 }
+
+/* ============================================================
+ * 阅读页沉浸模式：body.reading 由 app.js 在路由进入 #/reader 时挂上。
+ * 微信读书式布局——左侧菜单 / 全局顶栏整体隐藏，阅读页自带顶栏（.reader-top，
+ * 右上角「首页 / 我的书架」），内容区占满整屏。 */
+body.reading .sidebar,
+body.reading .topbar,
+body.reading .scrim { display: none !important }
+body.reading .container { max-width: 100%; padding: 0 }
+/* 播放条的留位改由 .reader-stage 的高度公式吸收（见阅读页段落），不再整页垫底 */
+body.reading .mainwrap { padding-bottom: 0 }
 
 /* ============================================================
  * 6. 组件
@@ -787,6 +798,8 @@ tr.active .track-name { color: var(--primary); font-weight: 600 }
 }
 .icon-btn:hover { background: var(--surface-2) }
 .icon-btn:disabled { opacity: .4; cursor: not-allowed; background: transparent }
+/* 同上：.btn / .icon-btn 的 display:inline-flex 会盖掉 [hidden] */
+.btn[hidden], .icon-btn[hidden] { display: none }
 
 /* 表单 */
 input, select, textarea {
@@ -930,6 +943,36 @@ textarea[aria-invalid="true"] { border-color: var(--danger) }
   display: grid;
   gap: var(--sp-5);
 }
+/* 工具条：状态筛选 + 排序并排，窄屏自动换行 */
+.book-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-4);
+}
+.book-toolbar .tabs { margin-bottom: 0 }
+/* 搜索 + 排序整组靠右；窄屏时整组换到下一行 */
+.book-toolbar-end {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-left: auto;
+}
+.book-search { width: clamp(150px, 22vw, 220px) }
+.book-search-meta { margin: 0 0 var(--sp-3) }
+.book-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--muted-fg);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.book-sort select { width: auto }
 .book-group-head {
   display: flex;
   align-items: center;
@@ -969,17 +1012,37 @@ textarea[aria-invalid="true"] { border-color: var(--danger) }
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
   aspect-ratio: 3 / 4;
   background: var(--surface-2);
   color: var(--muted-fg);
 }
+/* 有文件的封面本身是阅读入口（<a>），给一点可点的视觉反馈 */
+a.book-cover {
+  color: var(--muted-fg);
+  text-decoration: none;
+  cursor: pointer;
+}
+a.book-cover img { transition: transform var(--dur-fast) ease }
+a.book-cover:hover img,
+a.book-cover:focus-visible img { transform: scale(1.03) }
+a.book-cover:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+/* 占位图标垫在封面下面：必须绝对定位，留在文档流里会和 <img> 并排把封面挤窄 */
 .book-cover-ph {
+  position: absolute;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   opacity: .55;
 }
+/* 封面整块铺满：绝对定位脱离 flex 布局，宽度不会因兄弟节点缩水而露出底色 */
 .book-cover img {
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
   height: 100%;
@@ -991,6 +1054,35 @@ textarea[aria-invalid="true"] { border-color: var(--danger) }
   top: 8px;
   left: 8px;
   box-shadow: var(--shadow-sm);
+}
+/* 阅读进度：封面底部渐隐条，没有进度的书不渲染 */
+.book-progress {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 18px 8px 6px;
+  background: linear-gradient(to top, rgb(0 0 0 / 62%), transparent);
+  color: #fff;
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  pointer-events: none;
+}
+.book-progress-track {
+  flex: 1;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 35%);
+}
+.book-progress-track > i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #fff;
 }
 .book-body {
   display: flex;
@@ -1038,7 +1130,13 @@ textarea[aria-invalid="true"] { border-color: var(--danger) }
   margin-top: auto;
   padding-top: 8px;
 }
-.book-actions > .btn { width: 100% }
+/* 主操作（阅读 / 上传）在幽灵图标里保留主色调，别让整排都灰掉 */
+.book-tools .btn.key { color: var(--primary) }
+.book-tools .btn.key:hover {
+  border-color: transparent;
+  background: var(--primary-wash);
+  color: var(--primary);
+}
 .book-tools {
   display: flex;
   gap: 4px;
@@ -1144,6 +1242,8 @@ textarea[aria-invalid="true"] { border-color: var(--danger) }
 
 /* 资讯列表：未读圆点 + 已读弱化 + 行内状态按钮 */
 .news-item { min-width: 0 }
+/* 资讯卡片间隔在列表基础间距上放大 0.5 倍（无限滚动下阅读更透气） */
+#items.list { gap: calc(var(--sp-2) * 1.5) }
 .news-line { min-width: 0 }
 .news-dot {
   flex: 0 0 auto;
@@ -1201,7 +1301,6 @@ textarea[aria-invalid="true"] { border-color: var(--danger) }
 /* display:flex 会盖掉 UA 的 [hidden]，这里显式关掉 */
 .zsxq-comments[hidden] { display: none }
 .zsxq-comment { display: flex; flex-direction: column; gap: 2px; min-width: 0 }
-
 
 /* 笔记：目录 / 列表 / 编辑器 三栏，各栏独立滚动；窄屏改为上下堆叠 */
 .note-split {
@@ -1285,6 +1384,7 @@ body:has(.playerbar:not([hidden])) .note-split {
   font: inherit;
   font-size: var(--fs-sm);
   text-align: left;
+  text-decoration: none;
   white-space: nowrap;
   cursor: pointer;
 }
@@ -1448,7 +1548,6 @@ body:has(.playerbar:not([hidden])) .note-split {
 .note-folder-toggle,
 .note-save-state { display: none }
 .note-folder-acts { display: inline-flex; align-items: center; gap: var(--sp-3) }
-
 
 /* 首页卡片流：资讯（宽）/ 提醒 / 自选股 / 笔记 / 知识星球 */
 .home-grid {
@@ -1697,41 +1796,136 @@ dialog.xl { max-width: 1100px; width: 94% }
 dialog::backdrop { background: rgba(15, 23, 42, .45) }
 dialog h2, dialog h5 { font-size: var(--fs-lg); font-weight: 650; margin-bottom: var(--sp-3) }
 
-/* 阅读页（#/reader?id=）：独立路由，正文区落在首屏内，长内容只在内部滚动。
- * 顶栏只留书名 / 当前章，翻页、目录、字号、进度统一下沉到页脚，正文区保持干净。 */
-.reader-bar { display: flex; align-items: center; gap: var(--sp-3); margin-bottom: var(--sp-3); min-width: 0 }
-.reader-bar .reader-title { flex: 1 1 auto; min-width: 0 }
-.reader-bar .page-title {
+/* 阅读页（#/reader?id=）：微信读书式沉浸布局——body.reading 时全局侧栏 / 顶栏隐藏（app.js 挂类），
+ * 阅读页自带顶栏（书名 + 右上角「首页 / 我的书架」），正文区占满剩余高度，长内容只在内部滚动。
+ * 翻页 / 进度留在页脚，目录 / 字号 / 背景也收进右侧悬浮工具栏。 */
+:root { --reader-top-h: 53px }
+.reader-top {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  flex: 0 0 auto;
+  height: var(--reader-top-h);
+  padding: 0 var(--sp-5);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  /* 令牌来自 .reader-root：显式取色，避免继承到全局主题的已解析 color */
+  color: var(--fg);
+}
+.reader-top .reader-title { flex: 1 1 auto; min-width: 0 }
+.reader-top .page-title {
   margin: 0;
-  font-size: var(--fs-lg);
+  font-size: var(--fs-md);
+  font-weight: 650;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.reader-bar .page-sub { margin: 2px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.reader-top .page-sub { margin: 1px 0 0; font-size: var(--fs-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .reader-chapter:not([hidden])::after { content: " · " }
+/* 右上角返回链接：对齐微信读书顶栏的「首页 / 我的书架」 */
+.reader-top-links { flex: 0 0 auto; display: flex; align-items: center; gap: var(--sp-4); font-size: var(--fs-sm) }
+.reader-top-links a { color: var(--muted-fg); text-decoration: none }
+.reader-top-links a:hover { color: var(--primary) }
 .reader-stage {
+  position: relative;
   display: flex;
   flex-direction: column;
-  height: clamp(420px, calc(100dvh - 160px), 1600px);
+  height: max(320px, calc(100dvh - var(--reader-top-h)));
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
   background: var(--surface);
+  /* 显式重设 color：让正文从本作用域重新解析 --fg（背景主题只覆盖 reader 内的令牌） */
+  color: var(--fg);
 }
 /* 播放条占掉底部一条时同步压缩，免得整页跟着多出滚动 */
 body:has(.playerbar:not([hidden])) .reader-stage {
-  height: clamp(420px, calc(100dvh - 160px - var(--playerbar-h)), 1600px);
+  height: max(320px, calc(100dvh - var(--reader-top-h) - var(--playerbar-h)));
 }
 .reader-loading,
 .reader-stage > .empty { padding: var(--sp-5) }
+
+/* 阅读背景主题：令牌挂在包含顶栏 + 舞台的 .reader-root 上，顶栏 / 正文 / 页脚 / 目录一起变色。
+ * 夜间色对齐微信读书（底 rgb(28,28,29) / 正文 rgb(208,211,216)） */
+.reader-root[data-reader-theme="sepia"] {
+  --surface: #f6f0e0; --surface-2: #f0e8d5; --surface-3: #e5dabe;
+  --fg: #38301f; --muted-fg: #8f8468; --border: #e2d8c0; --border-strong: #cbbd9d;
+}
+.reader-root[data-reader-theme="green"] {
+  --surface: #dfe9da; --surface-2: #d5e2cf; --surface-3: #c4d4bd;
+  --fg: #23321f; --muted-fg: #6d7d66; --border: #c7d5c0; --border-strong: #a9bda0;
+}
+.reader-root[data-reader-theme="dark"] {
+  --surface: #1c1c1d; --surface-2: #262628; --surface-3: #333336;
+  --fg: #d0d3d8; --muted-fg: #8d9199; --border: #2e2e31; --border-strong: #45454a;
+}
+
+/* 右侧悬浮工具栏（微信读书式圆钮）：目录 / 阅读设置 / 背景循环切换 */
+.reader-fabs {
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 6;
+}
+.reader-fab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--muted-fg);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 650;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease, border-color var(--dur-fast) ease;
+}
+.reader-fab:hover { color: var(--primary); border-color: var(--border-strong) }
+.reader-fab .ico { pointer-events: none }
+
+/* 阅读设置弹窗：字号 / 行距 / 背景，改动即时生效 */
+.reader-setting { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-3) }
+.reader-setting:last-child { margin-bottom: 0 }
+.reader-setting-label { flex: 0 0 3em; color: var(--muted-fg); font-size: var(--fs-sm) }
+.reader-setting-value { min-width: 2em; text-align: center; font-variant-numeric: tabular-nums }
+.reader-seg { display: flex; border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden }
+.reader-seg-btn {
+  padding: 5px 14px;
+  border: 0;
+  background: none;
+  color: var(--muted-fg);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.reader-seg-btn + .reader-seg-btn { border-left: 1px solid var(--border) }
+.reader-seg-btn[aria-pressed="true"] { background: var(--primary-wash); color: var(--primary); font-weight: 600 }
+.reader-swatches { display: flex; gap: var(--sp-2) }
+.reader-swatch {
+  width: 40px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.reader-swatch[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--primary) }
 /* epub / txt 共用：正文 + 右侧目录两栏；窄屏目录隐藏，正文占满 */
 .reader-body {
   display: flex;
   flex: 1 1 auto;
   min-height: 0;
 }
-/* epub：正文按书页宽度排版并居中，宽屏上不把文字 / 插图拉满整屏 */
+/* epub：正文按书页宽度排版并居中（微信读书正文栏宽 800px），不把文字 / 插图拉满整屏；
+ * 书页直接铺在阅读背景上，不再加卡片底 */
 .reader-page {
   flex: 1 1 auto;
   min-width: 0;
@@ -1743,11 +1937,9 @@ body:has(.playerbar:not([hidden])) .reader-stage {
 .reader-view {
   flex: 1 1 auto;
   width: 100%;
-  max-width: 760px;
+  max-width: 800px;
   min-height: 0;
   overflow: hidden;
-  border-radius: var(--r-sm);
-  background: var(--surface-2);
 }
 .reader-view iframe { border: 0 }
 .reader-frame { flex: 1 1 auto; min-height: 0; width: 100%; border: 0 }
@@ -1870,6 +2062,15 @@ body:has(.playerbar:not([hidden])) .reader-stage {
   font-size: var(--fs-sm);
 }
 .reader-toc-head strong { font-weight: 650 }
+.reader-toc-head-acts { display: flex; align-items: center; gap: 2px }
+.reader-toc-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-3);
+}
 .reader-toc-list {
   flex: 1 1 auto;
   min-height: 0;
@@ -1879,29 +2080,30 @@ body:has(.playerbar:not([hidden])) .reader-stage {
 }
 .reader-toc-side .reader-toc-hint { margin: 0; padding: 0 var(--sp-3) var(--sp-2) }
 
-/* TXT 阅读器：编码在浏览器端识别，只渲染当前章节（大文件不卡） */
+/* TXT 阅读器：编码在浏览器端识别，只渲染当前章节（大文件不卡）。
+ * 排版对齐微信读书正文：21px / 行距 1.5 / 两端对齐 / 段距 1em / 首行缩进 2 字 / 栏宽 800px */
 .reader-body > .txt-reader { flex: 1 1 auto; min-height: 0; padding: var(--sp-3) }
-.txt-reader { display: flex; flex-direction: column; gap: var(--sp-2) }
+.txt-reader { display: flex; flex-direction: column }
 .txt-body {
   flex: 1 1 auto;
   min-height: 0;
   width: 100%;
-  max-width: 48rem;
+  max-width: 800px;
   margin-inline: auto;
   overflow-y: auto;
-  padding: var(--sp-4);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--surface-2);
-  font-size: 17px;
-  line-height: 1.9;
-  white-space: pre-wrap;
+  padding: var(--sp-4) var(--sp-4) var(--sp-7);
+  font-family: "PingFang SC", -apple-system, "SF UI Text", "Lucida Grande", STheiti, "Microsoft YaHei", sans-serif;
+  font-size: 21px;
+  line-height: 1.5;
   overflow-wrap: anywhere;
-  tab-size: 2;
 }
 .txt-body:focus-visible { outline: 2px solid var(--border-strong); outline-offset: 2px }
+/* 一行一段：TXT 的段间空行只当分段标记，间距交给 margin，避免「空行 + margin」双重空档 */
+.txt-body p { margin: 0 0 1em; text-align: justify; text-indent: 2em }
+.txt-body p.txt-head { margin: 1.4em 0 1em; text-indent: 0; text-align: center; font-weight: 650 }
+.txt-body p:last-child { margin-bottom: 0 }
 
-/* 阅读页窄屏：页脚只留图标，进度条吃掉剩余宽度 */
+/* 阅读页窄屏：页脚只留图标，进度条吃掉剩余宽度；悬浮工具栏挪到右下角 */
 @media (max-width: 640px) {
   .reader-controls { padding: var(--sp-2) }
   .reader-controls-inner { gap: 4px }
@@ -1911,7 +2113,11 @@ body:has(.playerbar:not([hidden])) .reader-stage {
   .reader-progress-text { min-width: 2.6em }
   .reader-stat { display: none }
   .reader-page { padding: 0 }
-  .reader-view { border-radius: 0 }
+  .reader-top { padding: 0 var(--sp-3) }
+  .reader-top-links { gap: var(--sp-3) }
+  .reader-body > .txt-reader { padding: var(--sp-2) }
+  .reader-fabs { top: auto; bottom: 60px; right: 10px; transform: none; gap: 8px }
+  .reader-fab { width: 34px; height: 34px }
 }
 
 /* 图表容器：固定高度，Chart.js 在弹窗里撑满而不按宽度比例撑高 */
@@ -2515,7 +2721,6 @@ hr.sep { border: 0; border-top: 1px solid var(--border); margin: var(--sp-5) 0 }
   .note-back span { display: none }
 }
 
-
 /* 宽容器下笔记三栏各放宽一档，剩余空间全给编辑器（窄屏仍走上面的收窄规则） */
 @media (min-width: 1400px) {
   .container-wide .note-split {
@@ -2604,11 +2809,6 @@ hr.sep { border: 0; border-top: 1px solid var(--border); margin: var(--sp-5) 0 }
 
   .mainwrap { overflow: visible }
   .container { padding: var(--sp-4) var(--sp-4) var(--sp-6) }
-  /* 阅读页：手机顶栏 52px 参与文档流，stage 高度把顶栏 / 页头 / 内边距一起扣掉 */
-  .reader-stage { height: max(320px, calc(100dvh - 190px)) }
-  body:has(.playerbar:not([hidden])) .reader-stage {
-    height: max(320px, calc(100dvh - 190px - var(--playerbar-h)));
-  }
 
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)) }
   .stat { padding: var(--sp-3) }

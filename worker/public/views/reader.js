@@ -4,36 +4,176 @@
  * 跨境链路只有 ~84KB/s（实测），所以「打开一本书」的成本主要在传输，三层处理：
  * - 所有文件 URL 带 ?v=<updatedAt>：换文件必然换版本，服务端据此回 immutable 长缓存（core/files.ts），
  *   第二次打开不再重新下载
- * - txt：按字节分块拉（首块 256KB）→ 流式解码 → 增量找「第X章」，一次只下当前读到的地方；
- *   章节字节表存 localStorage（键带版本号），下次直接跳到上次读到那一章
+ * - txt：整本下载（显示下载大小 / 百分比）→ 解码 → 分章；页脚进度按「当前章节在全书中的
+ *   字符位置 + 章内滚动比例」计算，跳章 / 翻页后仍是全书总进度；目录随时可在目录栏 / 弹窗里
+ *   手动重新生成（只重扫本地全文，不再重新下载）
+ * - txt 右键菜单：选中文字后可「复制」，或「批量删除广告」——读整本 → 删掉所有选中文字
+ *   （命中后整行变空的一并去行）→ 以新文件重传（新 uuid = 新版本号，缓存自然失效）→ 重开
  * - epub：库不支持 Range，仍是整本 ArrayBuffer，但脚本与文件并行下载 + 显示进度
  *   （/api/book/read/:id 没有 .epub 后缀，交给库按 URL 找目录会 404）
  * - pdf：浏览器原生查看器（Worker 透传 Range，渐进加载）
  *
- * 版式：顶栏只放书名 + 当前章，翻页 / 目录 / 字号 / 进度全部下沉到页脚，
- * 正文列宽固定（epub 单页 760px），宽屏上不把文字与插图拉满整屏。
- * 位置 / 字号存 localStorage：只影响记忆，不影响阅读；销毁时释放 epub 实例与定时器。
+ * 版式：微信读书式沉浸页——body.reading 时全局侧栏 / 顶栏隐藏（app.js 挂类），阅读页
+ * 自带顶栏（书名 + 右上角「首页 / 我的书架」），正文栏宽 800px，翻页 / 进度下沉页脚，
+ * 目录 / 字号 / 背景（白·米黄·护眼·夜间）收进右侧悬浮工具栏，字号与位置存 localStorage。
+ * 位置 / 字号只影响记忆，不影响阅读；销毁时释放 epub 实例与定时器。
  */
-import { api, esc, icon, loadScriptOnce, showDialog } from '../lib.js'
+import { api, esc, icon, loadScriptOnce, showDialog, toast } from '../lib.js'
 import { loadingBlock } from '../ui.js'
+import { enqueue } from '../upload.js'
 
 const TXT_FONT_KEY = 'book:txt:font'
+const TXT_LINE_KEY = 'book:txt:line'
+const EPUB_FONT_KEY = 'book:epub:font'
 const txtPosKey = (id) => `book:txt:pos:${id}`
-const txtIdxKey = (id) => `book:txt:idx:${id}`
 const epubPosKey = (id) => `book:epub:pos:${id}`
 
-/** 首块 256KB：84KB/s 下约 3s 出正文；后续每块 512KB，翻章时不够再续 */
-const TXT_CHUNK = 256 * 1024
-const TXT_CHUNK_MORE = 512 * 1024
-/** localStorage 里最多记这么多章，避免大书把 5MB 配额塞满 */
-const TXT_INDEX_MAX = 3000
+/* ---------------- 阅读设置：背景 / 字号 / 行距 ---------------- */
+
+/** 背景主题（微信读书四色系）：夜间底色对齐 rgb(28,28,29)，米黄 / 护眼为常用护眼色 */
+const READER_THEME_KEY = 'book:theme'
+const READER_THEMES = [
+  { id: 'paper', label: '白', bg: '#ffffff' },
+  { id: 'sepia', label: '米黄', bg: '#f6f0e0' },
+  { id: 'green', label: '护眼', bg: '#dfe9da' },
+  { id: 'dark', label: '夜间', bg: '#1c1c1d' },
+]
+
+/** 行距三档（微信读书「紧凑 / 标准 / 宽松」的对应值），只作用于 TXT；epub 跟随原书 */
+const LINE_OPTIONS = [
+  { value: 1.4, label: '紧凑' },
+  { value: 1.5, label: '标准' },
+  { value: 1.7, label: '宽松' },
+]
+
+/** 没存过时跟随应用主题：应用是深色就默认夜间阅读，浅色默认白纸 */
+function readTheme() {
+  const saved = readStorage(READER_THEME_KEY)
+  if (saved && READER_THEMES.some((t) => t.id === saved)) return saved
+  return document.documentElement.dataset.theme === 'dark' ? 'dark' : 'paper'
+}
+
+/** 换背景：.reader-root 的 data 属性驱动 CSS 设计令牌（顶栏 / 正文 / 页脚 / 目录一起变色），并记住偏好 */
+function setReaderTheme(root, theme) {
+  if (!READER_THEMES.some((t) => t.id === theme)) return
+  root.dataset.readerTheme = theme
+  writeStorage(READER_THEME_KEY, theme)
+  const fab = root.querySelector('[data-fab-theme]')
+  if (fab) fab.innerHTML = icon(theme === 'dark' ? 'moon' : 'sun', 16)
+}
+
+/** 循环切换背景（悬浮工具栏第三个钮），返回新主题 id */
+function cycleTheme(root) {
+  const order = READER_THEMES.map((t) => t.id)
+  const next = order[(order.indexOf(root.dataset.readerTheme || 'paper') + 1) % order.length]
+  setReaderTheme(root, next)
+  toast(`背景：${READER_THEMES.find((t) => t.id === next)?.label ?? next}`)
+  return next
+}
+
+/** 右侧悬浮工具栏（微信读书式圆钮）：目录 / 阅读设置 / 背景循环；接线由各阅读器完成 */
+function fabHtml() {
+  return `<div class="reader-fabs" role="toolbar" aria-label="阅读工具">
+      <button class="reader-fab" type="button" data-fab-toc aria-label="目录" title="目录">${icon('queue', 16)}</button>
+      <button class="reader-fab" type="button" data-fab-set aria-label="阅读设置" title="阅读设置">Aa</button>
+      <button class="reader-fab" type="button" data-fab-theme aria-label="切换背景" title="切换背景"></button>
+    </div>`
+}
+
+/**
+ * 阅读设置弹窗：字号 / 行距（txt）/ 背景，改动即时生效、无需保存。
+ * font = { value, min, max, onFont }；line = { value, onLine }（epub 行距跟随原书，不传）；
+ * onTheme(id) 由调用方接到背景切换（txt 只换令牌，epub 还要刷 iframe 主题）。
+ */
+function openReaderSettings({ theme, onTheme, font = null, line = null } = {}) {
+  const fontBlock = font
+    ? `<div class="reader-setting"><span class="reader-setting-label">字号</span>
+         <button class="btn sm" type="button" data-fs="-1" aria-label="缩小字号">A−</button>
+         <span class="reader-setting-value" data-fs-value>${font.value}</span>
+         <button class="btn sm" type="button" data-fs="1" aria-label="放大字号">A+</button>
+       </div>`
+    : ''
+  const lineBlock = line
+    ? `<div class="reader-setting"><span class="reader-setting-label">行距</span>
+         <div class="reader-seg" role="group" aria-label="行距">${line.options
+           .map(
+             (o) =>
+               `<button class="reader-seg-btn" type="button" data-line="${o.value}" aria-pressed="${o.value === line.value}">${esc(o.label)}</button>`,
+           )
+           .join('')}</div>
+       </div>`
+    : ''
+  const swatchBlock = `<div class="reader-setting"><span class="reader-setting-label">背景</span>
+      <div class="reader-swatches">${READER_THEMES.map(
+        (t) =>
+          `<button class="reader-swatch" type="button" data-swatch="${t.id}" title="${esc(t.label)}" aria-label="${esc(t.label)}" aria-pressed="${t.id === theme}" style="background:${t.bg}"></button>`,
+      ).join('')}</div>
+    </div>`
+
+  const dlg = showDialog(`<h2>阅读设置</h2>${fontBlock}${lineBlock}${swatchBlock}`, { label: '阅读设置' })
+  if (font) {
+    dlg.body.querySelectorAll('[data-fs]').forEach((b) => {
+      b.onclick = () => {
+        const next = Math.max(font.min, Math.min(font.max, font.value + Number(b.dataset.fs)))
+        if (next === font.value) return
+        font.value = next
+        font.onFont(next)
+        const out = dlg.body.querySelector('[data-fs-value]')
+        if (out) out.textContent = String(next)
+      }
+    })
+  }
+  if (line) {
+    dlg.body.querySelectorAll('[data-line]').forEach((b) => {
+      b.onclick = () => {
+        line.value = Number(b.dataset.line)
+        line.onLine(line.value)
+        dlg.body
+          .querySelectorAll('[data-line]')
+          .forEach((x) => x.setAttribute('aria-pressed', String(Number(x.dataset.line) === line.value)))
+      }
+    })
+  }
+  dlg.body.querySelectorAll('[data-swatch]').forEach((b) => {
+    b.onclick = () => {
+      const id = b.dataset.swatch
+      onTheme(id)
+      dlg.body
+        .querySelectorAll('[data-swatch]')
+        .forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.swatch === id)))
+    }
+  })
+  return dlg
+}
+
 /** 一屏约 1–2KB，12000 字足够翻好几屏；没有章节标题的书按这个长度分节 */
 const SECTION_CHARS = 12000
 
-/** 章节标题：行首「第X章/卷/回…」、常见卷首语，或 markdown 标题 */
-const TXT_HEADING = /^(?:第\s*[0-9零一二三四五六七八九十百千万两]+\s*[章节回卷部篇集]|(?:序章|序言|楔子|引子|前言|后记|尾声|终章|番外)|#{1,3}\s)/
+/** 数字：半角 / 全角 / 汉字（含「〇」），不少 TXT 用「第１２３章」 */
+const TXT_NUM = '[0-9０-９零〇一二三四五六七八九十百千万两]'
+/** 章节单位：章 / 节 / 回 / 卷 / 部 / 篇 / 集 / 幕 / 折 / 话 */
+const TXT_UNIT = '[章节回卷部篇集幕折话]'
+/** 章节标题：行首「第X章/卷/回…」、常见卷首语、英文 Chapter，或 markdown 标题
+ *  （「正文 / 尾声」这类词只认独立成行，放在 TXT_STANDALONE，避免「正文内容如下…」被当成标题） */
+const TXT_HEADING = new RegExp(
+  `^(?:第\\s*${TXT_NUM}+\\s*${TXT_UNIT}` +
+    `|卷\\s*${TXT_NUM}+` +
+    `|[上中下续终前后]\\s*[卷部篇集]` +
+    `|(?:序章|序言|楔子|引子|引言|前言|后记|附录|附记|终章|番外|完本感言|上架感言|作者的话)` +
+    `|#{1,3}\\s)`,
+)
+/** 独立成行的卷首语（不带「第X」编号） */
+const TXT_STANDALONE = /^(?:序|自序|小引|引言|序幕|尾声|后记|附录|附记|终章|番外|正文|完本感言|上架感言|作者的话)$/
 /** 章节号后紧跟空格 / 冒号 / 顿号等分隔符：最可靠的标题样式 */
-const TXT_HEADING_SEP = /^第\s*[0-9零一二三四五六七八九十百千万两]+\s*[章节回卷部篇集](?:\s|$|[:：、·—\-])/
+const TXT_HEADING_SEP = new RegExp(`^第\\s*${TXT_NUM}+\\s*${TXT_UNIT}(?:\\s|$|[:：、·—\\-])`)
+/** 独立序号标题：1 / 01 / 1. / 一、 / （一） */
+const TXT_NUM_ONLY = new RegExp(`^(?:${TXT_NUM}{1,4}\\s*[.、．]?|[（(]\\s*${TXT_NUM}{1,4}\\s*[）)])$`)
+/** 英文常见章节标题 */
+const TXT_HEADING_EN = /^(?:(?:chapter|part|book)\s+(?:\d+|[ivxlcdm]+)|prologue|epilogue|interlude)\b/i
+/** 正文式开头：避免把「第三章讲的是…」这种引用当成标题 */
+const TXT_PROSE_REF = new RegExp(`^第\\s*${TXT_NUM}+\\s*${TXT_UNIT}(?:讲|说|写|的|是|有|就|又|还|要|把|给|被|让|合|课)`)
+/** 「第一章里 / 第一章中」这类弱信号：短标题仍可能是真标题，长句才判为正文 */
+const TXT_PROSE_WEAK = new RegExp(`^第\\s*${TXT_NUM}+\\s*${TXT_UNIT}(?:里|中)`)
 
 let epubBook = null
 let txtReader = null
@@ -65,16 +205,22 @@ export async function render(main, params) {
   const fileUrl = `/api/book/read/${id}?v=${encodeURIComponent(version)}`
 
   main.innerHTML = `
-    <div class="reader-bar">
-      <div class="reader-title">
-        <h1 class="page-title" title="${esc(title)}">${esc(title)}</h1>
-        <p class="page-sub">
-          <span class="reader-chapter" data-chapter hidden></span>
-          <span data-meta>${esc(meta)}</span>
-        </p>
-      </div>
-    </div>
-    <div class="reader-stage" id="reader-stage"></div>`
+    <div class="reader-root" data-reader-theme="${readTheme()}">
+      <header class="reader-top">
+        <div class="reader-title">
+          <h1 class="page-title" title="${esc(title)}">${esc(title)}</h1>
+          <p class="page-sub">
+            <span class="reader-chapter" data-chapter hidden></span>
+            <span data-meta>${esc(meta)}</span>
+          </p>
+        </div>
+        <nav class="reader-top-links" aria-label="返回导航">
+          <a href="#/">首页</a>
+          <a href="#/book">我的书架</a>
+        </nav>
+      </header>
+      <div class="reader-stage" id="reader-stage"></div>
+    </div>`
 
   // 当前章：顶栏副标题与浏览器标签页同步（切章时由各阅读器回调）
   const chapterEl = main.querySelector('[data-chapter]')
@@ -87,16 +233,18 @@ export async function render(main, params) {
     document.title = text ? `${text} · ${title}` : `${title} · 个人工作台`
   }
 
-  // 翻开的书从「待读」前进到「阅读中」（已读不倒退；失败静默，不挡阅读）
-  if (book.status === 'unread') {
-    api(`/api/book/${id}`, { method: 'PATCH', body: JSON.stringify({ status: 'reading' }) }).catch(() => {})
-  }
-
   const stage = main.querySelector('#reader-stage')
+  const root = main.querySelector('.reader-root')
   if (!book.hasFile) {
     stage.innerHTML = '<div class="empty">这本书还没有上传文件，回书架点「上传文件」。</div>'
     return
   }
+
+  // 打开即记一次「最近阅读」：书架默认排序按它倒序置顶；待读 → 阅读中，失败静默不挡阅读
+  api(`/api/book/${id}/reading`, { method: 'POST' }).catch(() => {})
+
+  // 进度回写书架卡片：epub / txt 阅读器翻页 / 滚动时调用（pdf 是浏览器原生查看器，拿不到页码）
+  reportProgress = progressReporter(id)
 
   if (book.fmt === 'pdf') {
     // PDF 交给浏览器原生查看器：自带缩放 / 页码 / 目录，不再叠加一层页脚
@@ -104,7 +252,7 @@ export async function render(main, params) {
     return
   }
   if (book.fmt === 'txt') {
-    openTxtReader(id, title, version, fileUrl, book.size, stage, setChapter)
+    openTxtReader(id, title, version, fileUrl, book.size, stage, setChapter, book.filename)
     return
   }
   await openEpubReader(id, version, fileUrl, stage, setChapter)
@@ -163,6 +311,39 @@ function setProgress(root, ratio, text, valuetext = '') {
   if (label) label.textContent = text ?? `${pct}%`
 }
 
+/**
+ * 阅读进度回写书架卡片：同一百分比不重复发，翻页很快时攒 2 秒再发，离页时 flush。
+ * 失败静默（只影响书架上的进度条，不影响阅读）；pdf 走浏览器原生查看器拿不到页码，不接。
+ */
+function progressReporter(id) {
+  let last = -1
+  let pending = null
+  let timer = 0
+  const flush = () => {
+    clearTimeout(timer)
+    timer = 0
+    if (pending == null) return
+    const pct = pending
+    pending = null
+    if (pct === last) return
+    last = pct
+    api(`/api/book/${id}/progress`, { method: 'POST', body: JSON.stringify({ progress: pct }) }).catch(() => {})
+  }
+  return {
+    report(ratio) {
+      if (!Number.isFinite(ratio)) return
+      const pct = Math.max(0, Math.min(100, Math.round(ratio * 100)))
+      if (pct === last || pct === pending) return
+      pending = pct
+      if (!timer) timer = setTimeout(flush, 2000)
+    },
+    flush,
+  }
+}
+
+/** 当前阅读器的进度上报器（切页 destroy 时 flush 掉最后一格） */
+let reportProgress = null
+
 /** 目录行 DOM：弹窗与右侧栏共用，避免两套结构走偏 */
 function tocRowsHtml(rows, current) {
   return rows
@@ -177,12 +358,27 @@ function tocRowsHtml(rows, current) {
 }
 
 /** 目录弹窗：rows = [{ label, depth?, no? }]，点击回调由调用方接在 data-toc-i 上 */
-function openTocDialog(rows, { empty = '这本书没有目录信息。', hint = '', current = -1 } = {}) {
+function openTocDialog(rows, { empty = '这本书没有目录信息。', hint = '', current = -1, onRegenerate = null } = {}) {
+  const regen = onRegenerate
+    ? `<div class="reader-toc-tools">
+         <span class="small muted">识别不准或算法更新后，可重新扫描目录</span>
+         <button class="btn sm" type="button" data-toc-regen>${icon('refresh', 14)}重新生成目录</button>
+       </div>`
+    : ''
+
   if (!rows.length) {
-    showDialog(`<h2>目录</h2><p class="small muted">${esc(empty)}</p>`, { label: '目录' })
-    return null
+    const dlg = showDialog(
+      `<h2>目录</h2>
+       ${regen}
+       <p class="small muted">${esc(empty)}</p>`,
+      { label: '目录' },
+    )
+    bindTocRegen(dlg, onRegenerate)
+    return dlg
   }
+
   const html = `<h2>目录</h2>
+    ${regen}
     <ol class="reader-toc">
       ${tocRowsHtml(rows, current)}
     </ol>
@@ -190,7 +386,18 @@ function openTocDialog(rows, { empty = '这本书没有目录信息。', hint = 
 
   const dlg = showDialog(html, { label: '目录' })
   dlg.body.querySelector('[aria-current="true"]')?.scrollIntoView({ block: 'nearest' })
+  bindTocRegen(dlg, onRegenerate)
   return dlg
+}
+
+/** 「重新生成目录」按钮：先关弹窗，再让阅读器重扫（否则弹窗会压住加载反馈） */
+function bindTocRegen(dlg, onRegenerate) {
+  const btn = dlg?.body.querySelector('[data-toc-regen]')
+  if (!btn || !onRegenerate) return
+  btn.addEventListener('click', () => {
+    dlg.close()
+    onRegenerate()
+  })
 }
 
 /* ---------------- 右侧目录栏（桌面） ---------------- */
@@ -199,10 +406,17 @@ const TOC_OPEN_KEY = 'book:toc:open'
 /** 断点与 CSS 的 1024px 保持一致 */
 const tocWide = () => window.matchMedia('(min-width: 1024px)').matches
 
-const tocSideHtml = () => `<aside class="reader-toc-side" data-toc-side hidden aria-label="目录">
+const tocSideHtml = (opts = {}) => `<aside class="reader-toc-side" data-toc-side hidden aria-label="目录">
     <div class="reader-toc-head">
       <strong>目录</strong>
-      <button class="icon-btn" type="button" data-toc-close aria-label="收起目录" title="收起目录">${icon('close', 14)}</button>
+      <div class="reader-toc-head-acts">
+        ${
+          opts.refresh
+            ? `<button class="icon-btn" type="button" data-toc-refresh aria-label="重新生成目录" title="重新生成目录">${icon('refresh', 14)}</button>`
+            : ''
+        }
+        <button class="icon-btn" type="button" data-toc-close aria-label="收起目录" title="收起目录">${icon('close', 14)}</button>
+      </div>
     </div>
     <ol class="reader-toc reader-toc-list" data-toc-list></ol>
     <p class="reader-toc-hint small muted" data-toc-hint hidden></p>
@@ -359,6 +573,7 @@ function flattenToc(items, depth = 0, out = []) {
 
 async function openEpubReader(id, version, fileUrl, stage, setChapter) {
   const alive = () => stage.isConnected
+  const root = stage.closest('.reader-root')
   const say = progressStage(stage, '正在打开 epub…')
 
   try {
@@ -384,6 +599,7 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
         <div class="reader-page"><div class="reader-view" data-view></div></div>
         ${tocSideHtml()}
       </div>
+      ${fabHtml()}
       ${footerHtml({ stat: true })}`
 
     const view = stage.querySelector('[data-view]')
@@ -392,22 +608,86 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
     const tocBtn = stage.querySelector('[data-toc]')
 
     epubBook = window.ePub(bytes.buffer)
+    // 坏书（不是合法 epub）要立刻报错：openFailed 之后 loaded.* 永不 resolve，
+    // 不加这个监听阅读页会永远停在「正在打开 epub…」
+    const openBroken = new Promise((_, reject) =>
+      epubBook.on('openFailed', () => reject(new Error('这本书解析失败（不是有效的 epub）'))),
+    )
     // spread:'none' + 窄栏：宽屏上仍然是一页一行字，图片不会被拉满整屏
     const rendition = epubBook.renderTo(view, { width: '100%', height: '100%', spread: 'none' })
     const go = (dir) => Promise.resolve(rendition[dir]()).catch(() => {})
 
-    // 深色主题：epub 自带样式多为黑字，不覆盖会在深色底上看不清
-    if (document.documentElement.dataset.theme === 'dark') {
+    // epub 是 iframe 里的独立文档：背景 / 字号除了写进 rendition 主题，还要直接刷已渲染的 iframe，
+    // 否则 themes API 只对翻页后的新内容生效，当前页不变色
+    let epubFontSize = Math.max(14, Math.min(26, Number(readStorage(EPUB_FONT_KEY)) || 21))
+    const epubThemeColors = {
+      paper: null, // 白：跟随原书自带样式（epub 自带排版）
+      sepia: { color: '#38301f', background: '#f6f0e0' },
+      green: { color: '#23321f', background: '#dfe9da' },
+      dark: { color: '#d0d3d8', background: '#1c1c1d' }, // 夜间：epub 自带样式多为黑字，不覆盖看不清
+    }
+    const paintEpubTheme = () => {
+      const colors = epubThemeColors[root.dataset.readerTheme || 'paper']
       try {
-        rendition.themes.override('color', '#e8efee')
-        rendition.themes.override('background', '#131c1c')
+        if (colors) {
+          rendition.themes.override('color', colors.color)
+          rendition.themes.override('background', colors.background)
+        } else {
+          rendition.themes.override('color', '')
+          rendition.themes.override('background', '')
+        }
+        rendition.themes.fontSize(`${epubFontSize}px`)
       } catch {
         /* 主题接口不可用时按原书样式显示，不影响阅读 */
       }
+      try {
+        rendition.views().forEach((v) => {
+          const doc = v.document
+          if (!doc) return
+          doc.documentElement.style.fontSize = `${epubFontSize}px`
+          const paint = (prop, value) => {
+            doc.documentElement.style[prop] = value
+            doc.body.style[prop] = value
+          }
+          paint('color', colors?.color ?? '')
+          paint('background', colors?.background ?? '')
+        })
+      } catch {
+        /* iframe 还没渲染好：relocated 后会再刷一遍 */
+      }
+    }
+    paintEpubTheme()
+
+    // 悬浮工具栏：目录 / 阅读设置（字号 + 背景）/ 背景循环；先刷一次主题钮图标
+    setReaderTheme(root, root.dataset.readerTheme || 'paper')
+    const setFabTheme = (id) => {
+      setReaderTheme(root, id)
+      paintEpubTheme()
+    }
+    stage.querySelector('[data-fab-set]').onclick = () => {
+      openReaderSettings({
+        theme: root.dataset.readerTheme || 'paper',
+        font: {
+          value: epubFontSize,
+          min: 14,
+          max: 26,
+          onFont: (n) => {
+            epubFontSize = n
+            writeStorage(EPUB_FONT_KEY, String(n))
+            paintEpubTheme()
+          },
+        },
+        onTheme: setFabTheme,
+      })
+    }
+    stage.querySelector('[data-fab-theme]').onclick = () => {
+      cycleTheme(root)
+      paintEpubTheme()
     }
 
-    // 目录（navigation 解析很快，先拿到才能把 href 映射成 spine 序号）
-    const nav = await epubBook.loaded.navigation.catch(() => null)
+    // 目录（navigation 解析很快，先拿到才能把 href 映射成 spine 序号）；
+    // openBroken 兜底：坏书不进这行 await 的静默挂起，直接走外层错误提示
+    const nav = await Promise.race([epubBook.loaded.navigation.catch(() => null), openBroken])
     const tocItems = flattenToc(nav?.toc)
     const spineIndex = (href) => {
       if (!href) return -1
@@ -462,6 +742,7 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
         ratio = 0
       }
       setProgress(stage, ratio, `${Math.round(ratio * 100)}%`, chapterAt(currentIndex)?.label || '')
+      reportProgress?.report(ratio)
     }
 
     const paintLocation = (loc) => {
@@ -525,6 +806,8 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
     rendition.on('relocated', (loc) => {
       if (!alive()) return
       paintLocation(loc)
+      // 新一节的 iframe 渲染完成：立即把背景 / 字号刷上去（themes API 只覆盖新内容，这里兜当前页）
+      paintEpubTheme()
       clearTimeout(saveTimer)
       saveTimer = setTimeout(() => {
         if (!alive() || !loc?.start?.cfi) return
@@ -546,7 +829,7 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
       wheelDocs.length = 0
     }
 
-    tocBtn.onclick = () => {
+    const showToc = () => {
       // 宽屏：按钮退化为右侧目录的显隐开关；窄屏仍开弹窗
       if (tocSide?.canToggle()) {
         tocSide.toggle()
@@ -576,6 +859,8 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
         }
       })
     }
+    tocBtn.onclick = showToc
+    stage.querySelector('[data-fab-toc]').onclick = showToc
     prevBtn.onclick = () => go('prev')
     nextBtn.onclick = () => go('next')
 
@@ -632,7 +917,7 @@ function readJson(key) {
   }
 }
 
-/** 整本解码（UTF-16 等非常规编码 / 分块用不上时的兜底） */
+/** 整本解码：识别 BOM / UTF-8 / GB18030 / UTF-16（非常规编码的兜底） */
 function decodeTxt(buf) {
   const bytes = new Uint8Array(buf)
   const decode = (label, input = bytes) => new TextDecoder(label).decode(input)
@@ -656,250 +941,355 @@ function decodeTxt(buf) {
   }
 }
 
-/** 按「第X章」切分；切不出来（如短篇、无标题）按字数分节，避免整本塞进 DOM */
-function splitTxtChapters(text) {
-  const lines = text.replace(/\r\n?/g, '\n').split('\n')
+/**
+ * 候选标题打分（>= 3 才收下）。
+ * 比「正则命中 + 布尔条件」稳：编号样式 / 独立行 / 短行加分，正文式引用与句末标点减分；
+ * 不再强制要求标题带分隔符或前后空行——很多 TXT 段间只有一个换行。
+ */
+function scoreTxtHeading(text, { first = false, prevBlank = false, nextBlank = false } = {}) {
+  const line = String(text ?? '').trim()
+  if (!line || line.length > 60) return 0
+  const numOnly = TXT_NUM_ONLY.test(line)
+  // 独立序号允许以「、」「.」结尾（一、 / 1.），普通标题仍不允许句读结尾
+  if (/[。，；：]$/.test(line) || (!numOnly && /、$/.test(line))) return 0
+  const numbered = TXT_HEADING.test(line) || TXT_HEADING_EN.test(line) || TXT_STANDALONE.test(line)
+  if (!numbered && !numOnly) return 0
+  // 纯序号只在独立成行时认（文首 / 前后空行），避免把正文里的列表项拆成章
+  if (!numbered && !first && !prevBlank && !nextBlank) return 0
+  if (TXT_PROSE_REF.test(line) || (line.length > 12 && TXT_PROSE_WEAK.test(line))) return 0
+  let score = numbered ? 3 : 2
+  if (numbered && TXT_HEADING_SEP.test(line)) score += 1
+  if (first || prevBlank) score += 1
+  if (nextBlank) score += 1
+  if (line.length <= 30) score += 1
+  if (/[，；]/.test(line)) score -= 2
+  return score
+}
+
+/** 章内小标题（如「2」「（三）」「卷一」）：独立成行、命中标题样式且够短，渲染成居中标题 */
+function isTxtHeadLine(line) {
+  const s = line.trim()
+  if (!s || s.length > 30 || TXT_PROSE_REF.test(s)) return false
+  return TXT_HEADING.test(s) || TXT_HEADING_EN.test(s) || TXT_STANDALONE.test(s) || TXT_NUM_ONLY.test(s)
+}
+
+/**
+ * 整本分章：标题行保留在 lines 里，正文从 bodyStart 开始，重扫目录时不会丢标题。
+ * 返回 { chapters: [{ title, bodyStart, end }], sectioned }，end 为章节结束行（不含）。
+ */
+function splitTxtLines(lines) {
   const blank = (i) => (lines[i] ?? '').trim() === ''
   const marks = []
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i].trim()
-    if (!line || line.length > 60) continue
-    if (!TXT_HEADING.test(line) || /[。，；：、]$/.test(line)) continue
-    // 散文里也会出现「第三章讲的是…」这种行：只认有分隔符、被空行包住或文首/标题语的行
-    const solid =
-      TXT_HEADING_SEP.test(line) ||
-      i === 0 ||
-      blank(i - 1) ||
-      blank(i + 1) ||
-      /^#{1,3}\s/.test(line) ||
-      /^(?:序章|序言|楔子|引子|前言|后记|尾声|终章|番外)/.test(line)
-    if (solid) marks.push(i)
+    if (!line) continue
+    if (scoreTxtHeading(line, { first: i === 0, prevBlank: blank(i - 1), nextBlank: blank(i + 1) }) < 3) continue
+    marks.push(i)
   }
 
   if (marks.length >= 2) {
     const chapters = []
-    const head = lines.slice(0, marks[0])
-    if (head.join('').trim()) chapters.push({ title: '开篇', lines: head })
+    // 第一个标题之前的内容（书名 / 作者 / 引子）单独列为「开篇」
+    if (marks[0] > 0 && lines.slice(0, marks[0]).join('').trim()) {
+      chapters.push({ title: '开篇', bodyStart: 0, end: marks[0] })
+    }
     marks.forEach((start, i) => {
       const end = i + 1 < marks.length ? marks[i + 1] : lines.length
-      const chunk = lines.slice(start, end)
-      chapters.push({ title: chunk[0].trim().replace(/^#+\s*/, '').slice(0, 60), lines: chunk.slice(1) })
+      chapters.push({
+        title: lines[start].trim().replace(/^#+\s*/, '').slice(0, 60),
+        bodyStart: start + 1,
+        end,
+      })
     })
-    return chapters
+    return { chapters, sectioned: false }
   }
-  return chunkByLength(lines)
+
+  return { chapters: splitByLength(lines), sectioned: true }
 }
 
-function chunkByLength(lines, limit = SECTION_CHARS) {
+/** 没有章节标题的书按字数分节；开头的书名 / 作者等元信息单独列为「开篇」 */
+function splitByLength(lines, limit = SECTION_CHARS) {
+  const bodyStart = findTxtBodyStart(lines)
   const chapters = []
-  let buf = []
+  if (bodyStart > 0) chapters.push({ title: '开篇', bodyStart: 0, end: bodyStart })
+
+  let start = bodyStart
   let size = 0
-  const flush = () => {
-    if (!buf.length) return
-    chapters.push({ title: `第 ${chapters.length + 1} 节`, lines: buf })
-    buf = []
-    size = 0
-  }
-  for (const line of lines) {
-    if (line.length > limit) {
-      flush()
-      for (let i = 0; i < line.length; i += limit) {
-        chapters.push({ title: `第 ${chapters.length + 1} 节`, lines: [line.slice(i, i + limit)] })
-      }
-      continue
+  let no = 0
+  for (let i = bodyStart; i < lines.length; i += 1) {
+    size += lines[i].length + 1
+    if (size >= limit && i + 1 < lines.length) {
+      no += 1
+      chapters.push({ title: `第 ${no} 节`, bodyStart: start, end: i + 1 })
+      start = i + 1
+      size = 0
     }
-    buf.push(line)
-    size += line.length + 1
-    if (size >= limit) flush()
   }
-  flush()
-  return chapters.length ? chapters : [{ title: '正文', lines: ['（空文件）'] }]
+  if (start < lines.length) {
+    no += 1
+    chapters.push({ title: `第 ${no} 节`, bodyStart: start, end: lines.length })
+  }
+  return chapters.length ? chapters : [{ title: '正文', bodyStart: 0, end: lines.length }]
 }
 
 /**
- * TXT 阅读器：按字节分块下载 + 增量分章。
- *
- * 状态模型：只有一个「窗口」——从某个字节开始的一段已下载内容（lines 数组）。
- * 章节以 line / byte 记录，窗口内相对下标 + chapterBase 换算成全局章号。
- * 允许从任意章的字节直接开新窗口（读过的章在 localStorage 里有字节表），
- * 所以「跳到第 300 章」= 一个 Range 请求，而不是把前 299 章都下下来。
+ * 分节时跳过开头的书名 / 作者 / 版权等元信息，返回正文首行下标。
+ * 只跳「连续出现在文件开头」的元信息行，正文第一段再短也保留。
  */
-function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter) {
+function findTxtBodyStart(lines) {
+  const isMeta = (s) =>
+    /^[《〈].+[》〉]$/.test(s) ||
+    /^(?:书名|作者|译者|出版社|出版|版权|简介|内容简介|声明|来源)[:：]/.test(s) ||
+    /^(?:更多精彩|本书由|www\.|https?:)/i.test(s)
+  let i = 0
+  while (i < lines.length && i < 40) {
+    const s = lines[i].trim()
+    if (s && !isMeta(s)) break
+    i += 1
+  }
+  return i < lines.length ? i : 0
+}
+
+/**
+ * 统计 needle 在 text 中出现的次数（字面量、不重叠）。
+ * 右键「批量删除广告」用它先给用户一个确切的影响面：命中几处再决定删不删。
+ */
+function countOccurrences(text, needle) {
+  if (!needle) return 0
+  let count = 0
+  for (let at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + needle.length)) count += 1
+  return count
+}
+
+/**
+ * 整本删掉一段文字（字面量，不按正则）：单行内命中就删掉匹配文字，
+ * 删完只剩空白的行整行去掉（盗版站广告通常独占一行，留着空行会多出空档）。
+ * 选中内容跨行时按整段删除。返回 { text, count }。
+ */
+function removeAllText(source, needle) {
+  if (needle.includes('\n')) {
+    const count = countOccurrences(source, needle)
+    return { text: source.split(needle).join(''), count }
+  }
+  const out = []
+  let count = 0
+  for (const line of source.split('\n')) {
+    const hits = countOccurrences(line, needle)
+    if (!hits) {
+      out.push(line)
+      continue
+    }
+    count += hits
+    const next = line.split(needle).join('').replace(/[ \t\u3000]+$/, '')
+    if (!next.trim() && line.trim()) continue
+    out.push(next)
+  }
+  return { text: out.join('\n'), count }
+}
+
+/** 复制选中文字：优先 Clipboard API，失败退回 execCommand（http 局域网 / 权限被拒时） */
+async function copyToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {
+    /* 走下面的兜底 */
+  }
+  const el = document.createElement('textarea')
+  el.value = text
+  el.setAttribute('readonly', '')
+  el.style.cssText = 'position:fixed;top:-1000px;left:-1000px;opacity:0'
+  document.body.append(el)
+  el.select()
+  let ok = false
+  try {
+    ok = document.execCommand('copy')
+  } catch {
+    ok = false
+  }
+  el.remove()
+  return ok
+}
+
+/**
+ * TXT 阅读器：整本下载 → 解码 → 分章，页脚进度按全书字符位置计算。
+ *
+ * 早先按字节分块拉：进度只能用「已经下载到哪」估算，跳章 / 只读半本时经常不准。
+ * 现在一次读完（下载过程显示大小与百分比，URL 带 ?v= 可长缓存，第二次打开直接命中），
+ * 章节表与总进度都来自整本内容；UTF-16 等非常规编码也走同一条路。
+ */
+function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter, filename) {
   stage.innerHTML = `
     <div class="reader-body">
       <div class="txt-reader">
         <div class="txt-body" data-body tabindex="0" role="document" aria-label="${esc(title)}">${loadingBlock('正在加载正文…')}</div>
       </div>
-      ${tocSideHtml()}
+      ${tocSideHtml({ refresh: true })}
     </div>
-    ${footerHtml({ prev: '上一章', next: '下一章', font: true })}`
+    ${fabHtml()}
+    ${footerHtml({ prev: '上一章', next: '下一章' })}`
 
   const root = stage
   const body = root.querySelector('[data-body]')
   const prevBtn = root.querySelector('[data-prev]')
   const nextBtn = root.querySelector('[data-next]')
   const tocBtn = root.querySelector('[data-toc]')
-  /** 右侧目录控制器：jump 定义后创建（章节表是增量长出来的） */
+  /** 右侧目录控制器：整本分章后一次建好，换章只同步高亮 */
   let tocSide = null
 
-  /** 窗口内的行（不含换行符）与章节；章节 line = 标题行，bodyStart = 正文首行 */
+  /** 整本按行切开（含标题行）；正文渲染从章节的 bodyStart 开始 */
   const lines = []
-  const marks = []
+  /** [{ title, bodyStart, end, start, chars }]：start/chars 是全书字符区间，用来算总进度 */
   let chapters = []
+  let totalChars = 0
   let index = 0
-  let chapterBase = 0
-  let windowStart = 0
+  /** 没有章节标题、按字数分节 */
+  let sectioned = false
 
-  let decoder = null
-  let encoding = null
-  let legacy = false
-  /** 未成行的残字节 + 它在文件里的绝对偏移 */
-  let rest = new Uint8Array(0)
-  let restPos = 0
-  let nextByte = 0
-  let totalBytes = Number(sizeHint) || 0
-  let haveAll = false
-  let loading = false
-  let disposed = false
-  let pendingLine = null
-  let headHasText = false
-  let sectionChars = 0
-  let mode = 'chapters'
-
-  /** 跨窗口的全局章节表（localStorage 里的那份），用于直跳与目录 */
-  const known = new Map()
-
-  let fontSize = Number(readStorage(TXT_FONT_KEY)) || 17
+  let fontSize = Number(readStorage(TXT_FONT_KEY)) || 21
+  let lineHeight = Number(readStorage(TXT_LINE_KEY)) || 1.5
   let saveTimer = 0
-  let idxTimer = 0
   let rafPending = false
+  let disposed = false
+  let loading = true
+  /** 整本原文（解码后，仅用于右键「批量删除」重写文件；分章用 buildBook 的副本） */
+  let fullText = ''
 
-  const cached = readIndex()
-  for (const c of cached.chapters ?? []) known.set(c.i, { t: c.t, b: c.b })
-  if (cached.enc) encoding = cached.enc
+  // 旧版按字节分块时缓存的「章节字节表」已经没用了（大书能占不少配额），顺手清掉
+  try {
+    localStorage.removeItem(`book:txt:idx:${id}`)
+  } catch {
+    /* 隐私模式 / 存储禁用：清不掉也不影响阅读 */
+  }
 
-  const isBlank = (i) => (lines[i] ?? '').trim() === ''
+  /** 加载态文案（整本下载 / 解析阶段），加载完由 paintProgress() 覆盖回百分比 */
+  function say(text) {
+    const el = body.querySelector('.loading span:last-child')
+    if (el) el.textContent = text
+  }
 
-  const scrollRatio = () => {
+  function paintFont() {
+    body.style.fontSize = `${fontSize}px`
+    body.style.lineHeight = String(lineHeight)
+  }
+
+  // ---------- 位置 / 进度 ----------
+
+  function scrollRatio() {
     const max = body.scrollHeight - body.clientHeight
     return max > 0 ? Math.min(1, Math.max(0, body.scrollTop / max)) : 0
   }
 
-  const currentPos = () => ({ c: index + chapterBase, r: scrollRatio() })
-
-  function paintFont() {
-    body.style.fontSize = `${fontSize}px`
+  /** 当前读到的全书字符位置 = 本章起始位置 + 章内滚动比例 × 本章字数 */
+  function currentCharPos() {
+    const c = chapters[index]
+    return c ? c.start + c.chars * scrollRatio() : 0
   }
 
-  /** 加载态文案：借用进度百分比的位置，加载完由 paintProgress() 覆盖回百分比 */
-  function say(text) {
-    const label = root.querySelector('[data-progress-text]')
-    if (label) label.textContent = text
+  /** 字符位置 → 章号 + 章内比例（重新生成目录后回到原来的位置） */
+  function locateChar(pos) {
+    if (!chapters.length) return { index: 0, ratio: 0 }
+    let hit = 0
+    for (let i = 0; i < chapters.length; i += 1) {
+      if (chapters[i].start <= pos) hit = i
+      else break
+    }
+    const c = chapters[hit]
+    const ratio = c.chars > 0 ? Math.min(1, Math.max(0, (pos - c.start) / c.chars)) : 0
+    return { index: hit, ratio }
   }
 
-  // ---------- localStorage ----------
-
-  function readIndex() {
-    const raw = readJson(txtIdxKey(id))
-    if (!raw || String(raw.v) !== version) return {}
-    return raw
+  /** 总进度：从第一章正文到全书末尾的字符比例（不是「已下载多少」） */
+  function currentRatio() {
+    const c = chapters[index]
+    if (!c || !totalChars) return 0
+    const base = chapters[0]?.start || 0
+    const span = Math.max(1, totalChars - base)
+    return Math.min(1, Math.max(0, (c.start + c.chars * scrollRatio() - base) / span))
   }
 
-  function saveIndex() {
-    clearTimeout(idxTimer)
-    idxTimer = setTimeout(() => {
-      if (disposed) return
-      try {
-        const rows = [...known.entries()]
-          .filter(([, v]) => v.b != null)
-          .sort((a, b) => a[0] - b[0])
-          .slice(0, TXT_INDEX_MAX)
-          .map(([i, v]) => ({ i, t: v.t, b: v.b }))
-        writeStorage(txtIdxKey(id), JSON.stringify({ v: version, size: totalBytes, enc: encoding, chapters: rows }))
-      } catch {
-        /* 存不下就算了，只影响下次直跳 */
-      }
-    }, 600)
+  function paintProgress() {
+    const ratio = currentRatio()
+    setProgress(
+      root,
+      ratio,
+      `${Math.round(ratio * 100)}%`,
+      [index + 1, chapters[index]?.title].filter(Boolean).join(' '),
+    )
+    reportProgress?.report(ratio)
   }
 
   function savePos() {
     clearTimeout(saveTimer)
     saveTimer = setTimeout(() => {
-      if (!disposed && chapters.length) writeStorage(txtPosKey(id), JSON.stringify(currentPos()))
+      if (!disposed && chapters.length) {
+        writeStorage(txtPosKey(id), JSON.stringify({ v: version, c: index, r: scrollRatio() }))
+      }
     }, 300)
   }
 
-  // ---------- 进度 ----------
+  // ---------- 分章 / 目录 ----------
 
-  /** 有字节表就按「本章起始字节 + 章内滚动比例」估算，否则退回按章序号 */
-  function currentRatio() {
-    const local = index + chapterBase
-    const ratio = scrollRatio()
-    const start = known.get(local)?.b
-    if (start != null && totalBytes) {
-      // 下一章字节未知（本章还没下完）时，用已下载到的位置当章尾，避免一屏就冲到 100%
-      const next = known.get(local + 1)?.b
-      const end = next != null && next > start ? next : Math.max(restPos, start + 1)
-      return Math.min(1, (start + (end - start) * ratio) / totalBytes)
+  /** 把整本文字切成行并分章；chapter.start/chars 是用于总进度的字符区间 */
+  function buildBook(text) {
+    lines.length = 0
+    for (const line of text.replace(/\r\n?/g, '\n').split('\n')) lines.push(line)
+
+    // 极端情况：整本没有换行（一行几十万字），先切成伪行，避免一个文本节点把页面拖住
+    for (let i = 0; i < lines.length; i += 1) {
+      if (lines[i].length <= SECTION_CHARS * 2) continue
+      const parts = []
+      for (let at = 0; at < lines[i].length; at += SECTION_CHARS) parts.push(lines[i].slice(at, at + SECTION_CHARS))
+      lines.splice(i, 1, ...parts)
     }
-    const total = Math.max(chapters.length, known.size, 1)
-    return Math.min(1, (index + ratio) / total)
-  }
 
-  function paintProgress() {
-    const ratio = currentRatio()
-    setProgress(root, ratio, `${Math.round(ratio * 100)}%`, [chapterBase + index + 1, chapters[index]?.title].filter(Boolean).join(' '))
-  }
-
-  // ---------- 章节维护 ----------
-
-  function rebuildChapters() {
-    // 分节 / 整本解码模式是别处维护的章节表，重算会把它清掉
-    if (mode === 'sections' || legacy) return
-    chapters = []
-    if (windowStart === 0 && headHasText) chapters.push({ title: '开篇', line: 0, bodyStart: 0, byte: 0 })
-    for (const m of marks) chapters.push({ title: m.title, line: m.line, bodyStart: m.bodyStart, byte: m.byte })
-    for (let i = 0; i < chapters.length; i += 1) {
-      const c = chapters[i]
-      known.set(chapterBase + i, { t: c.title, b: c.byte })
+    const offsets = new Array(lines.length)
+    let at = 0
+    for (let i = 0; i < lines.length; i += 1) {
+      offsets[i] = at
+      at += lines[i].length + 1
     }
+    totalChars = Math.max(1, at)
+
+    const parsed = splitTxtLines(lines)
+    sectioned = parsed.sectioned
+    chapters = parsed.chapters.map((c) => {
+      const start = offsets[c.bodyStart] ?? at
+      const end = c.end < lines.length ? offsets[c.end] : at
+      return { ...c, start, chars: Math.max(0, end - start) }
+    })
+    index = Math.max(0, Math.min(chapters.length - 1, index))
+    paintToc()
   }
 
-  /** 章节结束行：下一章标题行；整本读完时是文件尾；还没下载到则是 null */
-  function chapterEnd(local) {
-    const next = chapters[local + 1]
-    if (next) return next.line
-    return haveAll ? lines.length : null
-  }
-
-  /** 目录条目：跨窗口章节表，按全局章号排序 */
-  function tocEntries() {
-    return [...known.entries()].filter(([, v]) => v.t).sort((a, b) => a[0] - b[0])
-  }
-
-  /** 右侧目录：章节表随下载增长，每次换章刷新一遍并同步高亮 */
-  function paintTocSide() {
-    if (!tocSide) return
-    const entries = tocEntries()
-    tocSide.setRows(
-      entries.map(([i, v]) => ({ label: v.t, i })),
-      haveAll ? '' : '目录随阅读进度继续补全',
+  function paintToc() {
+    tocSide?.setRows(
+      chapters.map((c, i) => ({ label: c.title, i })),
+      sectioned ? '没有章节标题，已按字数分节' : '',
     )
-    tocSide.setCurrent(entries.findIndex(([i]) => i === index + chapterBase))
+  }
+
+  /** 跳章：章节表已经完整，直接切换（不再需要下载） */
+  function jump(target) {
+    if (disposed || !chapters.length) return
+    index = Math.max(0, Math.min(chapters.length - 1, target))
+    paint()
   }
 
   function paint(ratio = null, keepScroll = false) {
     if (!chapters.length) return
     index = Math.max(0, Math.min(chapters.length - 1, index))
     const c = chapters[index]
-    const end = chapterEnd(index)
-    const text = lines
-      .slice(c.bodyStart, end == null ? lines.length : end)
-      .join('\n')
-      .replace(/^\n+|\n+$/g, '')
 
     const top = keepScroll ? body.scrollTop : 0
-    body.textContent = text || '（这一章还是空的）'
+    // 一行一段渲染：段间空行只作分段标记（间距交给 margin），章内小标题渲染成居中标题
+    const paras = []
+    for (const raw of lines.slice(c.bodyStart, c.end)) {
+      const text = raw.trim()
+      if (!text) continue
+      paras.push(`<p${isTxtHeadLine(text) ? ' class="txt-head"' : ''}>${esc(text)}</p>`)
+    }
+    body.innerHTML = paras.join('') || '<p class="txt-head">（这一章还是空的）</p>'
     body.scrollTop = top
     if (ratio != null && ratio > 0) {
       requestAnimationFrame(() => {
@@ -909,284 +1299,29 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter)
       })
     }
 
-    prevBtn.disabled = index + chapterBase === 0 || loading
-    nextBtn.disabled = (haveAll && index >= chapters.length - 1) || loading
-    setChapter(chapters[index]?.title || '')
-    paintTocSide()
+    prevBtn.disabled = index === 0 || loading
+    nextBtn.disabled = index >= chapters.length - 1 || loading
+    setChapter(c.title)
+    tocSide?.setCurrent(index)
     paintProgress()
-    saveIndex()
+    savePos()
   }
 
-  // ---------- 增量解码 ----------
-
-  function detectEncoding(bytes) {
-    if (bytes[0] === 0xff && bytes[1] === 0xfe) return 'utf-16le'
-    if (bytes[0] === 0xfe && bytes[1] === 0xff) return 'utf-16be'
-    // 分块末尾可能截断在多字节字符中间：逐个回退 1–3 字节找合法边界
-    // （不能盲砍 4 字节：那样还可能把前一个汉字的尾巴切掉，utf-8 文本被误判成 gb18030）
-    for (let cut = 0; cut <= 3; cut += 1) {
-      const probe = cut ? bytes.subarray(0, Math.max(0, bytes.length - cut)) : bytes
-      if (!probe.length) break
-      try {
-        new TextDecoder('utf-8', { fatal: true }).decode(probe)
-        return 'utf-8'
-      } catch {
-        /* 再退一个字节试试 */
-      }
-    }
-    return 'gb18030'
+  /** 手动重算目录：算法更新或识别不准时重扫整本（不重新下载） */
+  function regenerateToc() {
+    if (disposed || loading || !lines.length) return
+    const pos = currentCharPos()
+    buildBook(lines.join('\n'))
+    // 章号可能因算法变化而改变：按原来的字符位置回到对应章节
+    const target = locateChar(pos)
+    index = target.index
+    paint(target.ratio)
+    toast('目录已重新生成')
   }
 
-  function decodeLine(bytes) {
-    let end = bytes.length
-    if (end && bytes[end - 1] === 0x0d) end -= 1
-    return decoder.decode(bytes.subarray(0, end))
-  }
-
-  function onLine(text, byte) {
-    const i = lines.length
-    lines.push(text)
-    if (mode === 'sections') {
-      sectionChars += text.length + 1
-      if (sectionChars >= SECTION_CHARS) {
-        sectionChars = 0
-        chapters.push({ title: `第 ${chapters.length + 1} 节`, line: i + 1, bodyStart: i + 1 })
-        known.set(chapterBase + chapters.length - 1, { t: chapters[chapters.length - 1].title, b: null })
-      }
-      return
-    }
-    if (pendingLine) detectHeading(pendingLine, isBlank(i))
-    pendingLine = { i, text, byte }
-  }
-
-  function detectHeading(p, nextBlank) {
-    const text = p.text.trim()
-    if (!text || text.length > 60) return
-    if (!TXT_HEADING.test(text) || /[。，；：、]$/.test(text)) return
-    const solid =
-      TXT_HEADING_SEP.test(text) ||
-      p.i === 0 ||
-      isBlank(p.i - 1) ||
-      nextBlank ||
-      /^#{1,3}\s/.test(text) ||
-      /^(?:序章|序言|楔子|引子|前言|后记|尾声|终章|番外)/.test(text)
-    if (!solid) return
-    if (!marks.length && windowStart === 0) headHasText = lines.slice(0, p.i).some((l) => l.trim())
-    marks.push({ line: p.i, bodyStart: p.i + 1, byte: p.byte, title: text.replace(/^#+\s*/, '').slice(0, 60) })
-    rebuildChapters()
-  }
-
-  function ingest(buf) {
-    if (!decoder) {
-      encoding = encoding || detectEncoding(buf)
-      if (encoding === 'utf-16le' || encoding === 'utf-16be') {
-        legacy = true
-        return
-      }
-      decoder = new TextDecoder(encoding)
-    }
-    if (legacy) return
-
-    const base = restPos
-    const data = rest.length ? mergeBytes(rest, buf) : buf
-    let start = 0
-    for (let i = 0; i < data.length; i += 1) {
-      if (data[i] !== 0x0a) continue
-      onLine(decodeLine(data.subarray(start, i)), base + start)
-      start = i + 1
-    }
-    rest = data.slice(start)
-    restPos = base + start
-    maybeSections()
-  }
-
-  function maybeSections() {
-    // 前 64KB 还没有第二个标题 → 这本不是按章写的（短篇 / 散文），改按字数分节
-    if (mode === 'sections' || marks.length >= 2) return
-    if (restPos - windowStart < 64 * 1024 && !haveAll) return
-    mode = 'sections'
-    marks.length = 0
-    pendingLine = null
-    chapters = [{ title: '第 1 节', line: 0, bodyStart: 0 }]
-    sectionChars = 0
-    for (let i = 0; i < lines.length; i += 1) {
-      sectionChars += lines[i].length + 1
-      if (sectionChars >= SECTION_CHARS && i + 1 < lines.length) {
-        sectionChars = 0
-        chapters.push({ title: `第 ${chapters.length + 1} 节`, line: i + 1, bodyStart: i + 1 })
-      }
-    }
-    known.set(chapterBase, { t: chapters[0].title, b: windowStart })
-  }
-
-  // ---------- 下载 ----------
-
-  function setBusy(on) {
-    loading = on
-    prevBtn.disabled = on || index + chapterBase === 0
-    nextBtn.disabled = on || (haveAll && index >= chapters.length - 1)
-  }
-
-  async function fetchChunk(from, size) {
-    if (loading || haveAll || disposed) return false
-    if (totalBytes && from >= totalBytes) {
-      haveAll = true
-      return false
-    }
-    setBusy(true)
-    try {
-      const res = await fetch(fileUrl, { headers: { range: `bytes=${from}-${from + size - 1}` } })
-      if (res.status === 416) {
-        haveAll = true
-        return false
-      }
-      if (!res.ok) throw new Error(`打开失败：HTTP ${res.status}`)
-
-      const buf = new Uint8Array(await res.arrayBuffer())
-      const cr = res.headers.get('content-range') // bytes a-b/total
-      if (res.status !== 206 || !cr) {
-        // 服务端没按 Range 回：整本到手
-        totalBytes = buf.length
-        ingest(buf)
-        nextByte = buf.length
-        haveAll = true
-        finishRest()
-        return true
-      }
-      const m = /bytes (\d+)-(\d+)\/(\d+)/.exec(cr)
-      if (m) {
-        nextByte = Number(m[2]) + 1
-        totalBytes = Number(m[3]) || totalBytes
-      } else {
-        nextByte = from + buf.length
-      }
-      ingest(buf)
-      if (totalBytes && nextByte >= totalBytes) {
-        haveAll = true
-        finishRest()
-      }
-      return true
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  function finishRest() {
-    if (!legacy && rest.length) {
-      // 文件末尾没有换行：最后一行也要收进来
-      onLine(decodeLine(rest), restPos)
-      rest = new Uint8Array(0)
-    }
-  }
-
-  async function loadAllLegacy() {
-    // UTF-16 等分不了行的编码：整本拉完再交给原有解码 / 分章逻辑
-    const res = await fetch(fileUrl)
-    if (!res.ok) throw new Error(`打开失败：HTTP ${res.status}`)
-    const bytes = await readBodyWithProgress(res, (got, total) => say(`正在下载 ${fmtSize(got)} / ${fmtSize(total)}`))
-    totalBytes = bytes.length
-    haveAll = true
-    restPos = totalBytes
-    const parsed = splitTxtChapters(decodeTxt(bytes.buffer))
-    lines.length = 0
-    chapters = []
-    for (const chapter of parsed) {
-      chapters.push({ title: chapter.title, line: lines.length, bodyStart: lines.length })
-      for (const l of chapter.lines) lines.push(l)
-    }
-    mode = 'chapters'
-    for (let i = 0; i < chapters.length; i += 1) known.set(i, { t: chapters[i].title, b: null })
-    chapterBase = 0
-    windowStart = 0
-  }
-
-  async function openWindow(byte, base) {
-    say('正在加载…')
-    lines.length = 0
-    chapters = []
-    marks.length = 0
-    pendingLine = null
-    headHasText = false
-    sectionChars = 0
-    mode = 'chapters'
-    legacy = false
-    rest = new Uint8Array(0)
-    restPos = byte
-    nextByte = byte
-    windowStart = byte
-    chapterBase = base
-    haveAll = false
-    decoder = encoding && byte > 0 ? new TextDecoder(encoding) : null
-    if (byte > 0 && !encoding) encoding = 'utf-8'
-    await fetchChunk(byte, TXT_CHUNK)
-    // UTF-16 这类分不了行的编码：直接整本解码（fetchChunk 里已标记 legacy）
-    if (legacy) await loadAllLegacy()
-    rebuildChapters()
-  }
-
-  // ---------- 导航 ----------
-
-  async function go(target, ratio = null) {
-    if (disposed) return
-    let goal = Math.max(0, target)
-
-    for (let guard = 0; guard < 500; guard += 1) {
-      if (disposed) return
-      const local = goal - chapterBase
-
-      if (local < 0) {
-        // 目标在窗口之前：有字节表就直接开在那一章，否则从头重开
-        const hit = known.get(goal)
-        if (hit?.b != null) {
-          await openWindow(hit.b, goal)
-          continue
-        }
-        await openWindow(0, 0)
-        continue
-      }
-
-      if (local < chapters.length) {
-        const end = chapterEnd(local)
-        if (end != null || haveAll) {
-          index = local
-          paint(ratio)
-          return
-        }
-        if (!(await fetchChunk(nextByte, TXT_CHUNK_MORE))) {
-          index = local
-          paint(ratio)
-          return
-        }
-        rebuildChapters()
-        continue
-      }
-
-      // 目标在窗口之后
-      const hit = known.get(goal)
-      if (hit?.b != null && local > 0) {
-        await openWindow(hit.b, goal)
-        continue
-      }
-      if (!(await fetchChunk(nextByte, TXT_CHUNK_MORE))) {
-        // 已经到文件尾：夹到最后一章
-        if (!chapters.length) return
-        index = chapters.length - 1
-        paint(ratio)
-        return
-      }
-      rebuildChapters()
-    }
-  }
-
-  /** 翻页 / 目录跳转统一入口：失败只在页脚提示，不抛未处理 Promise */
-  const jump = (target) => {
-    go(target).catch((err) => say(err?.message || '加载失败'))
-  }
-
-  /** 右侧目录：点击跳到全局章号；章节表增量增长，由 paintTocSide 刷新 */
-  tocSide = createTocSide(stage, (row) => {
-    if (Number.isInteger(row?.i)) jump(row.i)
-  })
+  /** 右侧目录：整本分章后一次建好，点击直接跳章 */
+  tocSide = createTocSide(stage, (row) => jump(row.i))
+  stage.querySelector('[data-toc-refresh]')?.addEventListener('click', () => regenerateToc())
 
   // ---------- 交互 ----------
 
@@ -1202,56 +1337,229 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter)
 
   const onKey = (e) => {
     if (document.getElementById('dlg')?.open) return
+    // 右键菜单打开时方向键归菜单，不要在背后翻章
+    if (ctx) return
     if (e.target instanceof HTMLSelectElement || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
       return
     }
     if (e.key === 'ArrowLeft') {
       e.preventDefault()
-      jump(index + chapterBase - 1)
+      jump(index - 1)
     } else if (e.key === 'ArrowRight') {
       e.preventDefault()
-      jump(index + chapterBase + 1)
+      jump(index + 1)
     }
   }
 
   function openToc() {
-    const entries = tocEntries()
-    const rows = entries.map(([i, v]) => ({ label: v.t, no: '' }))
-    const current = entries.findIndex(([i]) => i === index + chapterBase)
+    if (!chapters.length) {
+      showDialog('<h2>目录</h2><p class="small muted">目录还在加载，稍后再试。</p>', { label: '目录' })
+      return
+    }
+    const rows = chapters.map((c) => ({ label: c.title, no: '' }))
     const dlg = openTocDialog(rows, {
-      empty: '目录还在加载，稍后再试。',
-      hint: haveAll ? '' : '目录随阅读进度继续补全',
-      current,
+      empty: '这本书没有目录信息。',
+      hint: sectioned ? '没有章节标题，已按字数分节' : '',
+      current: index,
+      onRegenerate: regenerateToc,
     })
     if (!dlg) return
     dlg.body.querySelectorAll('[data-toc-i]').forEach((btn) => {
       btn.onclick = () => {
-        const row = entries[Number(btn.dataset.tocI)]
+        const target = Number(btn.dataset.tocI)
         dlg.close()
-        if (row) jump(row[0])
+        jump(target)
       }
     })
+  }
+
+  // ---------- 右键菜单：复制 / 批量删除广告 ----------
+
+  /** 当前打开的右键菜单（同一时间只留一个） */
+  let ctx = null
+  /** 正在重写文件：上传队列串行，但第二条删除要等第一条落地后再让用户操作 */
+  let purging = false
+
+  function closeCtx() {
+    if (!ctx) return
+    const { el, onPointer, onMenuKey, onMove } = ctx
+    ctx = null
+    el.remove()
+    document.removeEventListener('pointerdown', onPointer, true)
+    document.removeEventListener('keydown', onMenuKey)
+    window.removeEventListener('scroll', onMove, true)
+    window.removeEventListener('resize', onMove)
+  }
+
+  function openCtx(x, y, text) {
+    closeCtx()
+    const el = document.createElement('div')
+    el.className = 'more-menu is-fixed ctx-menu'
+    el.setAttribute('role', 'menu')
+    el.innerHTML = `<button class="more-item" type="button" role="menuitem" data-ctx-copy>${icon('copy', 14)}复制</button>
+      <button class="more-item danger" type="button" role="menuitem" data-ctx-purge>${icon('trash', 14)}批量删除广告</button>`
+    // 先挂到 body 量尺寸再定位：fixed 定位不会被 .txt-body 的滚动容器裁掉
+    el.style.visibility = 'hidden'
+    el.style.top = '0px'
+    el.style.left = '0px'
+    document.body.append(el)
+    el.style.left = `${Math.max(8, Math.min(x, window.innerWidth - el.offsetWidth - 8))}px`
+    el.style.top = `${Math.max(8, Math.min(y, window.innerHeight - el.offsetHeight - 8))}px`
+    el.style.visibility = ''
+
+    const onPointer = (e) => {
+      if (!el.contains(e.target)) closeCtx()
+    }
+    const onMenuKey = (e) => {
+      if (e.key !== 'Escape') return
+      e.stopPropagation()
+      closeCtx()
+    }
+    const onMove = () => closeCtx()
+    ctx = { el, onPointer, onMenuKey, onMove }
+    document.addEventListener('pointerdown', onPointer, true)
+    document.addEventListener('keydown', onMenuKey)
+    window.addEventListener('scroll', onMove, true)
+    window.addEventListener('resize', onMove)
+
+    el.querySelector('[data-ctx-copy]').addEventListener('click', async () => {
+      closeCtx()
+      const ok = await copyToClipboard(text)
+      toast(ok ? '已复制' : '复制失败，请用 Ctrl+C', !ok)
+    })
+    el.querySelector('[data-ctx-purge]').addEventListener('click', () => {
+      closeCtx()
+      purgeSelected(text)
+    })
+    el.querySelector('.more-item')?.focus({ preventScroll: true })
+  }
+
+  /** 只在选中正文文字时接管右键；没选中就让浏览器原生菜单出现 */
+  const onContextMenu = (e) => {
+    const sel = window.getSelection()
+    const text = sel?.toString() ?? ''
+    if (!text.trim() || !sel?.rangeCount || !body.contains(sel.anchorNode)) return
+    e.preventDefault()
+    let x = e.clientX
+    let y = e.clientY
+    // 键盘（Shift+F10 / 菜单键）触发的右键没有鼠标坐标：贴着选区放
+    if (!x && !y) {
+      const rect = sel.getRangeAt(0).getBoundingClientRect()
+      x = rect.left
+      y = rect.bottom
+    }
+    openCtx(x, y, text)
+  }
+
+  /**
+   * 批量删除选中文字：整本已在内存（fullText），先算命中数让用户确认，
+   * 再把删好的正文当成新文件重传——r2_key 换新 uuid = 新版本号，旧缓存自动失效。
+   */
+  function purgeSelected(raw) {
+    const target = String(raw ?? '').trim()
+    if (target.length < 2) {
+      toast('请先选中至少 2 个字再删除', true)
+      return
+    }
+    if (loading || !fullText) {
+      toast('正文还在加载，稍后再试', true)
+      return
+    }
+    if (purging) {
+      toast('上一次删除还在写入，请稍候', true)
+      return
+    }
+    // 统一换行：显示与选择都基于 LF，原文可能是 CRLF
+    const source = fullText.replace(/\r\n?/g, '\n')
+    const { text: nextText, count } = removeAllText(source, target)
+    if (!count) {
+      toast('正文里没有找到这段文字')
+      return
+    }
+    const preview = target.length > 40 ? `${target.slice(0, 40)}…` : target
+    const dlg = showDialog(
+      `<h2>批量删除广告</h2>
+       <p>将从《${esc(title)}》的原文件里删除所有 <code>${esc(preview)}</code>，共 <strong>${count}</strong> 处。</p>
+       <p class="small muted">删除会重写原文件（按 UTF-8 保存，无法撤销），阅读位置会尽量保留。</p>
+       <div class="dlg-foot">
+         <button class="btn" type="button" data-cancel>取消</button>
+         <button class="btn danger" type="button" data-go>${icon('trash', 14)}删除 ${count} 处</button>
+       </div>`,
+      { label: '批量删除广告' },
+    )
+    dlg.body.querySelector('[data-cancel]').onclick = () => dlg.close()
+    dlg.body.querySelector('[data-go]').onclick = () => {
+      dlg.close()
+      rewriteFile(nextText, count)
+    }
+  }
+
+  /** 把删好的正文写成新文件重传（复用上传队列：小文件单请求、大文件自动分片） */
+  function rewriteFile(text, count) {
+    const base = String(filename || title || 'book')
+    const name = /\.txt$/i.test(base) ? base : `${base}.txt`
+    const bytes = new TextEncoder().encode(text)
+    if (!bytes.length) {
+      toast('删除后正文为空，已取消', true)
+      return
+    }
+    let file
+    try {
+      file = new File([bytes], name, { type: 'text/plain' })
+    } catch (err) {
+      toast(err?.message || '生成新文件失败', true)
+      return
+    }
+    // 上传成功后版本号会变：先记一个「不带版本」的位置，重开时仍回到当前章
+    const pos = { v: null, c: index, r: scrollRatio() }
+    purging = true
+    const batch = enqueue([file], {
+      title: `批量删除广告（${count} 处）`,
+      params: { bookId: id },
+      url: (qs) => `/api/book/upload?${qs}`,
+      contentType: () => 'text/plain;charset=utf-8',
+      processingLabel: '正在写入原文件…',
+      onSettled: (summary) => {
+        purging = false
+        if (!summary.ok) {
+          toast('写入失败，原文件未改动', true)
+          return
+        }
+        writeStorage(txtPosKey(id), JSON.stringify(pos))
+        toast(`已删除 ${count} 处，正在重新打开…`)
+        const m = /^#\/reader\?id=(\d+)/.exec(location.hash)
+        if (m && Number(m[1]) === id) setTimeout(() => location.reload(), 600)
+      },
+    })
+    if (!batch) {
+      purging = false
+      toast('上传面板不可用，请刷新后重试', true)
+    }
   }
 
   txtReader = {
     cleanup() {
       if (disposed) return
-      if (chapters.length) writeStorage(txtPosKey(id), JSON.stringify(currentPos()))
+      if (chapters.length) writeStorage(txtPosKey(id), JSON.stringify({ v: version, c: index, r: scrollRatio() }))
       disposed = true
+      closeCtx()
       tocSide?.destroy()
       clearTimeout(saveTimer)
-      clearTimeout(idxTimer)
       body.removeEventListener('scroll', onScroll)
+      body.removeEventListener('contextmenu', onContextMenu)
       document.removeEventListener('keydown', onKey)
     },
   }
 
   paintFont()
   body.addEventListener('scroll', onScroll, { passive: true })
+  body.addEventListener('contextmenu', onContextMenu)
   document.addEventListener('keydown', onKey)
-  prevBtn.onclick = () => jump(index + chapterBase - 1)
-  nextBtn.onclick = () => jump(index + chapterBase + 1)
-  tocBtn.onclick = () => {
+  prevBtn.disabled = true
+  nextBtn.disabled = true
+  prevBtn.onclick = () => jump(index - 1)
+  nextBtn.onclick = () => jump(index + 1)
+  const showToc = () => {
     // 宽屏：按钮退化为右侧目录的显隐开关；窄屏仍开弹窗
     if (tocSide?.canToggle()) {
       tocSide.toggle()
@@ -1259,48 +1567,79 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter)
     }
     openToc()
   }
-  root.querySelectorAll('[data-font]').forEach((b) => {
-    b.onclick = () => {
-      fontSize = Math.max(14, Math.min(26, fontSize + Number(b.dataset.font)))
-      paintFont()
-      writeStorage(TXT_FONT_KEY, String(fontSize))
-    }
-  })
+  tocBtn.onclick = showToc
+  // 悬浮工具栏：目录 / 阅读设置（字号 + 行距 + 背景）/ 背景循环；先刷一次主题钮图标
+  setReaderTheme(root, root.dataset.readerTheme || 'paper')
+  stage.querySelector('[data-fab-toc]').onclick = showToc
+  stage.querySelector('[data-fab-set]').onclick = () => {
+    openReaderSettings({
+      theme: root.dataset.readerTheme || 'paper',
+      font: {
+        value: fontSize,
+        min: 14,
+        max: 26,
+        onFont: (n) => {
+          fontSize = n
+          paintFont()
+          writeStorage(TXT_FONT_KEY, String(n))
+        },
+      },
+      line: {
+        value: lineHeight,
+        options: LINE_OPTIONS,
+        onLine: (v) => {
+          lineHeight = v
+          paintFont()
+          writeStorage(TXT_LINE_KEY, String(v))
+        },
+      },
+      onTheme: (id) => setReaderTheme(root, id),
+    })
+  }
+  stage.querySelector('[data-fab-theme]').onclick = () => cycleTheme(root)
 
-  // 上次读到第几章：有字节表就直接从那一章开窗，否则从第一章顺序读
-  const pos = readJson(txtPosKey(id))
-  const startChapter = Number.isInteger(pos?.c) ? Math.max(0, pos.c) : 0
-  const startRatio = typeof pos?.r === 'number' ? pos.r : null
-
+  // 整本下载 + 解码 + 分章：URL 带版本号，服务端长缓存，第二次打开基本秒开
   ;(async () => {
     try {
-      const hit = startChapter > 0 ? known.get(startChapter) : null
-      if (hit?.b != null) await openWindow(hit.b, startChapter)
-      else {
-        await openWindow(0, 0)
-        if (startChapter > 0) await go(startChapter)
-      }
+      const hint = Number(sizeHint) || 0
+      if (hint) say(`正在下载 ${fmtSize(hint)}…`)
+      const res = await fetch(fileUrl)
+      if (!res.ok) throw new Error(`打开失败：HTTP ${res.status}`)
+      const bytes = await readBodyWithProgress(res, (got, total) => {
+        const all = total || hint || got
+        const pct = all ? Math.round((got / all) * 100) : 0
+        setProgress(root, all ? got / all : 0, `${pct}%`, '正在下载')
+        say(`正在下载 ${fmtSize(got)} / ${fmtSize(all)}（${pct}%）`)
+      })
       if (disposed) return
-      if (chapters.length) {
-        index = Math.max(0, Math.min(chapters.length - 1, startChapter - chapterBase))
-        paint(hit?.b != null ? startRatio : null)
-      } else {
+      say('正在解析正文…')
+      const text = decodeTxt(bytes.buffer)
+      if (disposed) return
+      if (!text.trim()) {
+        loading = false
         body.innerHTML = '<div class="empty">这个文件里没有可显示的文字。</div>'
+        return
       }
+
+      buildBook(text)
+      fullText = text
+      loading = false
+
+      // 上次读到第几章 + 章内位置（换过文件就从头开始）
+      const pos = readJson(txtPosKey(id))
+      const same = !pos || pos.v == null || String(pos.v) === version
+      index = same && Number.isInteger(pos?.c) ? pos.c : 0
+      const ratio = same && typeof pos?.r === 'number' ? pos.r : null
+      paint(ratio)
     } catch (err) {
-      if (!disposed) body.innerHTML = `<div class="alert danger">${esc(err?.message || '打开失败')}</div>`
+      if (disposed) return
+      loading = false
+      body.innerHTML = `<div class="alert danger">${esc(err?.message || '打开失败')}</div>`
     }
   })()
 }
 
 /* ---------------- 小工具 ---------------- */
-
-function mergeBytes(a, b) {
-  const out = new Uint8Array(a.length + b.length)
-  out.set(a, 0)
-  out.set(b, a.length)
-  return out
-}
 
 export function destroy() {
   try {
@@ -1321,4 +1660,10 @@ export function destroy() {
     /* 已释放 */
   }
   txtReader = null
+  try {
+    reportProgress?.flush()
+  } catch {
+    /* 上报失败只影响书架进度条 */
+  }
+  reportProgress = null
 }

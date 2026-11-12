@@ -4,8 +4,52 @@ import { emptyState, filterGroup as filterButtons, setupFilter } from '../ui.js'
 import { enqueue } from '../upload.js'
 
 let filterStatus = 'all'
+/**
+ * 排序方式：recent（默认）= 最近阅读倒序、同时间按 id；
+ * time = 上传（加入书架）时间倒序；title = 书名，中文按拼音、数字按大小
+ */
+let sortBy = 'recent'
+/** 书架内搜索：只筛本地已加载的数据，不发请求；切页后保留，返回时还在原结果上 */
+let searchQuery = ''
+/** 输入防抖：书架可能上百本，逐字重建卡片没必要 */
+let searchTimer = 0
 /** 视图是否还是当前页：切页后不要再用旧视图的 main 去刷接口 */
 let alive = true
+
+const SORTS = [
+  { value: 'recent', label: '最近阅读' },
+  { value: 'time', label: '上传时间' },
+  { value: 'title', label: '书名' },
+]
+
+const bookTitle = (b) => b.title || b.filename || ''
+const titleCollator = new Intl.Collator('zh', { numeric: true, sensitivity: 'base' })
+
+/** 书架搜索的命中范围：书名 / 作者 / 分组 / 文件名，空格分隔的多个关键词按「且」匹配 */
+function matchesQuery(b, query) {
+  const tokens = query.toLowerCase().split(/\s+/).filter(Boolean)
+  if (!tokens.length) return true
+  const haystack = [bookTitle(b), b.author, b.category, b.filename].filter(Boolean).join(' ').toLowerCase()
+  return tokens.every((token) => haystack.includes(token))
+}
+
+/** 阅读状态计数：筛选条上的数字，搜索时按命中结果统计 */
+function countByStatus(list) {
+  const counts = { all: list.length, unread: 0, reading: 0, read: 0 }
+  for (const b of list) counts[b.status] = (counts[b.status] ?? 0) + 1
+  return counts
+}
+
+/**
+ * recent 是默认排序：最近阅读过的书置顶（lastReadAt 由阅读器打开 / 翻页回写），
+ * 没读过的一律算 0，掉到后面按 id 升序（录入顺序）。
+ * 三项都用 id 兜底而不是书名：书名是用户随时会改的字段，改名后书不该在书架里换位置。
+ */
+const SORT_FN = {
+  recent: (a, b) => (b.lastReadAt ?? 0) - (a.lastReadAt ?? 0) || (a.id ?? 0) - (b.id ?? 0),
+  time: (a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0) || (a.id ?? 0) - (b.id ?? 0),
+  title: (a, b) => titleCollator.compare(bookTitle(a), bookTitle(b)) || (a.id ?? 0) - (b.id ?? 0),
+}
 
 const STATUS_TABS = [
   { value: 'all', label: '全部' },
@@ -20,11 +64,23 @@ const STATUS = {
   read: { label: '已读', cls: 'ok' },
 }
 
+/** 「更多」下拉里的标记状态项：已读用对勾，阅读中用时钟，待读回到书本 */
+const STATUS_ICON = { unread: 'book', reading: 'clock', read: 'online' }
+
 const statusLabel = (s) => STATUS[s]?.label ?? '待读'
 const statusBadge = (s) => `<span class="badge ${STATUS[s]?.cls ?? 'muted'}">${statusLabel(s)}</span>`
 
 /** 豆瓣图床带 Referer 防盗链，封面统一走 Worker 代理 */
 const coverUrl = (url) => (url ? `/api/book/cover?url=${encodeURIComponent(url)}` : '')
+
+/** 封面底部进度条：pct 是 0–100 的整数（pdf 由浏览器原生查看器承载，取不到页码，所以没有进度） */
+function progressBar(pct) {
+  const value = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)))
+  return `<span class="book-progress" role="img" aria-label="阅读进度 ${value}%">
+              <span class="book-progress-track"><i style="width:${value}%"></i></span>
+              <span class="book-progress-num">${value}%</span>
+            </span>`
+}
 
 /** 单张书卡：分组由外层 section 表达，卡片内不再重复分组徽标 */
 function bookCard(b) {
@@ -32,13 +88,22 @@ function bookCard(b) {
   const title = b.title || b.filename
   const meta = [b.author || '未知作者', b.pubYear].filter(Boolean).join(' · ')
   const label = esc(title)
+  // 只给读到过的书显示进度：0 / 空 = 还没开始，不占封面；已读的书一律按 100% 画（老数据没有 progress 列）
+  const progress = b.status === 'read' ? 100 : Number(b.progress)
+  const showProgress = b.hasFile && Number.isFinite(progress) && progress > 0
+  // 有文件时封面本身就是阅读入口；工具栏里再留一个小图标，照顾「看不出封面能点」的人
+  const coverTag = b.hasFile ? 'a' : 'div'
+  const coverAttrs = b.hasFile
+    ? ` href="#/reader?id=${esc(b.id)}" title="阅读《${label}》" aria-label="阅读《${label}》"`
+    : ''
   return `
         <article class="book-card">
-          <div class="book-cover${cover ? '' : ' no-cover'}">
+          <${coverTag} class="book-cover${cover ? '' : ' no-cover'}"${coverAttrs}>
             <span class="book-cover-ph">${icon('book', 36)}</span>
             ${cover ? `<img src="${esc(cover)}" alt="" loading="lazy">` : ''}
             ${statusBadge(b.status)}
-          </div>
+            ${showProgress ? progressBar(progress) : ''}
+          </${coverTag}>
           <div class="book-body">
             <h3 class="book-title" title="${label}">${esc(title)}</h3>
             <p class="book-by small muted" title="${esc(meta)}">${esc(meta)}</p>
@@ -51,31 +116,87 @@ function bookCard(b) {
               }
             </div>
             <div class="book-actions">
-              ${
-                b.hasFile
-                  ? `<a class="btn sm primary" href="#/reader?id=${esc(b.id)}"
-                       title="阅读《${label}》" aria-label="阅读《${label}》">${icon('book', 14)}阅读</a>`
-                  : `<button class="btn sm primary" data-upload="${esc(b.id)}">${icon('upload', 14)}上传文件</button>`
-              }
               <div class="book-tools">
+                ${
+                  b.hasFile
+                    ? `<a class="btn sm key" href="#/reader?id=${esc(b.id)}"
+                          title="阅读《${label}》" aria-label="阅读《${label}》">${icon('book', 14)}</a>`
+                    : `<button class="btn sm key" data-upload="${esc(b.id)}"
+                          title="上传《${label}》的文件" aria-label="上传《${label}》的文件">${icon('upload', 14)}</button>`
+                }
                 <button class="btn sm" data-e="${esc(b.id)}" title="编辑" aria-label="编辑《${label}》">${icon('edit', 14)}</button>
                 <button class="btn sm" data-sync="${esc(b.id)}" title="用豆瓣信息更新书名 / 作者 / 封面 / 简介 / 评分"
                         aria-label="同步豆瓣信息《${label}》">${icon('refresh', 14)}</button>
-                ${
-                  b.hasFile
-                    ? `<a class="btn sm" href="/api/book/read/${esc(b.id)}?v=${esc(b.fileVersion ?? b.updatedAt)}" download
-                          title="下载原文件" aria-label="下载原文件《${label}》">${icon('download', 14)}</a>`
-                    : ''
-                }
                 ${moreMenu(
                   `book-${b.id}`,
-                  [{ label: '删除这本书', icon: 'trash', danger: true, attrs: { 'data-d': b.id } }],
+                  [
+                    ...(b.hasFile
+                      ? [
+                          {
+                            label: '下载原文件',
+                            icon: 'download',
+                            href: `/api/book/read/${b.id}?v=${b.fileVersion ?? b.updatedAt}`,
+                            attrs: { download: '' },
+                          },
+                        ]
+                      : []),
+                    // 标记阅读状态放删除前面：同一菜单里先低频不可逆，删除永远最后一项
+                    ...['unread', 'reading', 'read'].map((s) => ({
+                      label: b.status === s ? `当前：${statusLabel(s)}` : `标记为${statusLabel(s)}`,
+                      icon: STATUS_ICON[s],
+                      disabled: b.status === s,
+                      attrs: { 'data-status': s, 'data-id': b.id },
+                    })),
+                    { label: '删除这本书', icon: 'trash', danger: true, attrs: { 'data-d': b.id } },
+                  ],
                   { label: `更多操作《${title}》`, triggerClass: 'btn sm' },
                 )}
               </div>
             </div>
           </div>
         </article>`
+}
+
+/** 分组分区 HTML：同名分组一整堆展示，未分组固定最后一区 */
+function renderGroups(sections, showGroupHead) {
+  return `<div class="book-groups">
+    ${sections
+      .map(
+        (section, i) => `<section class="book-group"${
+          showGroupHead ? ` aria-labelledby="book-group-${i}"` : ''
+        }>
+      ${
+        showGroupHead
+          ? `<div class="book-group-head">
+        <h2 class="book-group-title" id="book-group-${i}">${section.name ? esc(section.name) : '未分组'}</h2>
+        <span class="tab-count">${section.books.length}</span>
+      </div>`
+          : ''
+      }
+      <div class="book-grid">${section.books.map(bookCard).join('')}</div>
+    </section>`,
+      )
+      .join('')}
+  </div>`
+}
+
+/** 结果区 HTML：搜索无命中时给一个清空入口，不留死胡同 */
+function resultsHTML(shown, sections, showGroupHead, hasBooks) {
+  if (shown.length) {
+    const meta = searchQuery
+      ? `<p class="book-search-meta small muted" role="status">搜索「${esc(searchQuery)}」· ${shown.length} 本</p>`
+      : ''
+    return `${meta}${renderGroups(sections, showGroupHead)}`
+  }
+  if (searchQuery) {
+    return `<div class="empty" role="status">当前筛选下没有匹配「${esc(searchQuery)}」的书
+      <button class="link-btn" type="button" data-clear-search>清空搜索</button></div>`
+  }
+  return emptyState(
+    hasBooks
+      ? '当前筛选下还没有书'
+      : '书架空空如也，点「添加图书」从豆瓣建条目，或直接上传 epub / pdf / txt',
+  )
 }
 
 export async function render(main) {
@@ -85,15 +206,18 @@ export async function render(main) {
   const data = await api('/api/book/list')
   const books = data.books ?? []
 
-  const counts = { all: books.length, unread: 0, reading: 0, read: 0 }
-  for (const b of books) counts[b.status] = (counts[b.status] ?? 0) + 1
-  if (filterStatus !== 'all' && !counts[filterStatus]) filterStatus = 'all'
+  const totalCounts = countByStatus(books)
+  if (filterStatus !== 'all' && !totalCounts[filterStatus]) filterStatus = 'all'
 
   // 分组候选：添加 / 编辑弹窗的 datalist 与展示分区共用同一份名字（NULL = 未分组，不算一组）
   const groups = [...new Set(books.map((b) => b.category).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh'))
 
-  // 先按阅读状态筛，再按分组归堆：同名分组排在一起，未分组固定放最后，空分区不渲染
-  const shown = books.filter((b) => filterStatus === 'all' || b.status === filterStatus)
+  // 先搜索，再按阅读状态筛，最后按分组归堆：空分区不渲染
+  const keyword = searchQuery.trim()
+  const matched = keyword ? books.filter((b) => matchesQuery(b, keyword)) : books
+  const matchCounts = countByStatus(matched)
+  const sortFn = SORT_FN[sortBy] ?? SORT_FN.recent
+  const shown = matched.filter((b) => filterStatus === 'all' || b.status === filterStatus).sort(sortFn)
   const sections = [
     ...groups.map((name) => ({ name, books: shown.filter((b) => b.category === name) })),
     { name: '', books: shown.filter((b) => !b.category) },
@@ -105,63 +229,176 @@ export async function render(main) {
     <div class="page-head">
       <div>
         <h1 class="page-title">书架</h1>
-        <p class="page-sub">豆瓣索引先建条目，有文件后再上传 · 上传后自动匹配豆瓣信息 · 按分组归架，区分待读 / 阅读中 / 已读</p>
+        <p class="page-sub">豆瓣索引先建条目，有文件后再上传 · 上传后自动匹配豆瓣信息 · 按分组归架，区分待读 / 阅读中 / 已读 · 支持按书名 / 作者 / 分组搜索，可按最近阅读 / 上传时间 / 书名排序</p>
       </div>
       <div class="page-actions">
         <button class="btn primary" id="add-book">${icon('plus')}添加图书</button>
+        <button class="btn" id="batch-book">${icon('queue')}批量添加</button>
         <label class="btn">
           ${icon('upload')}上传文件
           <input class="sr-only" type="file" id="up" accept=".epub,.pdf,.txt" multiple>
         </label>
       </div>
     </div>
-    ${filterButtons({
-      name: 'status',
-      label: '阅读状态',
-      active: filterStatus,
-      items: STATUS_TABS.map((s) => ({ ...s, count: counts[s.value] ?? 0 })),
-    })}
-    ${
-      shown.length
-        ? `<div class="book-groups">
-            ${sections
-              .map(
-                (section, i) => `<section class="book-group"${
-                  showGroupHead ? ` aria-labelledby="book-group-${i}"` : ''
-                }>
-              ${
-                showGroupHead
-                  ? `<div class="book-group-head">
-                <h2 class="book-group-title" id="book-group-${i}">${section.name ? esc(section.name) : '未分组'}</h2>
-                <span class="tab-count">${section.books.length}</span>
-              </div>`
-                  : ''
-              }
-              <div class="book-grid">${section.books.map(bookCard).join('')}</div>
-            </section>`,
-              )
-              .join('')}
-          </div>`
-        : emptyState(
-            books.length
-              ? '当前筛选下还没有书'
-              : '书架空空如也，点「添加图书」从豆瓣建条目，或直接上传 epub / pdf / txt',
-          )
-    }`
+    <div class="book-toolbar">
+      ${filterButtons({
+        name: 'status',
+        label: '阅读状态',
+        active: filterStatus,
+        items: STATUS_TABS.map((s) => ({ ...s, count: matchCounts[s.value] ?? 0 })),
+      })}
+      <div class="book-toolbar-end">
+        <input class="field field-sm book-search" id="book-search" type="search"
+               placeholder="搜索书名 / 作者 / 分组…" aria-label="搜索书架"
+               value="${esc(searchQuery)}" autocomplete="off" spellcheck="false">
+        <label class="book-sort">
+          排序
+          <select class="field field-sm" id="book-sort" data-focus-key="book-sort">
+            ${SORTS.map(
+              (s) => `<option value="${s.value}"${s.value === sortBy ? ' selected' : ''}>${s.label}</option>`,
+            ).join('')}
+          </select>
+        </label>
+      </div>
+    </div>
+    <div id="book-results">${resultsHTML(shown, sections, showGroupHead, books.length)}</div>`
 
-  // 封面加载失败（豆瓣限流 / 下架）时退回占位图标
-  setupMoreMenus(main)
-  main.querySelectorAll('.book-cover img').forEach((img) => {
-    img.addEventListener('error', () => img.closest('.book-cover')?.classList.add('no-cover'))
+  const resultsEl = main.querySelector('#book-results')
+  const searchInput = main.querySelector('#book-search')
+  const statusGroup = main.querySelector('[data-filter-group="status"]')
+
+  /** 结果区内的卡片动作：搜索只换结果区，这些监听要跟着新节点重挂 */
+  function bindResults() {
+    // 封面加载失败（豆瓣限流 / 下架）时退回占位图标
+    setupMoreMenus(resultsEl)
+    resultsEl.querySelectorAll('.book-cover img').forEach((img) => {
+      img.addEventListener('error', () => img.closest('.book-cover')?.classList.add('no-cover'))
+    })
+    resultsEl.querySelectorAll('[data-upload]').forEach((b) => {
+      b.onclick = () => pickFile(b.dataset.upload, main)
+    })
+    resultsEl.querySelectorAll('[data-e]').forEach((b) => {
+      b.onclick = () => {
+        const row = books.find((x) => String(x.id) === b.dataset.e)
+        if (row) openEditDialog(row, main, groups)
+      }
+    })
+    resultsEl.querySelectorAll('[data-sync]').forEach((b) => {
+      b.onclick = async () => {
+        if (!confirm('用豆瓣信息覆盖书名、作者、封面、简介和评分？分组与阅读状态不受影响。')) return
+        const res = await run(b, () => api(`/api/book/${b.dataset.sync}/sync`, { method: 'POST' }))
+        if (!res.ok) return
+        toast(`已同步：${res.data?.title || '豆瓣信息'}`)
+        await rerender(render, main)
+      }
+    })
+    resultsEl.querySelectorAll('[data-status]').forEach((el) => {
+      el.onclick = async () => {
+        const id = el.dataset.id
+        const status = el.dataset.status
+        // 当前项在菜单里就是 disabled，这里再兜一层
+        if (!id || !STATUS[status]) return
+        const row = books.find((x) => String(x.id) === id)
+        if (!row || row.status === status) return
+        // 后端联动：已读 = finished_at 落时 + 进度 100%，退回待读 = 进度清零
+        const res = await run(el, () => api(`/api/book/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }))
+        if (!res.ok) return
+        toast(`已标记为${statusLabel(status)}：《${bookTitle(row)}》`)
+        await rerender(render, main)
+      }
+    })
+    resultsEl.querySelectorAll('[data-d]').forEach((b) => {
+      b.onclick = async () => {
+        if (!confirm('删除该书（已上传的 R2 文件一并删除）？')) return
+        const res = await run(b, () => api(`/api/book/${b.dataset.d}`, { method: 'DELETE' }))
+        if (!res.ok) return
+        toast('已删除')
+        await rerender(render, main)
+      }
+    })
+    resultsEl.querySelector('[data-clear-search]')?.addEventListener('click', () => {
+      clearTimeout(searchTimer)
+      searchQuery = ''
+      searchInput.value = ''
+      searchInput.focus()
+      paintResults()
+    })
+  }
+
+  /** 搜索只重画结果区：输入框不重建，焦点和光标都留在原处 */
+  function paintResults() {
+    const query = searchQuery.trim()
+    const matchedNow = query ? books.filter((b) => matchesQuery(b, query)) : books
+    const sortFnNow = SORT_FN[sortBy] ?? SORT_FN.recent
+    const shownNow = matchedNow
+      .filter((b) => filterStatus === 'all' || b.status === filterStatus)
+      .sort(sortFnNow)
+    const sectionsNow = [
+      ...groups.map((name) => ({ name, books: shownNow.filter((b) => b.category === name) })),
+      { name: '', books: shownNow.filter((b) => !b.category) },
+    ].filter((section) => section.books.length)
+    resultsEl.innerHTML = resultsHTML(
+      shownNow,
+      sectionsNow,
+      !(sectionsNow.length === 1 && !sectionsNow[0].name),
+      books.length,
+    )
+
+    // 筛选条上的数字跟着搜索命中结果走
+    const countsNow = countByStatus(matchedNow)
+    statusGroup?.querySelectorAll('[data-filter-value]').forEach((btn) => {
+      const count = btn.querySelector('.tab-count')
+      if (count) count.textContent = String(countsNow[btn.dataset.filterValue] ?? 0)
+    })
+    bindResults()
+  }
+
+  bindResults()
+
+  searchInput.addEventListener('input', () => {
+    clearTimeout(searchTimer)
+    searchTimer = setTimeout(() => {
+      searchQuery = searchInput.value.trim()
+      paintResults()
+    }, 120)
+  })
+
+  searchInput.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !searchInput.value) return
+    e.preventDefault()
+    clearTimeout(searchTimer)
+    searchQuery = ''
+    searchInput.value = ''
+    paintResults()
+  })
+
+  // type=search 的原生清除「×」只触发 search 事件
+  searchInput.addEventListener('search', () => {
+    if (searchInput.value.trim()) return
+    clearTimeout(searchTimer)
+    searchQuery = ''
+    paintResults()
   })
 
   // 状态筛选：重绘整页，但焦点要留在刚点的按钮上（data-focus-key）
-  setupFilter(main.querySelector('[data-filter-group="status"]'), (value) => {
+  setupFilter(statusGroup, (value) => {
+    // 防抖可能还没触发：整页重绘前先把输入框里的关键字落定
+    clearTimeout(searchTimer)
+    searchQuery = searchInput.value.trim()
     filterStatus = value
     rerenderKeepingFocus(render, main)
   })
 
+  // 排序同样是原地换数据，焦点留在下拉框上
+  main.querySelector('#book-sort').onchange = (e) => {
+    clearTimeout(searchTimer)
+    searchQuery = searchInput.value.trim()
+    sortBy = SORTS.some((s) => s.value === e.target.value) ? e.target.value : 'recent'
+    rerenderKeepingFocus(render, main)
+  }
+
   main.querySelector('#add-book').onclick = () => openAddDialog(main, groups)
+  main.querySelector('#batch-book').onclick = () => openBatchDialog(main, groups)
 
   main.querySelector('#up').onchange = (e) => {
     const files = [...e.target.files]
@@ -169,34 +406,6 @@ export async function render(main) {
     if (!files.length) return
     enqueue(files, uploadOptions(main))
   }
-
-  main.querySelectorAll('[data-upload]').forEach((b) => {
-    b.onclick = () => pickFile(b.dataset.upload, main)
-  })
-  main.querySelectorAll('[data-e]').forEach((b) => {
-    b.onclick = () => {
-      const row = books.find((x) => String(x.id) === b.dataset.e)
-      if (row) openEditDialog(row, main, groups)
-    }
-  })
-  main.querySelectorAll('[data-sync]').forEach((b) => {
-    b.onclick = async () => {
-      if (!confirm('用豆瓣信息覆盖书名、作者、封面、简介和评分？分组与阅读状态不受影响。')) return
-      const res = await run(b, () => api(`/api/book/${b.dataset.sync}/sync`, { method: 'POST' }))
-      if (!res.ok) return
-      toast(`已同步：${res.data?.title || '豆瓣信息'}`)
-      await rerender(render, main)
-    }
-  })
-  main.querySelectorAll('[data-d]').forEach((b) => {
-    b.onclick = async () => {
-      if (!confirm('删除该书（已上传的 R2 文件一并删除）？')) return
-      const res = await run(b, () => api(`/api/book/${b.dataset.d}`, { method: 'DELETE' }))
-      if (!res.ok) return
-      toast('已删除')
-      await rerender(render, main)
-    }
-  })
 }
 
 /* ---------------- 豆瓣索引：添加 ---------------- */
@@ -484,6 +693,151 @@ function openAddDialog(main, groups) {
   qInput.focus()
 }
 
+/* ---------------- 批量添加：一个多行文本 + 分组 ---------------- */
+
+/** 与 Worker 的 MAX_BATCH 对齐：免费版 D1 每次请求只有 50 条语句额度 */
+const MAX_BATCH = 50
+
+/** 每行一本，整行都是书名（不做字段拆分，作者 / 分组等由豆瓣和分组框补） */
+function parseBatchTitles(text) {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+}
+
+/** 失败清单太长时只列前几本，避免把弹窗撑爆 */
+function titleList(titles, max = 3) {
+  const head = titles.slice(0, max).map((t) => `《${t}》`).join('、')
+  return titles.length > max ? `${head} 等 ${titles.length} 本` : head
+}
+
+/**
+ * 批量添加是「先确认再入库」：逐本查豆瓣，全部对上才一次性写入。
+ * 任何一本查不到 / 查询出错都不入库，让用户单独添加（避免书架里混进没信息的空条目）。
+ */
+function openBatchDialog(main, groups) {
+  const { close, body } = showDialog(
+    `<h2>批量添加图书</h2>
+     <p class="small muted">每行一本，只写书名。点「添加」后会先逐本查豆瓣，全部确认到条目才一起入库；
+       有任何一本查不到或有歧义，整批都不会添加，请把那几本单独添加。</p>
+     <label class="form-label mt-2" for="batch-text">书目清单</label>
+     <textarea class="field" id="batch-text" rows="10" spellcheck="false"
+       placeholder="三体&#10;人类简史&#10;明朝那些事儿"></textarea>
+     <label class="form-label mt-2" for="batch-group">分组（可选，整批共用）</label>
+     <input class="field" id="batch-group" list="batch-group-list" maxlength="50"
+            placeholder="如 小说 / 技术 / 历史，留空则未分组" autocomplete="off">
+     <datalist id="batch-group-list">${groups.map((c) => `<option value="${esc(c)}"></option>`).join('')}</datalist>
+     <div class="field-error" id="batch-msg" role="alert"></div>
+     <p class="small muted" id="batch-count" aria-live="polite"></p>
+     <div class="dlg-foot">
+       <button class="btn sm" type="button" data-close>取消</button>
+       <button class="btn primary sm" type="button" id="batch-save">添加</button>
+     </div>`,
+    { label: '批量添加图书' },
+  )
+
+  const textEl = body.querySelector('#batch-text')
+  const groupEl = body.querySelector('#batch-group')
+  const msg = body.querySelector('#batch-msg')
+  const countEl = body.querySelector('#batch-count')
+  const saveBtn = body.querySelector('#batch-save')
+
+  const count = () => {
+    const n = parseBatchTitles(textEl.value).length
+    countEl.textContent = n ? `已识别 ${n} 本` : ''
+    msg.textContent = ''
+  }
+  textEl.addEventListener('input', count)
+
+  saveBtn.onclick = async () => {
+    const titles = [...new Set(parseBatchTitles(textEl.value))]
+    if (!titles.length) {
+      msg.textContent = '请每行填写一本书名'
+      textEl.focus()
+      return
+    }
+    if (titles.length > MAX_BATCH) {
+      msg.textContent = `一次最多 ${MAX_BATCH} 本，请分批添加`
+      return
+    }
+
+    // 第一步：逐本查豆瓣（每本都是独立请求，不会撞 Worker 单次子请求上限）
+    const lookup = await run(
+      saveBtn,
+      async () => {
+        const found = []
+        const missing = []
+        for (let i = 0; i < titles.length; i += 1) {
+          countEl.textContent = `正在查询豆瓣 ${i + 1}/${titles.length}…`
+          const data = await api(`/api/book/search?q=${encodeURIComponent(titles[i])}`)
+          if (data.match) found.push(data.match)
+          else missing.push(titles[i])
+        }
+        return { found, missing }
+      },
+      { silent: true },
+    )
+    if (!lookup.ok) {
+      countEl.textContent = ''
+      msg.textContent = lookup.error?.message || '查询豆瓣失败，请稍后再试'
+      return
+    }
+    const { found, missing } = lookup.data
+    if (missing.length) {
+      countEl.textContent = ''
+      msg.textContent = `豆瓣没有查到 ${titleList(missing)}，整批未添加。请把那几本单独添加。`
+      return
+    }
+
+    // 已在书架的直接跳过（不当作失败），剩下的整批入库
+    const fresh = found.filter((o) => !o.added)
+    if (!fresh.length) {
+      countEl.textContent = ''
+      msg.textContent = '这些书都已经在书架里了'
+      return
+    }
+
+    const category = groupEl.value.trim() || null
+    const saved = await run(saveBtn, () =>
+      api('/api/book/batch', {
+        method: 'POST',
+        body: JSON.stringify({
+          items: fresh.map((o) => ({
+            title: o.title,
+            author: o.author,
+            category,
+            cover: o.cover,
+            pubYear: o.year,
+            doubanId: o.doubanId,
+            doubanUrl: o.url,
+          })),
+        }),
+      }),
+    )
+    if (!saved.ok) {
+      countEl.textContent = ''
+      return
+    }
+    const added = saved.data?.added ?? 0
+    const skipped = (saved.data?.skipped ?? 0) + (found.length - fresh.length)
+    close()
+    toast(`已添加 ${added} 本${skipped ? `，跳过 ${skipped} 本重复` : ''}`)
+    await rerender(render, main)
+  }
+
+  // Ctrl / Cmd + Enter 直接提交，纯文本框里也顺手
+  textEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault()
+      saveBtn.click()
+    }
+  })
+
+  body.querySelector('[data-close]').onclick = close
+  textEl.focus()
+}
+
 /* ---------------- 编辑 / 上传文件 ---------------- */
 
 /** 封面链接输入 → 实时预览（无效或 404 时隐藏预览，不挡保存） */
@@ -619,6 +973,7 @@ async function parseEpubMeta(file) {
 
 export function destroy() {
   alive = false
+  clearTimeout(searchTimer)
   closeMoreMenu()
   document.getElementById('dlg-body').innerHTML = ''
 }

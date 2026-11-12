@@ -6,7 +6,18 @@
 
 import { Hono, type Context } from 'hono'
 import { ok, ApiError, type Env } from '../core/envelope'
-import { putFile, deleteFile, serveFile } from '../core/files'
+import {
+  putFile,
+  deleteFile,
+  serveFile,
+  startMultipart,
+  uploadPart,
+  completeMultipart,
+  abortMultipart,
+  parseParts,
+  ownKey,
+  type StoredFile,
+} from '../core/files'
 import { cacheGet, cacheSet } from '../core/cache'
 
 export const book = new Hono<Env>()
@@ -18,6 +29,8 @@ const MAX_TITLE = 200
 const MAX_AUTHOR = 120
 const MAX_CATEGORY = 50
 const MAX_SUMMARY = 1200
+/** 单次批量请求上限：免费版 D1 每次 invocation 只给 50 条语句的额度，前端按同样大小分批提交 */
+const MAX_BATCH = 50
 
 const DOUBAN_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
@@ -40,9 +53,11 @@ interface BookRow {
   r2_key: string | null
   filename: string | null
   size: number | null
+  progress: number | null
   created_at: number
   updated_at: number
   finished_at: number | null
+  last_read_at: number | null
 }
 
 // ---------- 列表 ----------
@@ -51,13 +66,14 @@ book.get('/list', async (c) => {
   const rows = await c.env.DB
     .prepare(
       `SELECT id, title, author, category, status, cover, summary, rating, pub_year AS pubYear,
-              douban_id AS doubanId, douban_url AS doubanUrl, fmt, filename, size,
+              douban_id AS doubanId, douban_url AS doubanUrl, fmt, filename, size, progress,
               CASE WHEN r2_key IS NOT NULL THEN 1 ELSE 0 END AS hasFile,
               -- 文件版本 = R2 key 里的 uuid：只有换文件才变（改书名 / 阅读状态不动），缓存才不会被无谓作废
               substr(r2_key, 6, 36) AS fileVersion,
-              created_at AS createdAt, updated_at AS updatedAt, finished_at AS finishedAt
+              created_at AS createdAt, updated_at AS updatedAt, finished_at AS finishedAt,
+              last_read_at AS lastReadAt
          FROM book
-        ORDER BY CASE status WHEN 'reading' THEN 0 WHEN 'unread' THEN 1 ELSE 2 END, updated_at DESC`,
+        ORDER BY COALESCE(last_read_at, 0) DESC, id`,
     )
     .all()
   return ok({ books: rows.results })
@@ -67,14 +83,16 @@ book.get('/list', async (c) => {
 
 book.get('/search', async (c) => {
   const q = (c.req.query('q') ?? '').trim().slice(0, 50)
-  if (!q) return ok({ items: [] })
+  if (!q) return ok({ items: [], match: null })
 
   const items = await doubanSuggest(c.env.DB, q)
   const rows = await c.env.DB
     .prepare('SELECT douban_id AS doubanId FROM book WHERE douban_id IS NOT NULL')
     .all<{ doubanId: string }>()
   const added = new Set(rows.results.map((r) => r.doubanId))
-  return ok({ items: items.map((x) => ({ ...x, added: added.has(x.doubanId) })) })
+  const list = items.map((x) => ({ ...x, added: added.has(x.doubanId) }))
+  // 批量添加按书名精确确认条目：只认标题能对上的，避免把「三体」挂到「三体Ⅱ」
+  return ok({ items: list, match: list.find((x) => titleMatches(x.title, q)) ?? null })
 })
 
 /** 条目详情：标题 / 作者 / 封面 / 评分 / 简介（可选增强，抓不到不影响添加） */
@@ -137,6 +155,80 @@ book.post('/add', async (c) => {
   return ok({ id: r.meta.last_row_id })
 })
 
+/**
+ * 批量建条目：浏览器端逐本查过豆瓣、确认到条目后才提交 items（带 doubanId / 封面 / 作者等），
+ * 这里只做去重（书架已有同名或同一条目）和一次 batch 落库；豆瓣信息随条目一起写入
+ */
+book.post('/batch', async (c) => {
+  const b = await readJson(c)
+  const list = Array.isArray(b.items) ? b.items : []
+  if (!list.length) throw new ApiError(400, 400, '没有可添加的书')
+  if (list.length > MAX_BATCH) throw new ApiError(400, 400, `一次最多添加 ${MAX_BATCH} 本`)
+
+  const existing = await c.env.DB
+    .prepare('SELECT title, douban_id AS doubanId FROM book')
+    .all<{ title: string; doubanId: string | null }>()
+  const seenTitle = new Set(existing.results.map((r) => (r.title ?? '').trim().toLowerCase()))
+  const seenDouban = new Set(existing.results.map((r) => r.doubanId).filter((x): x is string => Boolean(x)))
+
+  const rows: Record<string, unknown>[] = []
+  let skipped = 0
+  for (const item of list) {
+    const it = item && typeof item === 'object' ? (item as Record<string, unknown>) : {}
+    const title = text(it.title, MAX_TITLE)
+    const doubanId = text(it.doubanId, 32)
+    if (!title || (doubanId && !/^\d+$/.test(doubanId))) {
+      skipped += 1
+      continue
+    }
+    const key = title.toLowerCase()
+    if (seenTitle.has(key) || (doubanId && seenDouban.has(doubanId))) {
+      skipped += 1
+      continue
+    }
+    seenTitle.add(key)
+    if (doubanId) seenDouban.add(doubanId)
+    rows.push({
+      title,
+      author: text(it.author, MAX_AUTHOR),
+      category: text(it.category, MAX_CATEGORY),
+      cover: coverUrl(it.cover),
+      summary: text(it.summary, MAX_SUMMARY),
+      rating: normalizeRating(it.rating),
+      pubYear: text(it.pubYear, 20),
+      doubanId,
+      doubanUrl: httpUrl(it.doubanUrl),
+    })
+  }
+  if (!rows.length) return ok({ added: 0, skipped })
+
+  const now = Date.now()
+  await c.env.DB.batch(
+    rows.map((r) =>
+      c.env.DB
+        .prepare(
+          `INSERT INTO book (title, author, category, status, cover, summary, rating, pub_year,
+                             douban_id, douban_url, created_at, updated_at, finished_at)
+           VALUES (?, ?, ?, 'unread', ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        )
+        .bind(
+          r.title,
+          r.author,
+          r.category,
+          r.cover,
+          r.summary,
+          r.rating,
+          r.pubYear,
+          r.doubanId,
+          r.doubanUrl,
+          now,
+          now,
+        ),
+    ),
+  )
+  return ok({ added: rows.length, skipped })
+})
+
 book.patch('/:id', async (c) => {
   const id = c.req.param('id')
   const row = await c.env.DB.prepare('SELECT * FROM book WHERE id = ?').bind(id).first<BookRow>()
@@ -165,6 +257,9 @@ book.patch('/:id', async (c) => {
     const status = normalizeStatus(b.status)
     set('status', status)
     set('finished_at', status === 'read' ? (row.finished_at ?? Date.now()) : null)
+    // 手动改状态时让进度跟着走：已读 = 100%，退回待读 = 清零；阅读中保留读到的位置
+    if (status === 'read') set('progress', 100)
+    else if (status === 'unread') set('progress', null)
   }
 
   if (!sets.length) return ok(null)
@@ -172,6 +267,43 @@ book.patch('/:id', async (c) => {
   await c.env.DB
     .prepare(`UPDATE book SET ${sets.join(', ')} WHERE id = ?`)
     .bind(...values, id)
+    .run()
+  return ok(null)
+})
+
+/**
+ * 阅读器打开时记一次「最近阅读」：书架默认排序按它倒序置顶。
+ * 待读 → 阅读中（已读 / 阅读中保持不动）；刻意不动 updated_at，
+ * 改书名 / 同步豆瓣 / 换分组都不会影响这本书在书架上的位置。
+ */
+book.post('/:id/reading', async (c) => {
+  await c.env.DB
+    .prepare(
+      `UPDATE book SET last_read_at = ?,
+                       status = CASE WHEN status = 'unread' THEN 'reading' ELSE status END
+        WHERE id = ?`,
+    )
+    .bind(Date.now(), c.req.param('id'))
+    .run()
+  return ok(null)
+})
+
+/**
+ * 阅读进度回写（epub / txt 阅读器在翻页 / 滚动时节流上报）：
+ * 刻意不动 updated_at——进度只是「读到哪」，不该打乱书架的其他排序键；
+ * 顺手刷新 last_read_at（开着书不动也会因为翻页而保持「最近阅读」）。
+ * 已读的书不接收回写，避免「已读」徽标配一条 30% 的进度条（手动改回阅读中才继续记）。
+ */
+book.post('/:id/progress', async (c) => {
+  const id = c.req.param('id')
+  const b = await readJson(c)
+  const progress = normalizeProgress(b.progress)
+  if (progress === null) throw new ApiError(400, 400, '进度无效')
+  await c.env.DB
+    .prepare(
+      "UPDATE book SET progress = ?, last_read_at = ? WHERE id = ? AND status <> 'read' AND (progress IS NULL OR progress <> ?)",
+    )
+    .bind(progress, Date.now(), id, progress)
     .run()
   return ok(null)
 })
@@ -188,27 +320,67 @@ book.post('/:id/sync', async (c) => {
 book.post('/upload', async (c) => {
   const filename = c.req.query('filename')
   if (!filename) throw new ApiError(400, 400, 'filename required')
+  const fmt = bookFormat(filename)
+  const action = c.req.query('action')
+
+  // ---- 分片上传（>100MB 的书）：init → part × N → complete ----
+  if (action === 'init') {
+    const bookId = c.req.query('bookId')
+    if (bookId) {
+      const exists = await c.env.DB.prepare('SELECT id FROM book WHERE id = ?').bind(bookId).first()
+      if (!exists) throw new ApiError(404, 404, '书不存在')
+    }
+    return ok(await startMultipart(c.env, 'book', filename, c.req.header('content-type') ?? null))
+  }
+  if (action === 'part') {
+    const key = ownKey('book', c.req.query('key'))
+    const uploadId = c.req.query('uploadId')
+    if (!uploadId) throw new ApiError(400, 400, 'uploadId required')
+    if (!c.req.raw.body) throw new ApiError(400, 400, 'empty body')
+    return ok(await uploadPart(c.env, key, uploadId, Number(c.req.query('partNumber')), c.req.raw.body))
+  }
+  if (action === 'complete') {
+    const key = ownKey('book', c.req.query('key'))
+    const uploadId = c.req.query('uploadId')
+    if (!uploadId) throw new ApiError(400, 400, 'uploadId required')
+    const parts = parseParts(await c.req.json().catch(() => null))
+    const stored = await completeMultipart(c.env, key, uploadId, parts, filename, c.req.query('ct'))
+    return ok(await saveBookFile(c, stored, fmt))
+  }
+  if (action === 'abort') {
+    const key = ownKey('book', c.req.query('key'))
+    const uploadId = c.req.query('uploadId')
+    if (uploadId) await abortMultipart(c.env, key, uploadId)
+    return ok(null)
+  }
+  if (action) throw new ApiError(400, 400, '不支持的上传操作')
+
+  // ---- 小文件：一次请求整文件流式写 R2 ----
   if (!c.req.raw.body) throw new ApiError(400, 400, 'empty body')
-
-  const fmt = /\.pdf$/i.test(filename)
-    ? 'pdf'
-    : /\.epub$/i.test(filename)
-      ? 'epub'
-      : /\.txt$/i.test(filename)
-        ? 'txt'
-        : null
-  if (!fmt) throw new ApiError(400, 400, '仅支持 epub / pdf / txt')
-
-  const bookId = c.req.query('bookId')
-  const existing = bookId
-    ? await c.env.DB.prepare('SELECT * FROM book WHERE id = ?').bind(bookId).first<BookRow>()
-    : null
-  if (bookId && !existing) throw new ApiError(404, 404, '书不存在')
-
-  const now = Date.now()
   const stored = await putFile(c.env, 'book', filename, c.req.raw.headers.get('content-type'), c.req.raw.body)
+  return ok(await saveBookFile(c, stored, fmt))
+})
+
+function bookFormat(filename: string): string {
+  if (/\.pdf$/i.test(filename)) return 'pdf'
+  if (/\.epub$/i.test(filename)) return 'epub'
+  if (/\.txt$/i.test(filename)) return 'txt'
+  throw new ApiError(400, 400, '仅支持 epub / pdf / txt')
+}
+
+/** 文件已进 R2 之后落库：单请求与分片 complete 共用（入库失败要把刚写的对象删掉，避免孤儿） */
+async function saveBookFile(c: Context<Env>, stored: StoredFile, fmt: string) {
+  const filename = c.req.query('filename')!
+  const bookId = c.req.query('bookId')
+  const now = Date.now()
   let id: number
+  let existing: BookRow | null = null
   try {
+    existing = bookId
+      ? await c.env.DB.prepare('SELECT * FROM book WHERE id = ?').bind(bookId).first<BookRow>()
+      : null
+    if (bookId && !existing) throw new ApiError(404, 404, '书不存在')
+
     if (existing) {
       await c.env.DB
         .prepare('UPDATE book SET fmt = ?, r2_key = ?, filename = ?, size = ?, updated_at = ? WHERE id = ?')
@@ -243,7 +415,6 @@ book.post('/upload', async (c) => {
       id = Number(r.meta.last_row_id)
     }
   } catch (err) {
-    // 入库失败：清掉刚写的 R2，避免孤儿文件
     await deleteFile(c.env, stored.key).catch(() => {})
     throw err
   }
@@ -258,8 +429,8 @@ book.post('/upload', async (c) => {
     if (row) douban = await autoSyncDouban(c.env.DB, row)
   }
 
-  return ok({ id, size: stored.size, douban })
-})
+  return { id, size: stored.size, douban }
+}
 
 /** 阅读/下载（Range 透传：epub.js 分段读、浏览器 PDF 渐进加载）；带上原始文件名，下载不走 /read/:id */
 book.get('/read/:id', async (c) => {
@@ -314,10 +485,11 @@ book.get('/:id', async (c) => {
   const row = await c.env.DB
     .prepare(
       `SELECT id, title, author, category, status, cover, summary, rating, pub_year AS pubYear,
-              douban_id AS doubanId, douban_url AS doubanUrl, fmt, filename, size,
+              douban_id AS doubanId, douban_url AS doubanUrl, fmt, filename, size, progress,
               CASE WHEN r2_key IS NOT NULL THEN 1 ELSE 0 END AS hasFile,
               substr(r2_key, 6, 36) AS fileVersion,
-              created_at AS createdAt, updated_at AS updatedAt, finished_at AS finishedAt
+              created_at AS createdAt, updated_at AS updatedAt, finished_at AS finishedAt,
+              last_read_at AS lastReadAt
          FROM book
         WHERE id = ?`,
     )
@@ -628,6 +800,13 @@ function isBlockedHost(hostname: string): boolean {
 
 function normalizeStatus(value: unknown): Status {
   return STATUSES.includes(value as Status) ? (value as Status) : 'unread'
+}
+
+/** 阅读进度：0–100 百分比的整数；调用方已读到的比例在前端换算好后提交 */
+function normalizeProgress(value: unknown): number | null {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return null
+  return Math.max(0, Math.min(100, Math.round(n)))
 }
 
 function normalizeRating(value: unknown): number | null {
