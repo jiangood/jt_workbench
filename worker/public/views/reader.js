@@ -1651,6 +1651,15 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
       }
     }
     paintEpubTheme()
+    /** 连续滚动模式下 relocated 会随滚动高频触发：主题刷新做 150ms 节流 */
+    let themeTimer = 0
+    const scheduleEpubTheme = () => {
+      if (themeTimer) return
+      themeTimer = window.setTimeout(() => {
+        themeTimer = 0
+        if (alive()) paintEpubTheme()
+      }, 150)
+    }
 
     // 悬浮工具栏：目录 / 阅读设置（字号 + 背景）/ 背景循环；先刷一次主题钮图标
     setReaderTheme(root, root.dataset.readerTheme || 'paper')
@@ -1938,8 +1947,8 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
       paintLocation(loc)
       // 用户手动翻页 / 跳章时停止朗读；TTS 自己翻页由 ttsTurning 放行
       if (!ttsTurning) tts?.stop()
-      // 新一节的 iframe 渲染完成：立即把背景 / 字号刷上去（themes API 只覆盖新内容，这里兜当前页）
-      paintEpubTheme()
+      // 新一节的 iframe 渲染完成：把背景 / 字号刷上去（themes API 只覆盖新内容，这里兜当前页）
+      scheduleEpubTheme()
       clearTimeout(saveTimer)
       saveTimer = setTimeout(() => {
         if (!alive() || !loc?.start?.cfi) return
@@ -1959,6 +1968,7 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
       stopAuto()
       for (const stop of gestureStops) stop()
       gestureStops.length = 0
+      clearTimeout(themeTimer)
       clearTimeout(saveTimer)
       document.removeEventListener('keydown', onKey)
       view.removeEventListener('wheel', onWheel)
