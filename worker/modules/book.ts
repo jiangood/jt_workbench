@@ -1,5 +1,5 @@
 /**
- * 书架：豆瓣索引建条目（可先不传文件，有资源后再上传）+ epub/pdf 上传 + 分组 / 阅读状态
+ * 书架：豆瓣索引建条目（可先不传文件，有资源后再上传）+ epub 上传 + 分组 / 阅读状态
  * 分组沿用 category 列（自由文本，NULL = 未分组），与自选股 group_name 同语义
  * 封面经 Worker 代理（豆瓣图床带 Referer 防盗链，直连 418）
  */
@@ -362,9 +362,8 @@ book.post('/upload', async (c) => {
 })
 
 function bookFormat(filename: string): string {
-  if (/\.pdf$/i.test(filename)) return 'pdf'
   if (/\.epub$/i.test(filename)) return 'epub'
-  throw new ApiError(400, 400, '仅支持 epub / pdf')
+  throw new ApiError(400, 400, '仅支持 epub')
 }
 
 /** 文件已进 R2 之后落库：单请求与分片 complete 共用（入库失败要把刚写的对象删掉，避免孤儿） */
@@ -431,7 +430,7 @@ async function saveBookFile(c: Context<Env>, stored: StoredFile, fmt: string) {
   return { id, size: stored.size, douban }
 }
 
-/** 阅读/下载（Range 透传：epub.js 分段读、浏览器 PDF 渐进加载）；带上原始文件名，下载不走 /read/:id */
+/** 阅读/下载（Range 透传：epub.js 分段读）；带上原始文件名，下载不走 /read/:id */
 book.get('/read/:id', async (c) => {
   const started = performance.now()
   const row = await c.env.DB
