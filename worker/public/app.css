@@ -2359,6 +2359,8 @@ hr.sep { border: 0; border-top: 1px solid var(--border); margin: var(--sp-5) 0 }
   .table-scroll {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
+    /* 表内横滑到边缘时不要把手臂继续甩给页面（iOS 上会触发侧滑返回、安卓上会带着整页抖） */
+    overscroll-behavior-x: contain;
   }
   .table-scroll th, .table-scroll td { white-space: nowrap }
 
@@ -2513,6 +2515,14 @@ hr.sep { border: 0; border-top: 1px solid var(--border); margin: var(--sp-5) 0 }
   .col-size { display: none }
   .row-sub { display: block }
   .col-dur { white-space: nowrap }
+  /* 固定布局：auto 布局下标题单元格按整段曲名算最小宽度，会把「时长 / 操作」挤出屏幕，
+   * 编辑 / 删除只能横向滑过去才点得到。固定列宽后标题列吃剩余宽度、超出用省略号截断，
+   * 四列一屏放得下（仍然不需要整页或表格横向滚动）。 */
+  .music-table { table-layout: fixed; width: 100% }
+  .music-table .col-no { width: 36px }
+  .music-table .col-dur { width: 54px }
+  .music-table th:last-child,
+  .music-table td:last-child { width: 110px }
 }
 
 @media (max-width: 360px) {

@@ -120,7 +120,7 @@ function shellHtml() {
         </label>
       </div>
     </div>
-    <table>
+    <table class="music-table">
       <thead>
         <tr>
           <th class="col-no">#</th>
