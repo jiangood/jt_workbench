@@ -6,7 +6,9 @@ let chartCode = null
 let chartMeta = null
 let themeObserver = null
 
-function pctHtml(p) {
+function pctHtml(value) {
+  const p = Number(value)
+  if (!Number.isFinite(p)) return '<span class="muted">—</span>'
   const cls = p > 0 ? 'danger-text' : p < 0 ? 'ok-text' : 'muted'
   const sign = p > 0 ? '+' : ''
   return `<span class="${cls}">${sign}${p.toFixed(2)}%</span>`
@@ -103,13 +105,16 @@ export async function render(main) {
           watch
             .map((r) => {
               const x = qm[r.code]
+              // preOpen：无成交价（盘前竞价 / 停牌）——价格回退昨收并弱化，涨跌列不显示百分比
+              const preOpen = x?.preOpen === true
+              const priceText = Number.isFinite(Number(x?.price)) ? Number(x.price).toFixed(2) : '—'
               return `<tr>
                 <td class="mono">${esc(r.code)}</td><td>${esc(x?.name || r.name)}</td>
                 <td>${r.groupName ? `<span class="badge">${esc(r.groupName)}</span>` : '<span class="muted small">未分组</span>'}</td>
-                <td class="text-end mono">${x?.price?.toFixed(2) ?? '—'}</td>
-                <td class="text-end">${x ? pctHtml(x.changePct) : '—'}</td>
-                <td class="text-end mono">${x?.open?.toFixed(2) ?? '—'}</td>
-                <td class="text-end mono">${x ? x.high.toFixed(2) + ' / ' + x.low.toFixed(2) : '—'}</td>
+                <td class="text-end mono${preOpen ? ' muted' : ''}">${priceText}</td>
+                <td class="text-end">${!x ? '—' : preOpen ? '<span class="muted">未开盘</span>' : pctHtml(x.changePct)}</td>
+                <td class="text-end mono">${!x || preOpen ? '—' : x.open.toFixed(2)}</td>
+                <td class="text-end mono">${!x || preOpen ? '—' : x.high.toFixed(2) + ' / ' + x.low.toFixed(2)}</td>
                 <td class="muted small">${esc(x?.time ?? '')}</td>
                 <td><button class="btn sm" data-k="${esc(r.code)}">日线</button></td>
                 <td class="text-end">${moreMenu(

@@ -140,17 +140,19 @@ export async function render(main) {
     ? watch
         .map((w) => {
           const q = quoteMap.get(w.code)
+          // preOpen：无成交价（盘前 / 停牌），价格弱化显示昨收，涨幅列写「未开盘」
+          const preOpen = q?.preOpen === true
           const pct = Number(q?.changePct)
-          const tone = !Number.isFinite(pct) || pct === 0 ? 'muted' : pct > 0 ? 'up' : 'down'
+          const tone = preOpen || !Number.isFinite(pct) || pct === 0 ? 'muted' : pct > 0 ? 'up' : 'down'
           return `<a class="home-row" href="#/stock">
             <span class="home-row-main">
               <span class="home-row-title">${esc(w.name || w.code)}</span>
               <span class="home-row-meta">${esc(w.code)}</span>
             </span>
             <span class="home-row-side">
-              <span class="home-row-price">${q && Number.isFinite(Number(q.price)) ? Number(q.price).toFixed(2) : '—'}</span>
+              <span class="home-row-price${preOpen ? ' muted' : ''}">${q && Number.isFinite(Number(q.price)) ? Number(q.price).toFixed(2) : '—'}</span>
               <span class="home-row-change ${tone}">${
-                Number.isFinite(pct) ? `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%` : '—'
+                preOpen ? '未开盘' : Number.isFinite(pct) ? `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%` : '—'
               }</span>
             </span>
           </a>`

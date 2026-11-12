@@ -213,13 +213,22 @@ stock.get('/quote', async (c) => {
   const nameOf = new Map(watch.results.map((r) => [r.code, r.name]))
   const quotes = [...body.matchAll(/hq_str_((?:sh|sz|bj)\d{6})="([^"]*)"/g)].map(([, code, raw]) => {
     const f = raw.split(',')
+    const prevClose = Number(f[2])
+    const rawPrice = Number(f[3])
+    // 盘前竞价（09:15–09:30）与停牌时新浪只给昨收：f[1]/f[3]/f[4]/f[5] 全为 0。
+    // 这类「无成交价」统一按 preOpen 处理——价格回退昨收、涨跌归零，绝不再算出 -100%
+    const preOpen = !(rawPrice > 0)
+    const base = prevClose > 0 ? prevClose : 0
+    const price = preOpen ? base : rawPrice
+    const change = preOpen ? 0 : price - base
     return {
       code,
       name: nameOf.get(code) ?? f[0],
-      price: Number(f[3]),
-      change: Number(f[3]) - Number(f[2]),
-      changePct: Number(f[2]) ? ((Number(f[3]) - Number(f[2])) / Number(f[2])) * 100 : 0,
-      open: Number(f[1]), prevClose: Number(f[2]), high: Number(f[4]), low: Number(f[5]),
+      price,
+      change,
+      changePct: preOpen || !base ? 0 : (change / base) * 100,
+      preOpen,
+      open: Number(f[1]), prevClose, high: Number(f[4]), low: Number(f[5]),
       time: `${f[30]} ${f[31]}`,
     }
   })
