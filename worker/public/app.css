@@ -1864,16 +1864,14 @@ body:has(.playerbar:not([hidden])) .reader-stage {
   --fg: #d0d3d8; --muted-fg: #8d9199; --border: #2e2e31; --border-strong: #45454a;
 }
 
-/* 右侧悬浮工具栏（微信读书式圆钮）：目录 / 书签 / 阅读设置 / 背景循环切换 */
+/* 正文与目录之间的竖排工具钮列：目录展开时贴在目录左侧、收起时贴右缘，不与目录叠放 */
 .reader-fabs {
-  position: absolute;
-  right: 14px;
-  top: 50%;
-  transform: translateY(-50%);
+  flex: 0 0 auto;
+  align-self: center;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  z-index: 6;
+  padding-right: var(--sp-2);
 }
 .reader-fab {
   display: flex;
@@ -2190,18 +2188,21 @@ body:has(.playerbar:not([hidden])) .reader-root[data-immersive="1"] .reader-stag
 .txt-body p.txt-head { margin: 1.4em 0 1em; text-indent: 0; text-align: center; font-weight: 650 }
 .txt-body p:last-child { margin-bottom: 0 }
 
-/* 阅读页窄屏：悬浮工具栏挪到右下角上方，底部只留系统手势区（safe-area） */
+/* 阅读页窄屏：目录走弹窗不占位，工具钮列改回悬浮、贴右下角上方，底部让出系统手势区（safe-area） */
 @media (max-width: 640px) {
   .reader-page { padding: 0 }
   .reader-top { padding: 0 var(--sp-3) }
   .reader-top .page-sub .reader-stat { display: none }
   .reader-top-links { gap: var(--sp-3) }
   .reader-body > .txt-reader { padding: var(--sp-2) }
+  .reader-body { position: relative }
   .reader-fabs {
+    position: absolute;
     top: auto;
     bottom: calc(16px + env(safe-area-inset-bottom, 0px));
     right: 10px;
-    transform: none;
+    align-self: auto;
+    padding-right: 0;
     gap: 8px;
   }
   .reader-fab { width: 34px; height: 34px }

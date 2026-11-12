@@ -16,7 +16,7 @@
  * 版式：微信读书式沉浸页——body.reading 时全局侧栏 / 顶栏隐藏（app.js 挂类），阅读页
  * 自带顶栏（书名 + 章节 + 阅读进度百分比，右上角「首页 / 我的书架」），正文栏宽默认 800px（可调 640/800/1000）。
  * 没有页脚工具条：翻页靠滚轮 / 方向键 / 触屏手势（左右轻点翻一屏、横滑跳章、点中间沉浸），
- * 目录 / 书签 / 语音朗读 / 字号 / 字体 / 背景（白·米黄·护眼·夜间）收进右侧悬浮工具栏，设置存 localStorage。
+ * 目录 / 书签 / 语音朗读 / 字号 / 字体 / 背景（白·米黄·护眼·夜间）收进正文右侧的工具钮列，设置存 localStorage。
  * 位置 / 字号只影响记忆，不影响阅读；销毁时释放 epub 实例与定时器。
  */
 import {
@@ -215,7 +215,7 @@ function cycleTheme(root) {
   return next
 }
 
-/** 右侧悬浮工具栏（微信读书式圆钮）：目录 / 阅读设置 / 背景循环；接线由各阅读器完成 */
+/** 正文与目录之间的竖排工具钮列（目录 / 书签 / 朗读 / 阅读设置 / 背景循环）；接线由各阅读器完成 */
 function fabHtml() {
   return `<div class="reader-fabs" role="toolbar" aria-label="阅读工具">
       <button class="reader-fab" type="button" data-fab-toc aria-label="目录" title="目录">${icon('queue', 16)}</button>
@@ -1674,9 +1674,9 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
     stage.innerHTML = `
       <div class="reader-body">
         <div class="reader-page"><div class="reader-view" data-view></div></div>
+        ${fabHtml()}
         ${tocSideHtml()}
       </div>
-      ${fabHtml()}
       ${ttsBarHtml()}`
 
     const view = stage.querySelector('[data-view]')
@@ -2553,9 +2553,9 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
       <div class="txt-reader">
         <div class="txt-body" data-body tabindex="0" role="document" aria-label="${esc(title)}">${loadingBlock('正在加载正文…')}</div>
       </div>
+      ${fabHtml()}
       ${tocSideHtml({ refresh: true })}
     </div>
-    ${fabHtml()}
     ${ttsBarHtml()}`
 
   const root = stage
