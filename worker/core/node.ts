@@ -304,7 +304,13 @@ async function claimPipeline(env: Bindings, nodeId: string, now: number): Promis
       if (token) payload.token = token
     }
     // 全量采集断点：把每个星球的回溯游标一并下发（agent 无状态，游标只存 D1）
-    if (row.type === 'zsxq_sync') payload.cursors = await zsxqCursors(db, payload)
+    if (row.type === 'zsxq_sync') {
+      const groupIds = payloadGroupIds(payload)
+      payload.cursors = await zsxqCursors(db, groupIds)
+      // 老帖评论对账 / 删除探测：按「最久没核对」轮转，保证列表页之外的历史帖子也能覆盖
+      payload.refresh = await zsxqReconcileTargets(db, groupIds, 'comments_checked_at')
+      payload.check = await zsxqReconcileTargets(db, groupIds, 'checked_at')
+    }
     return [{ id: row.id, type: row.type, payload }]
   }
 
@@ -317,10 +323,8 @@ async function claimPipeline(env: Bindings, nodeId: string, now: number): Promis
  */
 async function zsxqCursors(
   db: D1Database,
-  payload: Record<string, unknown>,
+  ids: string[],
 ): Promise<Record<string, { cursor: string | null; done: boolean }>> {
-  const raw = Array.isArray(payload.groupIds) ? payload.groupIds : [payload.groupId]
-  const ids = raw.filter((id): id is string => typeof id === 'string' && id !== '')
   if (!ids.length) return {}
   try {
     const placeholders = ids.map(() => '?').join(',')
@@ -335,6 +339,44 @@ async function zsxqCursors(
     return out
   } catch {
     return {}
+  }
+}
+
+/** payload 里启用的星球（新格式 groupIds，兼容旧的单 groupId） */
+function payloadGroupIds(payload: Record<string, unknown>): string[] {
+  const raw = Array.isArray(payload.groupIds) ? payload.groupIds : [payload.groupId]
+  return raw.filter((id): id is string => typeof id === 'string' && id !== '')
+}
+
+/** 每个星球每轮下发多少条对账目标：按最久没核对轮转，量控制在 agent 单轮请求预算内 */
+const ZSXQ_RECONCILE_LIMIT = 30
+
+/**
+ * 对账队列：挑「最久没核对」的主题下发。
+ * - comments_checked_at：评论会持续新增，列表页之外的老帖靠它定期补拉；
+ * - checked_at：详情探测，接口查不到即判定主题被删除（连续两轮才落 deleted=1）。
+ * 表 / 列还没建（迁移未 apply）或查询失败 → 空队列，不影响同步主流程。
+ */
+async function zsxqReconcileTargets(
+  db: D1Database,
+  ids: string[],
+  column: 'comments_checked_at' | 'checked_at',
+): Promise<Array<{ topicId: string; groupId: string }>> {
+  if (!ids.length) return []
+  try {
+    const placeholders = ids.map(() => '?').join(',')
+    const res = await db
+      .prepare(
+        `SELECT id AS topicId, group_id AS groupId FROM zsxq_topic
+         WHERE group_id IN (${placeholders}) AND deleted = 0
+         ORDER BY COALESCE(${column}, 0) ASC, create_time DESC
+         LIMIT ?`,
+      )
+      .bind(...ids, ZSXQ_RECONCILE_LIMIT)
+      .all<{ topicId: string; groupId: string }>()
+    return (res.results ?? []).filter((r) => r.topicId && r.groupId)
+  } catch {
+    return []
   }
 }
 

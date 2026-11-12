@@ -1295,6 +1295,10 @@ a.book-cover:focus-visible {
 }
 .link-btn:hover { color: var(--primary-h); text-decoration: underline }
 
+/* 知识星球：删除状态筛选 + 已删除帖子标记 */
+.zsxq-state-filter { width: auto; min-width: 92px }
+.list > .zsxq-topic.is-deleted { border-left: 3px solid var(--danger-line) }
+
 /* 知识星球：评论展开区（issue #7） */
 .zsxq-comments {
   display: flex;

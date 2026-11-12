@@ -23,6 +23,7 @@ import {
   type ZsxqGroupDetail,
   type ZsxqImage,
   type ZsxqTopic,
+  type ZsxqTopicInfo,
   type ZsxqUser,
 } from '../zsxq-client.js'
 import type { JobHandler } from '../types.js'
@@ -35,14 +36,27 @@ const BACKFILL_MAX_PAGES = 15
 const INCREMENTAL_MAX_PAGES = 2
 const COMMENT_PAGE_SIZE = 30
 const COMMENT_MAX_PAGES = 5
-/** 整轮评论请求上限：超出就提前收尾，下一轮继续（评论比帖子慢，单独限流） */
-const COMMENT_REQUEST_BUDGET = 40
+/**
+ * 整轮评论请求上限：超出就提前收尾，下一轮继续（评论比帖子慢，单独限流）。
+ * 其中 REFRESH_RESERVE 预留给「老帖评论对账」——列表页只看得到最近两页，
+ * 更老的帖子靠 Worker 下发的 refresh 队列按最久未对账轮转补拉。
+ */
+const COMMENT_REQUEST_BUDGET = 75
+const REFRESH_RESERVE = 30
+/** 删除探测上限：每个帖子一次详情请求，按 Worker 下发的轮转队列最久未探测优先 */
+const CHECK_REQUEST_BUDGET = 30
 
 const tokenSchema = z.string().min(1, '缺少知识星球 token：请到「知识星球」页的「同步配置」填写')
 
 const cursorSchema = z.object({
   cursor: z.string().nullish(),
   done: z.union([z.boolean(), z.number()]).nullish(),
+})
+
+/** Worker 下发的对账目标：评论补拉（refresh）/ 删除探测（check）共用 */
+const targetSchema = z.object({
+  topicId: z.string().min(1),
+  groupId: z.string().min(1),
 })
 
 const syncPayloadSchema = z
@@ -53,6 +67,10 @@ const syncPayloadSchema = z
     endTime: z.string().optional(), // 旧版游标（YYYY-MM-DDTHH:mm:ss.SSS+0800）
     /** Worker 从 zsxq_sync_state 注入：{ [groupId]: { cursor, done } }；缺省 = 从头回溯 */
     cursors: z.record(z.string(), cursorSchema).optional(),
+    /** 老帖评论对账队列（最久没对账的优先）；列表页之外的帖子靠它保证评论不漏 */
+    refresh: z.array(targetSchema).max(100).optional(),
+    /** 删除探测队列（最久没探测的优先）；详情接口查不到 = 已删除 */
+    check: z.array(targetSchema).max(100).optional(),
     token: tokenSchema,
   })
   .refine((v) => (v.groupIds?.length ?? 0) > 0 || !!v.groupId, { message: '缺少 groupId' })
@@ -66,7 +84,8 @@ interface CommentBatch {
 }
 
 export const zsxqHandler: JobHandler = async (payload, ctx) => {
-  const { groupId, groupIds: rawIds, count, endTime, cursors, token } = syncPayloadSchema.parse(payload)
+  const { groupId, groupIds: rawIds, count, endTime, cursors, refresh, check, token } =
+    syncPayloadSchema.parse(payload)
   const groupIds = [...new Set(rawIds?.length ? rawIds : [groupId!])]
   const client = new ZsxqClient(token)
   const startedAt = Date.now()
@@ -93,14 +112,25 @@ export const zsxqHandler: JobHandler = async (payload, ctx) => {
   let topicCount = 0
   let commentCount = 0
   let commentFailures = 0
-  let commentBudget = COMMENT_REQUEST_BUDGET
+  /** 本轮帖子列表扫描可用的评论预算（预留一部分给老帖对账） */
+  let commentBudget = Math.max(0, COMMENT_REQUEST_BUDGET - REFRESH_RESERVE)
   let aborted = false
+  /** 本轮至少成功调通过接口的星球：这些星球的「详情查不到」才可信，避免把整组权限故障当成帖子被删 */
+  const groupOk = new Set<string>()
+  /** 星主 ID 按星球缓存，老帖评论对账时继续用同一套 is_owner 标记 */
+  const ownerByGroup = new Map<string, string | null>()
+  let checkedTopics = 0
+  let goneTopics = 0
+  let refreshedTopics = 0
+  let refreshRequests = 0
 
   const emitState = (
     gid: string,
     cursor: string | null,
     done: boolean,
     remarks: string[],
+    scanFrom: number | null,
+    scanTo: number | null,
   ) => {
     items.push({
       kind: 'sync_state',
@@ -108,6 +138,9 @@ export const zsxqHandler: JobHandler = async (payload, ctx) => {
       cursor: cursor ?? null,
       done: done ? 1 : 0,
       note: remarks.length ? remarks.join('；') : null,
+      // 本轮完整覆盖的帖子时间窗口（毫秒）：Worker 用它发现「库里还在、列表里没了」的帖子
+      scanFrom,
+      scanTo,
     })
   }
 
@@ -139,6 +172,7 @@ export const zsxqHandler: JobHandler = async (payload, ctx) => {
       }
       logWarn(`groups.detail ${gid}`, e)
     }
+    ownerByGroup.set(gid, ownerId)
     if (!ownerId) {
       noOwnerGroups++
       remarks.push('未能确认星主身份')
@@ -147,7 +181,7 @@ export const zsxqHandler: JobHandler = async (payload, ctx) => {
     // ② 帖子分页（done 星球只扫首页，回溯模式一路往老翻）
     const groupName = groupNames.get(gid) ?? null
     const maxPages = alreadyDone ? INCREMENTAL_MAX_PAGES : BACKFILL_MAX_PAGES
-    // 评论预算按「剩余星球数」均分，避免第一个星球把 40 次用光、后面的星球永远轮不到
+    // 评论预算按「剩余星球数」均分，避免第一个星球把预算用光、后面的星球永远轮不到
     const groupsLeft = groupIds.length - index
     let groupCommentBudget = Math.max(1, Math.floor(commentBudget / groupsLeft))
     // scanCursor 只管本轮翻页（end_time）；nextCursor 才是回传给 Worker 的断点
@@ -161,6 +195,15 @@ export const zsxqHandler: JobHandler = async (payload, ctx) => {
     let stopped = false
     /** stopped 的原因是「评论预算/耗时」而不是抓取失败（summary 与 note 用词不同） */
     let budgetStop = false
+    /** 本轮完整覆盖的帖子时间窗口：scanFrom = 最新一条，scanTo = 完整翻完的最老一条 */
+    let scanFromMs: number | null = null
+    let coveredToMs: number | null = null
+    /**
+     * 列表是否严格按时间倒序。置顶帖可能被接口提到最前（时间跳回很老），
+     * 这时区间不再连续，不能拿它做「列表里消失 = 已删除」的对账，直接放弃本轮的窗口。
+     */
+    let monotonic = true
+    let lastSeenMs: number | null = null
 
     for (let page = 0; page < maxPages; page++) {
       if (ctx.signal.aborted) {
@@ -195,6 +238,7 @@ export const zsxqHandler: JobHandler = async (payload, ctx) => {
         break
       }
 
+      groupOk.add(gid)
       const topics = (data.topics ?? []) as ZsxqTopic[]
       if (!topics.length) {
         // 空页 = 已回溯到历史尽头
@@ -203,8 +247,11 @@ export const zsxqHandler: JobHandler = async (payload, ctx) => {
       }
 
       let processed = 0
+      let pageNewestMs: number | null = null
       let pageOldestMs: number | null = null
       let pageBreak = false
+      /** 整页都处理完（没有因预算 / 中止在半路停下）→ 这页的时间区间才算「已完整扫描」 */
+      let pageComplete = true
 
       for (const t of topics) {
         if (!t || t.topic_id == null) continue
@@ -215,6 +262,7 @@ export const zsxqHandler: JobHandler = async (payload, ctx) => {
           stopped = true
           budgetStop = true
           pageBreak = true
+          pageComplete = false
           break
         }
 
@@ -245,7 +293,12 @@ export const zsxqHandler: JobHandler = async (payload, ctx) => {
         })
         topicCount++
         processed++
-        if (Number.isFinite(createdMs)) pageOldestMs = createdMs
+        if (Number.isFinite(createdMs)) {
+          if (lastSeenMs !== null && createdMs > lastSeenMs) monotonic = false
+          lastSeenMs = createdMs
+          if (pageNewestMs === null || createdMs > pageNewestMs) pageNewestMs = createdMs
+          pageOldestMs = createdMs
+        }
         // 游标只认「评论也抓完」的最后一条：后面的帖子还在更老一侧，下一轮重抓（入库幂等）
         if (createdRaw) scanCursor = createdRaw
 
@@ -265,12 +318,15 @@ export const zsxqHandler: JobHandler = async (payload, ctx) => {
           commentBudget -= got.requests
           commentCount += got.items.length
           items.push(...got.items)
+          // 对账时间戳：0 条评论也算「刚核对过」，Worker 落 comments_checked_at 后排队尾
+          items.push({ kind: 'comment_state', topicId, groupId: gid })
         } catch (e) {
           // 评论失败只记账，不中断整轮（帖子已经入库，评论下一轮随帖子重抓再补）
           if (ctx.signal.aborted) {
             aborted = true
             stopped = true
             pageBreak = true
+            pageComplete = false
             break
           }
           logWarn(`topics.comments ${topicId}`, e)
@@ -288,18 +344,135 @@ export const zsxqHandler: JobHandler = async (payload, ctx) => {
         }
         scanCursorMs = pageOldestMs
       }
+      // 记录完整覆盖的下界：半路停下的页不算，否则没入库的帖子会被误判成「已删除」
+      if (pageComplete && monotonic && pageOldestMs !== null) {
+        if (scanFromMs === null && pageNewestMs !== null) scanFromMs = pageNewestMs
+        coveredToMs = pageOldestMs
+      }
       if (!alreadyDone) nextCursor = scanCursor
       if (pageBreak || stopped) break
       if (scanCursor) pageEnd = scanCursor
     }
 
     if (budgetStop && !aborted) remarks.push('本轮提前收尾（评论预算/耗时），下一轮继续')
-    emitState(gid, nextCursor ?? null, groupDone, remarks)
+    emitState(gid, nextCursor ?? null, groupDone, remarks, scanFromMs, coveredToMs)
 
     if (index < groupIds.length - 1 && !(await pause(ctx.signal))) {
       aborted = true
       break
     }
+  }
+
+  if (aborted) return { items, summary: 'aborted' }
+
+  // ④ 老帖评论对账：列表页只看得到最近两页，更老的帖子靠 Worker 的轮转队列定期补拉。
+  //    预算 = 预留的 REFRESH_RESERVE + 本轮列表扫描没用完的部分。
+  let refreshBudget = REFRESH_RESERVE + Math.max(0, commentBudget)
+  for (const target of refresh ?? []) {
+    if (ctx.signal.aborted) {
+      aborted = true
+      break
+    }
+    if (refreshBudget <= 0 || outOfTime()) break
+    if (!groupOk.has(target.groupId)) continue // 本轮没成功访问过这个星球：留到下一轮
+    if (!(await pause(ctx.signal, 600 + Math.random() * 600))) {
+      aborted = true
+      break
+    }
+    try {
+      const got = await collectComments(
+        client,
+        target.groupId,
+        target.topicId,
+        ownerByGroup.get(target.groupId) ?? null,
+        ctx.signal,
+        refreshBudget,
+        outOfTime,
+      )
+      if (!got.requests) break // 时间刚好用尽：这条不算对账过，下一轮还排在最前
+      refreshBudget -= got.requests
+      refreshRequests += got.requests
+      commentCount += got.items.length
+      refreshedTopics++
+      items.push(...got.items)
+      items.push({ kind: 'comment_state', topicId: target.topicId, groupId: target.groupId })
+    } catch (e) {
+      if (ctx.signal.aborted) {
+        aborted = true
+        break
+      }
+      logWarn(`refresh.comments ${target.topicId}`, e)
+      commentFailures++
+    }
+  }
+
+  // ⑤ 删除探测：详情 / 评论接口都读不到 → 回传 alive=0，Worker 连续两轮确认后软删标记。
+  //    只探测「本轮成功访问过」的星球，避免整组权限故障（退出星球 / token 失效）被误判成帖子被删。
+  let checkBudget = CHECK_REQUEST_BUDGET
+  /** 本轮每个星球认定的存活数：一组里一条活的都没有 = 接口/权限异常，宁可不标也不误标 */
+  const probeAlive = new Map<string, number>()
+  const gone: Array<{
+    topicId: string
+    groupId: string
+    code: number | null
+    message: string
+  }> = []
+
+  for (const target of check ?? []) {
+    if (ctx.signal.aborted) {
+      aborted = true
+      break
+    }
+    if (checkBudget <= 0 || outOfTime()) break
+    if (!groupOk.has(target.groupId)) continue
+    checkBudget--
+    try {
+      const probe = await probeTopic(client, target.topicId, ctx.signal)
+      checkedTopics++
+      if (probe.alive) {
+        probeAlive.set(target.groupId, (probeAlive.get(target.groupId) ?? 0) + 1)
+        items.push({
+          kind: 'topic_check',
+          topicId: target.topicId,
+          groupId: target.groupId,
+          status: 'alive',
+          commentsCount: infoCount(probe.info, 'comments'),
+          likesCount: infoCount(probe.info, 'likes'),
+        })
+      } else {
+        gone.push({
+          topicId: target.topicId,
+          groupId: target.groupId,
+          code: probe.error instanceof ZsxqApiError ? probe.error.code : null,
+          message: describeError(probe.error).slice(0, 200),
+        })
+      }
+    } catch (e) {
+      if (ctx.signal.aborted) {
+        aborted = true
+        break
+      }
+      logWarn(`topics.probe ${target.topicId}`, e)
+    }
+    if (!(await pause(ctx.signal, 700 + Math.random() * 600))) {
+      aborted = true
+      break
+    }
+  }
+
+  // 只回传「同组至少一条存活」的删除结果；整组都读不到 = 接口/权限异常，
+  // 回 unknown 让 Worker 只推进 checked_at（排队尾），不累计删除计数，下一轮换一批再试。
+  for (const g of gone) {
+    const trusted = (probeAlive.get(g.groupId) ?? 0) > 0
+    if (trusted) goneTopics++
+    items.push({
+      kind: 'topic_check',
+      topicId: g.topicId,
+      groupId: g.groupId,
+      status: trusted ? 'gone' : 'unknown',
+      code: g.code,
+      message: g.message,
+    })
   }
 
   if (aborted) return { items, summary: 'aborted' }
@@ -317,6 +490,11 @@ export const zsxqHandler: JobHandler = async (payload, ctx) => {
       (noOwnerGroups ? `，${noOwnerGroups} 个星球未能确认星主身份` : '') +
       (skippedGroups ? `，${skippedGroups} 个星球因评论预算用尽留到下一轮` : '') +
       (commentFailures ? `，${commentFailures} 帖评论抓取失败（随帖子下一轮重抓）` : '') +
+      (refreshedTopics
+        ? `，老帖评论对账 ${refreshedTopics} 帖 / ${refreshRequests} 次请求`
+        : '') +
+      (checkedTopics ? `，存活探测 ${checkedTopics} 帖` : '') +
+      (goneTopics ? `，本轮确认已删除 ${goneTopics} 帖` : '') +
       (commentBudget <= 0 ? '，评论请求预算已用尽' : '') +
       (failures.length ? `，失败 ${failures.length} 个（${failures.join('；')}）` : ''),
   }
@@ -383,6 +561,49 @@ async function collectComments(
   }
 
   return { items, requests }
+}
+
+/**
+ * 主题存活探测：先走详情（顺带拿最新互动计数），详情不可用时退回评论接口。
+ * 两个接口都给出「非瞬时错误」才判定不存在——单个接口的兼容性问题不至于把正常帖子标成删除。
+ */
+async function probeTopic(
+  client: ZsxqClient,
+  topicId: string,
+  signal: AbortSignal,
+): Promise<
+  | { alive: true; info: { topic?: ZsxqTopicInfo } | null }
+  | { alive: false; error: unknown }
+> {
+  try {
+    return { alive: true, info: await client.topicInfo(topicId, signal) }
+  } catch (e) {
+    if (!isGoneError(e)) throw e
+    try {
+      await client.listComments(topicId, 1, undefined, signal)
+      return { alive: true, info: null }
+    } catch (e2) {
+      if (!isGoneError(e2)) throw e2
+      return { alive: false, error: e }
+    }
+  }
+}
+
+/**
+ * 详情接口失败是否可判定为「帖子不存在」。
+ * 只认非瞬时错误；token 失效 / 未登录（1001 / 401）是凭据问题，不能拿来标删除。
+ */
+function isGoneError(e: unknown): boolean {
+  if (!(e instanceof ZsxqApiError)) return false
+  if (e.retryable) return false
+  return e.code !== 1001 && e.code !== 401
+}
+
+/** 详情里的互动计数：counts.comments / counts.likes，兼容顶层 comments_count / likes_count */
+function infoCount(info: { topic?: ZsxqTopicInfo } | null | undefined, key: 'comments' | 'likes'): number | null {
+  const t = info?.topic
+  const n = t?.counts?.[key] ?? (key === 'comments' ? t?.comments_count : t?.likes_count)
+  return typeof n === 'number' && Number.isFinite(n) && n >= 0 ? Math.floor(n) : null
 }
 
 /** 星主 user_id：兼容 {group:{owner}} / {owner} / {owner_id} 三种返回形态 */

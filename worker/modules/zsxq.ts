@@ -34,6 +34,8 @@ interface TopicRow {
   commentsCount: number
   likesCount: number
   createTime: number | null
+  deleted: number
+  deletedAt: number | null
 }
 
 interface TopicImage {
@@ -63,6 +65,9 @@ interface TopicOut {
   commentsCount: number
   likesCount: number
   createTime: number | null
+  /** 星球里已删除（软删）：正文 / 评论 / 附件照常保留，页面打标并可单独筛选 */
+  deleted: boolean
+  deletedAt: number | null
   images: TopicImage[]
   files: TopicFile[]
 }
@@ -110,6 +115,9 @@ zsxq.get('/topics', async (c) => {
   const page = clampInt(c.req.query('page'), 1, 1, 100_000)
   const pageSize = clampInt(c.req.query('pageSize'), 20, 1, 100)
   const ownerOnly = isOn(c.req.query('ownerOnly'))
+  // 删除状态筛选：all（默认，含已删除）/ active / deleted；非法值按 all
+  const state = c.req.query('state')
+  const deletedFilter = state === 'deleted' ? 1 : state === 'active' ? 0 : null
 
   // 条件全部用占位符拼（groupId / ownerOnly 都吃参数绑定），不拼用户输入
   const conds: string[] = []
@@ -119,6 +127,10 @@ zsxq.get('/topics', async (c) => {
     bind.push(groupId)
   }
   if (ownerOnly) conds.push('is_owner = 1')
+  if (deletedFilter !== null) {
+    conds.push('deleted = ?')
+    bind.push(String(deletedFilter))
+  }
   const where = conds.length ? `WHERE ${conds.join(' AND ')}` : ''
 
   const [rows, count, groups, job, progress] = await Promise.all([
@@ -127,7 +139,8 @@ zsxq.get('/topics', async (c) => {
         `SELECT id, group_id AS groupId, title, talk_text AS talkText, images, files,
                 author_id AS authorId, author_name AS authorName, is_owner AS isOwner,
                 comments_count AS commentsCount, likes_count AS likesCount,
-                create_time AS createTime FROM zsxq_topic ${where}
+                create_time AS createTime, deleted, deleted_at AS deletedAt
+           FROM zsxq_topic ${where}
          ORDER BY create_time DESC LIMIT ? OFFSET ?`,
       )
       .bind(...bind, pageSize, (page - 1) * pageSize)
@@ -156,6 +169,8 @@ zsxq.get('/topics', async (c) => {
     commentsCount: t.commentsCount ?? 0,
     likesCount: t.likesCount ?? 0,
     createTime: t.createTime,
+    deleted: t.deleted === 1,
+    deletedAt: t.deletedAt,
     images: parseJsonArray(t.images) as TopicImage[],
     files: parseJsonArray(t.files).filter(isRecord) as TopicFile[],
   }))

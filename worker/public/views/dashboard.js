@@ -196,7 +196,7 @@ export async function render(main) {
     : emptyBox('star', zsxq.enabled ? '暂无归档话题，等待节点同步' : '未启用同步', '去知识星球', '#/zsxq')
 
   const zsxqText = zsxq.total
-    ? `已归档 ${zsxq.total} 条`
+    ? `已归档 ${zsxq.total} 条${zsxq.deleted ? ` · 已删除 ${zsxq.deleted}` : ''}`
     : zsxq.enabled
       ? zsxq.hasToken
         ? '待同步'

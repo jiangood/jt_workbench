@@ -60,6 +60,21 @@ export interface ZsxqComment {
   files?: ZsxqFileRef[]
 }
 
+/**
+ * GET /v2/topics/{id}/info：探测主题是否还在（删除标记靠它）。
+ * 只取页面需要的最小字段；counts 新老响应都兼容（顶层 comments_count / likes_count 兜底）。
+ */
+export interface ZsxqTopicInfo {
+  topic_id?: number
+  title?: string
+  comments_count?: number
+  likes_count?: number
+  counts?: {
+    comments?: number
+    likes?: number
+  }
+}
+
 export interface ZsxqGroup {
   group_id: number
   name: string
@@ -174,6 +189,11 @@ export class ZsxqClient {
     signal?: AbortSignal,
   ): Promise<{ topics: ZsxqTopic[] }> {
     return this.call(`/v2/groups/${groupId}/topics`, { count, scope: 'all', end_time: endTime }, signal)
+  }
+
+  /** 主题详情：只用于存活探测（返回什么不重要，能 succeeded 就说明还在） */
+  topicInfo(topicId: string, signal?: AbortSignal): Promise<{ topic?: ZsxqTopicInfo }> {
+    return this.call(`/v2/topics/${topicId}/info`, undefined, signal)
   }
 
   /**

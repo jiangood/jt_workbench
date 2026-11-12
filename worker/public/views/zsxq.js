@@ -23,6 +23,9 @@ const BACKUP_MAX_ROUNDS = 12
 let page = 1
 // 只看星主：列表与评论请求同时带 ownerOnly=1，关闭后恢复
 let ownerOnly = false
+// 删除状态筛选：all（含已删除，默认）/ active / deleted
+let stateFilter = 'all'
+const STATE_LABELS = { all: '全部', active: '正常', deleted: '已删除' }
 let pollTimer = 0
 // 低频配置（token / 星球勾选）收在弹窗里：页面重绘时保持弹窗打开，数据刷新后原地更新
 let configOpen = false
@@ -139,12 +142,21 @@ function commentHtml(cm) {
 /** 一条帖子：作者行 + 正文 + 图片 + 附件 + 评论展开区 */
 function topicHtml(t) {
   const likes = Number(t.likesCount) || 0
-  return `<div class="zsxq-topic">
-      ${authorLine(t.authorName, t.isOwner, t.createTime, likes > 0 ? `<span class="muted">${likes} 赞</span>` : '')}
+  const extra = [
+    likes > 0 ? `<span class="muted">${likes} 赞</span>` : '',
+    t.deleted ? '<span class="badge bad">已删除</span>' : '',
+  ].join('')
+  return `<div class="zsxq-topic${t.deleted ? ' is-deleted' : ''}">
+      ${authorLine(t.authorName, t.isOwner, t.createTime, extra)}
       ${t.title ? `<div class="fw-semibold mt-1">${esc(t.title)}</div>` : ''}
       <div class="pre mt-1">${esc(t.talkText || '(无正文)')}</div>
       ${imageStrip(t.images, 140)}
       ${(t.files ?? []).length ? `<div class="mt-2">${t.files.map(fileLine).join('')}</div>` : ''}
+      ${
+        t.deleted
+          ? `<div class="small muted mt-1">${icon('trash', 12)} 已在知识星球删除，本地归档的正文 / 评论 / 附件继续保留</div>`
+          : ''
+      }
       <div class="flex center mt-2">
         <button class="btn sm" type="button" data-comments="${esc(t.id)}" aria-expanded="false">评论 ${
           Number(t.commentsCount) || 0
@@ -162,8 +174,11 @@ export async function render(main) {
   // 重绘后评论区收起：展开状态不跨页 / 不跨筛选
   commentState.clear()
 
+  const stateQuery = stateFilter === 'all' ? '' : `&state=${stateFilter}`
   const [d, g] = await Promise.all([
-    api(`/api/zsxq/topics?page=${page}&pageSize=${PAGE_SIZE}${ownerOnly ? '&ownerOnly=1' : ''}`),
+    api(
+      `/api/zsxq/topics?page=${page}&pageSize=${PAGE_SIZE}${ownerOnly ? '&ownerOnly=1' : ''}${stateQuery}`,
+    ),
     api('/api/zsxq/groups'),
   ])
   if (gen !== renderGen) return
@@ -194,9 +209,16 @@ export async function render(main) {
     <div class="page-head">
       <div>
         <h1 class="page-title">知识星球</h1>
-        <p class="page-sub">共 ${esc(total)} 条${ownerOnly ? ' · 只看星主' : ''} · ${esc(statusText)}</p>
+        <p class="page-sub">共 ${esc(total)} 条 · ${esc(STATE_LABELS[stateFilter] ?? '全部')}${
+          ownerOnly ? ' · 只看星主' : ''
+        } · ${esc(statusText)}</p>
       </div>
       <div class="page-actions">
+        <select class="field field-sm zsxq-state-filter" id="state-filter" aria-label="按删除状态筛选">
+          <option value="all" ${stateFilter === 'all' ? 'selected' : ''}>全部</option>
+          <option value="active" ${stateFilter === 'active' ? 'selected' : ''}>正常</option>
+          <option value="deleted" ${stateFilter === 'deleted' ? 'selected' : ''}>已删除</option>
+        </select>
         <button class="btn sm" id="owner-only" type="button" aria-pressed="${ownerOnly}">${
           ownerOnly ? '显示全部' : '只看星主'
         }</button>
@@ -214,9 +236,11 @@ export async function render(main) {
       ${
         d.topics.map(topicHtml).join('') ||
         `<div class="empty">${
-          ownerOnly
-            ? '只看星主时暂无帖子（星主帖由新版采集任务标记，可先「立即同步」）'
-            : '暂无话题（在「同步配置」里勾选星球并启用同步，由节点定时拉取）'
+          stateFilter === 'deleted'
+            ? '暂无已删除话题：节点会定期探测，删帖被确认后自动标记到这里'
+            : ownerOnly
+              ? '只看星主时暂无帖子（星主帖由新版采集任务标记，可先「立即同步」）'
+              : '暂无话题（在「同步配置」里勾选星球并启用同步，由节点定时拉取）'
         }</div>`
       }
     </div>
@@ -237,6 +261,13 @@ export async function render(main) {
 
   main.querySelector('#owner-only').onclick = async () => {
     ownerOnly = !ownerOnly
+    page = 1
+    await rerender(render, main)
+    scrollToTop()
+  }
+
+  main.querySelector('#state-filter').onchange = async (e) => {
+    stateFilter = e.target.value in STATE_LABELS ? e.target.value : 'all'
     page = 1
     await rerender(render, main)
     scrollToTop()

@@ -254,6 +254,26 @@ interface ZsxqStateItem {
   cursor: string | null
   done: number
   note: string | null
+  /** 本轮完整扫描到的帖子时间窗口（毫秒）；null = 本轮没完整翻完任何一页 */
+  scanFrom: number | null
+  scanTo: number | null
+}
+
+/** 主题存活探测：gone 由 Worker 累计缺失次数，连续两轮才落 deleted=1；unknown 只推进探测时间 */
+interface ZsxqTopicCheckItem {
+  topicId: string
+  groupId: string
+  status: 'alive' | 'gone' | 'unknown'
+  code: number | null
+  commentsCount: number | null
+  likesCount: number | null
+  message: string | null
+}
+
+/** 评论对账完成标记：更新 comments_checked_at，排队尾等下轮 */
+interface ZsxqCommentStateItem {
+  topicId: string
+  groupId: string
 }
 
 function asText(v: unknown): string | null {
@@ -350,7 +370,45 @@ function asZsxqStateItem(item: unknown): ZsxqStateItem | null {
     cursor: typeof it.cursor === 'string' && it.cursor ? it.cursor : null,
     done: asFlag(it.done),
     note: typeof it.note === 'string' && it.note ? it.note.slice(0, 300) : null,
+    scanFrom: numOrNull(it.scanFrom),
+    scanTo: numOrNull(it.scanTo),
   }
+}
+
+function asZsxqTopicCheckItem(item: unknown): ZsxqTopicCheckItem | null {
+  if (typeof item !== 'object' || item === null) return null
+  const it = item as Record<string, unknown>
+  if (typeof it.topicId !== 'string' || !it.topicId) return null
+  if (typeof it.groupId !== 'string' || !it.groupId) return null
+  // 兼容旧 agent：没有 status 时按 alive 标记判断
+  const status =
+    it.status === 'alive' || it.status === 'gone' || it.status === 'unknown'
+      ? it.status
+      : asFlag(it.alive)
+        ? 'alive'
+        : 'gone'
+  return {
+    topicId: it.topicId,
+    groupId: it.groupId,
+    status,
+    code: typeof it.code === 'number' && Number.isFinite(it.code) ? it.code : null,
+    commentsCount: countOrNull(it.commentsCount),
+    likesCount: countOrNull(it.likesCount),
+    message: typeof it.message === 'string' && it.message ? it.message.slice(0, 200) : null,
+  }
+}
+
+function asZsxqCommentStateItem(item: unknown): ZsxqCommentStateItem | null {
+  if (typeof item !== 'object' || item === null) return null
+  const it = item as Record<string, unknown>
+  if (typeof it.topicId !== 'string' || !it.topicId) return null
+  if (typeof it.groupId !== 'string' || !it.groupId) return null
+  return { topicId: it.topicId, groupId: it.groupId }
+}
+
+/** 计数：非数字 / 负数当未知（null），不要用 0 覆盖已有值 */
+function countOrNull(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : null
 }
 
 /** kind 分流键：缺省按帖子处理（旧 agent 兼容） */
@@ -426,6 +484,8 @@ export async function ingest(
     const topics: ZsxqTopicItem[] = []
     const comments: ZsxqCommentItem[] = []
     const states: ZsxqStateItem[] = []
+    const checks: ZsxqTopicCheckItem[] = []
+    const commentStates: ZsxqCommentStateItem[] = []
     for (const item of items) {
       const kind = zsxqKind(item)
       if (kind === 'comment') {
@@ -434,13 +494,21 @@ export async function ingest(
       } else if (kind === 'sync_state') {
         const s = asZsxqStateItem(item)
         if (s) states.push(s)
+      } else if (kind === 'topic_check') {
+        const c = asZsxqTopicCheckItem(item)
+        if (c) checks.push(c)
+      } else if (kind === 'comment_state') {
+        const c = asZsxqCommentStateItem(item)
+        if (c) commentStates.push(c)
       } else if (kind === 'topic') {
         const t = asZsxqTopicItem(item)
         if (t) topics.push(t)
       }
       // 其它 kind：agent 先升级的窗口，忽略即可（不让整批入库失败）
     }
-    if (!topics.length && !comments.length && !states.length) return 0
+    if (!topics.length && !comments.length && !states.length && !checks.length && !commentStates.length) {
+      return 0
+    }
 
     // 星球名随 items 捎带（agent 同步时顺带查 groups.list）；缺失时保留旧名
     const groups = new Map<string, string | null>()
@@ -483,6 +551,10 @@ export async function ingest(
                comments_count = MAX(comments_count, excluded.comments_count),
                likes_count = MAX(likes_count, excluded.likes_count),
                create_time = COALESCE(excluded.create_time, create_time),
+               -- 重新出现在列表里 = 没被删（删除标记可逆，误判能自愈）
+               deleted = 0,
+               deleted_at = NULL,
+               miss_count = 0,
                fetched_at = excluded.fetched_at`,
           )
           .bind(
@@ -535,6 +607,76 @@ export async function ingest(
           }),
         )
       }
+    }
+
+    // 评论对账完成：只推进时间戳，让这条帖子排到轮转队尾（0 条评论也算核对过）
+    for (const c of commentStates) {
+      stmts.push(
+        db
+          .prepare('UPDATE zsxq_topic SET comments_checked_at = ? WHERE id = ?')
+          .bind(now, c.topicId),
+      )
+    }
+
+    // 删除探测结果：alive 清掉历史缺失计数；gone 累计、连续两轮才落 deleted=1；
+    // unknown（接口/权限异常）只推进探测时间，排队尾换下一批，绝不记缺失
+    for (const c of checks) {
+      if (c.status === 'alive') {
+        stmts.push(
+          db
+            .prepare(
+              `UPDATE zsxq_topic SET
+                 checked_at = ?,
+                 comments_count = MAX(comments_count, COALESCE(?, comments_count)),
+                 likes_count = MAX(likes_count, COALESCE(?, likes_count)),
+                 deleted = 0, deleted_at = NULL, miss_count = 0
+               WHERE id = ?`,
+            )
+            .bind(now, c.commentsCount, c.likesCount, c.topicId),
+        )
+        continue
+      }
+      if (c.status === 'unknown') {
+        stmts.push(
+          db
+            .prepare('UPDATE zsxq_topic SET checked_at = ? WHERE id = ?')
+            .bind(now, c.topicId),
+        )
+        continue
+      }
+      stmts.push(
+        db
+          .prepare(
+            `UPDATE zsxq_topic SET
+               checked_at = ?,
+               miss_count = miss_count + 1,
+               last_missing_at = ?,
+               deleted = CASE WHEN miss_count + 1 >= 2 THEN 1 ELSE deleted END,
+               deleted_at = CASE WHEN miss_count + 1 >= 2 AND deleted = 0 THEN ? ELSE deleted_at END
+             WHERE id = ?`,
+          )
+          .bind(now, now, now, c.topicId),
+      )
+    }
+
+    // 列表对账：本轮完整扫过的时间窗口里，库里还留着但这次没出现的帖子 = 疑似删除。
+    // 只认完整翻完的页（agent 侧 pageComplete），半路因预算停下不会产生窗口，避免误标。
+    for (const s of states) {
+      if (s.scanFrom === null || s.scanTo === null || s.scanFrom < s.scanTo) continue
+      stmts.push(
+        db
+          .prepare(
+            `UPDATE zsxq_topic SET
+               miss_count = miss_count + 1,
+               last_missing_at = ?,
+               deleted = CASE WHEN miss_count + 1 >= 2 THEN 1 ELSE deleted END,
+               deleted_at = CASE WHEN miss_count + 1 >= 2 AND deleted = 0 THEN ? ELSE deleted_at END
+             WHERE group_id = ? AND deleted = 0
+               AND create_time IS NOT NULL AND create_time >= ? AND create_time <= ?
+               AND fetched_at < ?`,
+          )
+          .bind(now, now, s.groupId, s.scanTo, s.scanFrom, now),
+      )
     }
 
     // 回溯游标：cursor 只前进到 agent 处理完的位置；done=1 = 已到历史尽头

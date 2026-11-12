@@ -132,6 +132,7 @@ admin.get('/summary', async (c) => {
         db.prepare('SELECT count(*) AS n FROM note'),
         db.prepare('SELECT count(*) AS n FROM zsxq_topic'),
         db.prepare('SELECT count(*) AS n FROM zsxq_group WHERE enabled = 1'),
+        db.prepare('SELECT count(*) AS n FROM zsxq_topic WHERE deleted = 1'),
       ]),
       db.prepare('SELECT node_id, agent_version, last_seen_at FROM node_state').all(),
       db.prepare(`SELECT node_id, count(*) AS n FROM job WHERE status = 'leased' GROUP BY node_id`).all(),
@@ -205,6 +206,7 @@ admin.get('/summary', async (c) => {
     library: { music: card(1), book: card(2) },
     zsxq: {
       total: card(4),
+      deleted: card(6),
       enabled: card(5) > 0,
       hasToken: !!cfg.zsxq_token,
       latest: zsxqLatest.results ?? [],
