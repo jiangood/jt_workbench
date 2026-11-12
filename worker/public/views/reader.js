@@ -615,6 +615,11 @@ function openMarksDialog({ bookId, getCurrent, onJump }) {
 
 const TTS_RATE_KEY = 'book:tts:rate'
 const TTS_RATES = [0.8, 1, 1.2, 1.5, 2]
+/** 音色（voiceURI）与「读完本章是否接着读下一章」（issue #23） */
+const TTS_VOICE_KEY = 'book:tts:voice'
+const TTS_FOLLOW_KEY = 'book:tts:follow'
+
+const ttsFollowChapter = () => readStorage(TTS_FOLLOW_KEY) === '1'
 
 /** 当前朗读高亮的段落：{ el, doc? }；切段 / 停止时清掉 */
 let ttsMarked = null
@@ -682,6 +687,12 @@ function ttsBarHtml() {
       <button class="tts-btn primary" type="button" data-tts-toggle aria-label="开始朗读" title="播放 / 暂停">${icon('play', 16)}</button>
       <button class="tts-btn" type="button" data-tts-next aria-label="下一段" title="下一段">${icon('next', 16)}</button>
       <span class="tts-status small" data-tts-status aria-live="polite">未开始</span>
+      <label class="tts-field" data-tts-voice-wrap hidden>音色
+        <select class="field field-sm" data-tts-voice aria-label="朗读音色"></select>
+      </label>
+      <label class="tts-field" title="读完本章后自动接下一章">
+        <input type="checkbox" data-tts-follow> 跨章
+      </label>
       <label class="tts-field">语速
         <select class="field field-sm" data-tts-rate aria-label="朗读语速">
           ${TTS_RATES.map((r) => `<option value="${r}">${r}×</option>`).join('')}
@@ -716,6 +727,9 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted }) {
   const statusEl = bar.querySelector('[data-tts-status]')
   const rateSel = bar.querySelector('[data-tts-rate]')
   const timerSel = bar.querySelector('[data-tts-timer]')
+  const voiceSel = bar.querySelector('[data-tts-voice]')
+  const voiceWrap = bar.querySelector('[data-tts-voice-wrap]')
+  const followBox = bar.querySelector('[data-tts-follow]')
   const synth = typeof window !== 'undefined' ? window.speechSynthesis : null
   const supported = Boolean(synth && typeof window.SpeechSynthesisUtterance === 'function')
 
@@ -725,11 +739,40 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted }) {
   let runId = 0
   let timerId = 0
   let rate = Number(readStorage(TTS_RATE_KEY)) || 1
+  let voice = null
 
   if (TTS_RATES.includes(rate)) rateSel.value = String(rate)
   else {
     rate = 1
     rateSel.value = '1'
+  }
+
+  // 音色：浏览器 / 系统提供多少列多少（部分平台异步返回，voiceschanged 里再刷一次）
+  const loadVoices = () => {
+    if (!voiceSel) return
+    let voices = []
+    try {
+      voices = synth?.getVoices?.() ?? []
+    } catch {
+      voices = []
+    }
+    const saved = readStorage(TTS_VOICE_KEY) || ''
+    voiceWrap.hidden = !voices.length
+    voiceSel.innerHTML =
+      '<option value="">默认音色</option>' +
+      voices
+        .map((v) => `<option value="${esc(v.voiceURI)}">${esc(v.name)}${v.lang ? `（${esc(v.lang)}）` : ''}</option>`)
+        .join('')
+    voice = voices.find((v) => v.voiceURI === saved) || null
+    voiceSel.value = voice ? saved : ''
+  }
+  loadVoices()
+  synth?.addEventListener?.('voiceschanged', loadVoices)
+
+  followBox.checked = ttsFollowChapter()
+  followBox.onchange = () => {
+    writeStorage(TTS_FOLLOW_KEY, followBox.checked ? '1' : '0')
+    toast(followBox.checked ? '读完本章后自动接下一章' : '读到本章结束就停')
   }
 
   const clearTimer = () => {
@@ -785,6 +828,7 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted }) {
     u.lang = /[\u4e00-\u9fff]/.test(text) ? 'zh-CN' : 'en-US'
     u.rate = rate
     u.pitch = 1
+    if (voice) u.voice = voice
     u.onend = () => {
       if (id === runId) speakChunk(id, segIndex, chunks, at + 1)
     }
@@ -932,6 +976,26 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted }) {
     // 正在读就立刻用新语速重读当前段（只影响之后创建的 utterance）
     if (state === 'playing') startFrom(cursor)
   }
+  voiceSel.onchange = () => {
+    const uri = voiceSel.value
+    let voices = []
+    try {
+      voices = synth?.getVoices?.() ?? []
+    } catch {
+      voices = []
+    }
+    voice = voices.find((v) => v.voiceURI === uri) || null
+    if (voice) writeStorage(TTS_VOICE_KEY, uri)
+    else {
+      try {
+        localStorage.removeItem(TTS_VOICE_KEY)
+      } catch {
+        /* 忽略 */
+      }
+    }
+    // 换音色同样立刻重读当前段：utterance 创建时就绑定了 voice
+    if (state === 'playing') startFrom(cursor)
+  }
   timerSel.onchange = () => {
     clearTimer()
     const min = Number(timerSel.value) || 0
@@ -960,6 +1024,11 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted }) {
     isActive: () => !bar.hidden && state !== 'idle',
     destroy() {
       stop()
+      try {
+        synth?.removeEventListener?.('voiceschanged', loadVoices)
+      } catch {
+        /* 移除失败不影响销毁 */
+      }
       bar.hidden = true
     },
   }
@@ -2265,8 +2334,12 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
         const after = chapterAt(currentIndex)?.href || ''
         const afterCfi = lastLoc?.start?.cfi || ''
         if (before && after && after !== before) {
-          toast('本章读完，朗读已停止')
-          return false
+          // 跨章：默认停（不擅自跳章）；开启「跨章」后继续读新章第一页
+          if (!ttsFollowChapter()) {
+            toast('本章读完，朗读已停止')
+            return false
+          }
+          return true
         }
         // 翻页没有前进（书末 / 单页章节）：别把同一页再读一遍
         if (beforeCfi && afterCfi && afterCfi === beforeCfi) return false
@@ -2555,6 +2628,8 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
   let tocSide = null
   /** 语音朗读控制器（分章渲染后才知道有哪些段落） */
   let tts = null
+  /** TTS 跨章续读时置位：paint() 不要顺手把朗读停掉 */
+  let ttsKeepOnPaint = false
   /** 手势 teardown（iframe / 正文上的 pointer 监听，销毁时统一解绑） */
   const gestureStops = []
 
@@ -2725,9 +2800,23 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
         .map((el) => ({ text: el.textContent.trim(), el, focus: () => ttsFocus(el) })),
     getStartIndex: ttsStartIndex,
     onExhausted: () => {
-      // txt 一章就是完整一节：读完停下，不自动跳下一章
-      toast('本章读完，朗读已停止')
-      return false
+      // 默认读完本章就停（不擅自跳章）；开启「跨章」后接着读下一章
+      if (!ttsFollowChapter()) {
+        toast('本章读完，朗读已停止')
+        return false
+      }
+      if (index >= chapters.length - 1) {
+        toast('已到书末')
+        return false
+      }
+      ttsKeepOnPaint = true
+      try {
+        index += 1
+        paint(0)
+      } finally {
+        ttsKeepOnPaint = false
+      }
+      return true
     },
   })
 
@@ -2784,8 +2873,9 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
 
   function paint(ratio = null, keepScroll = false) {
     if (!chapters.length) return
-    // 重绘会换掉段落节点：正在朗读就停下（用户跳章 / 拖进度条时语义也更明确）
-    tts?.stop()
+    // 重绘会换掉段落节点：正在朗读就停下（用户跳章 / 拖进度条时语义也更明确）。
+    // 唯一的例外是 TTS 跨章续读自己触发的重绘（ttsKeepOnPaint），停掉会让朗读中断。
+    if (!ttsKeepOnPaint) tts?.stop()
     index = Math.max(0, Math.min(chapters.length - 1, index))
     const c = chapters[index]
 
