@@ -15,7 +15,7 @@
  *
  * 版式：微信读书式沉浸页——body.reading 时全局侧栏 / 顶栏隐藏（app.js 挂类），阅读页
  * 自带顶栏（书名 + 右上角「首页 / 我的书架」），正文栏宽 800px，翻页 / 进度下沉页脚，
- * 目录 / 书签 / 字号 / 背景（白·米黄·护眼·夜间）收进右侧悬浮工具栏，字号与位置存 localStorage。
+ * 目录 / 书签 / 语音朗读 / 字号 / 背景（白·米黄·护眼·夜间）收进右侧悬浮工具栏，字号与位置存 localStorage。
  * 位置 / 字号只影响记忆，不影响阅读；销毁时释放 epub 实例与定时器。
  */
 import {
@@ -89,6 +89,7 @@ function fabHtml() {
   return `<div class="reader-fabs" role="toolbar" aria-label="阅读工具">
       <button class="reader-fab" type="button" data-fab-toc aria-label="目录" title="目录">${icon('queue', 16)}</button>
       <button class="reader-fab" type="button" data-fab-mark aria-label="书签" title="书签">${icon('bookmark', 16)}</button>
+      <button class="reader-fab" type="button" data-fab-tts aria-label="语音朗读" title="语音朗读">${icon('volume', 16)}</button>
       <button class="reader-fab" type="button" data-fab-set aria-label="阅读设置" title="阅读设置">Aa</button>
       <button class="reader-fab" type="button" data-fab-theme aria-label="切换背景" title="切换背景"></button>
     </div>`
@@ -351,6 +352,360 @@ function openMarksDialog({ bookId, getCurrent, onJump }) {
   paintList()
   nameInput.focus()
   return dlg
+}
+
+/* ---------------- 语音朗读（Web Speech API，issue #13 P1） ---------------- */
+
+const TTS_RATE_KEY = 'book:tts:rate'
+const TTS_RATES = [0.8, 1, 1.2, 1.5, 2]
+
+/** 当前朗读高亮的段落：{ el, doc? }；切段 / 停止时清掉 */
+let ttsMarked = null
+
+function clearTtsMark() {
+  try {
+    ttsMarked?.el?.classList?.remove('wb-tts-current')
+  } catch {
+    /* 段落已被重绘 / iframe 已销毁 */
+  }
+  ttsMarked = null
+}
+
+/** 高亮并滚到可见处（epub 在 iframe 里，样式要单独注入那个文档） */
+function ttsFocus(el, doc = null) {
+  clearTtsMark()
+  ttsMarked = { el, doc }
+  try {
+    if (doc && !doc.getElementById('wb-tts-style')) {
+      const style = doc.createElement('style')
+      style.id = 'wb-tts-style'
+      style.textContent =
+        '.wb-tts-current{background:rgba(255,196,0,.32);border-radius:3px;box-shadow:0 0 0 2px rgba(255,196,0,.2)}'
+      ;(doc.head || doc.documentElement).append(style)
+    }
+    el.classList.add('wb-tts-current')
+    el.scrollIntoView?.({ block: 'center' })
+  } catch {
+    /* 高亮失败不影响朗读 */
+  }
+}
+
+/** 长段落切块：部分浏览器对超长 utterance 会提前截断，按句读点切到 180 字以内 */
+function splitSpeech(text, max = 180) {
+  const clean = String(text || '').replace(/\s+/g, ' ').trim()
+  if (!clean) return []
+  if (clean.length <= max) return [clean]
+  const stops = '。！？；…!?;.'
+  const out = []
+  let rest = clean
+  while (rest.length > max) {
+    let cut = -1
+    for (let i = max; i >= Math.floor(max * 0.5); i -= 1) {
+      if (stops.includes(rest[i])) {
+        cut = i + 1
+        break
+      }
+    }
+    if (cut < 0) {
+      const space = rest.lastIndexOf(' ', max)
+      cut = space > max * 0.5 ? space + 1 : max
+    }
+    const head = rest.slice(0, cut).trim()
+    if (head) out.push(head)
+    rest = rest.slice(cut).trim()
+  }
+  if (rest) out.push(rest)
+  return out
+}
+
+/** 朗读条：正文与页脚之间（不盖正文）；fab 打开，关闭时停止朗读 */
+function ttsBarHtml() {
+  return `<div class="tts-bar" data-tts-bar hidden role="region" aria-label="语音朗读">
+      <button class="tts-btn" type="button" data-tts-prev aria-label="上一段" title="上一段">${icon('prev', 16)}</button>
+      <button class="tts-btn primary" type="button" data-tts-toggle aria-label="开始朗读" title="播放 / 暂停">${icon('play', 16)}</button>
+      <button class="tts-btn" type="button" data-tts-next aria-label="下一段" title="下一段">${icon('next', 16)}</button>
+      <span class="tts-status small" data-tts-status aria-live="polite">未开始</span>
+      <label class="tts-field">语速
+        <select class="field field-sm" data-tts-rate aria-label="朗读语速">
+          ${TTS_RATES.map((r) => `<option value="${r}">${r}×</option>`).join('')}
+        </select>
+      </label>
+      <label class="tts-field">定时
+        <select class="field field-sm" data-tts-timer aria-label="定时关闭">
+          <option value="0">关闭</option>
+          <option value="15">15 分钟</option>
+          <option value="30">30 分钟</option>
+          <option value="60">60 分钟</option>
+        </select>
+      </label>
+      <button class="tts-btn" type="button" data-tts-close aria-label="关闭朗读" title="关闭">${icon('close', 16)}</button>
+    </div>`
+}
+
+/**
+ * 朗读控制器（Web Speech API）。
+ *
+ * getSegments() 由阅读器按当前 DOM 生成 [{ text, focus }]，每段读一个 utterance；
+ * getStartIndex(segments) 决定从哪一段开始（txt 取视口顶部那段，epub 从头）；
+ * onExhausted() 读完当前内容时回调，返回 true 表示已续上新内容（继续读），false 停止。
+ *
+ * 平台边界：SpeechSynthesis 在桌面 Chrome / Edge / Safari / Android 可用；iOS 需要用户手势
+ * 触发（我们的「开始」来自点击）。没有语音引擎时只提示，不影响阅读。
+ */
+function createTtsBar({ stage, getSegments, getStartIndex, onExhausted }) {
+  const bar = stage.querySelector('[data-tts-bar]')
+  if (!bar) return { toggleBar() {}, stop() {}, destroy() {}, isActive: () => false }
+  const toggleBtn = bar.querySelector('[data-tts-toggle]')
+  const statusEl = bar.querySelector('[data-tts-status]')
+  const rateSel = bar.querySelector('[data-tts-rate]')
+  const timerSel = bar.querySelector('[data-tts-timer]')
+  const synth = typeof window !== 'undefined' ? window.speechSynthesis : null
+  const supported = Boolean(synth && typeof window.SpeechSynthesisUtterance === 'function')
+
+  let state = 'idle' // idle | playing | paused
+  let segments = []
+  let cursor = 0
+  let runId = 0
+  let timerId = 0
+  let rate = Number(readStorage(TTS_RATE_KEY)) || 1
+
+  if (TTS_RATES.includes(rate)) rateSel.value = String(rate)
+  else {
+    rate = 1
+    rateSel.value = '1'
+  }
+
+  const clearTimer = () => {
+    if (!timerId) return
+    clearTimeout(timerId)
+    timerId = 0
+  }
+
+  const paint = () => {
+    const playing = state === 'playing'
+    toggleBtn.innerHTML = icon(playing ? 'pause' : 'play', 16)
+    const label = playing ? '暂停朗读' : state === 'paused' ? '继续朗读' : '开始朗读'
+    toggleBtn.setAttribute('aria-label', label)
+    toggleBtn.title = label
+    bar.dataset.state = state
+    if (!supported) {
+      statusEl.textContent = '当前浏览器不支持语音朗读'
+      return
+    }
+    if (state === 'idle') statusEl.textContent = segments.length ? '已停止' : '未开始'
+    else statusEl.textContent = `${state === 'paused' ? '已暂停 · ' : ''}第 ${cursor + 1} / ${segments.length} 段`
+  }
+
+  const cancel = () => {
+    runId += 1
+    try {
+      synth?.cancel()
+    } catch {
+      /* 取消失败：新 utterance 开始时也会抢占 */
+    }
+    clearTtsMark()
+  }
+
+  const stop = () => {
+    cancel()
+    clearTimer()
+    timerSel.value = '0'
+    state = 'idle'
+    cursor = 0
+    paint()
+  }
+
+  const collect = () => (getSegments?.() ?? []).filter((seg) => seg && String(seg.text || '').trim())
+
+  const speakChunk = (id, segIndex, chunks, at) => {
+    if (id !== runId) return
+    if (at >= chunks.length) {
+      speakSegment(id, segIndex + 1)
+      return
+    }
+    const text = chunks[at]
+    const u = new window.SpeechSynthesisUtterance(text)
+    u.lang = /[\u4e00-\u9fff]/.test(text) ? 'zh-CN' : 'en-US'
+    u.rate = rate
+    u.pitch = 1
+    u.onend = () => {
+      if (id === runId) speakChunk(id, segIndex, chunks, at + 1)
+    }
+    u.onerror = (e) => {
+      if (id !== runId) return
+      const err = e?.error || ''
+      // 手动停止 / 切段时的 cancel 不算错误
+      if (err === 'interrupted' || err === 'canceled' || err === 'cancelled') return
+      stop()
+      toast(`朗读中断：${err || '系统语音不可用'}`, true)
+    }
+    try {
+      synth.speak(u)
+    } catch (err) {
+      stop()
+      toast(err?.message || '朗读启动失败', true)
+    }
+  }
+
+  const exhausted = async (id) => {
+    let more = false
+    try {
+      more = Boolean(await onExhausted?.())
+    } catch {
+      more = false
+    }
+    if (id !== runId) return
+    if (!more) {
+      stop()
+      return
+    }
+    segments = collect()
+    cursor = 0
+    if (!segments.length) {
+      stop()
+      return
+    }
+    state = 'playing'
+    paint()
+    speakSegment(id, 0)
+  }
+
+  const speakSegment = (id, index) => {
+    if (id !== runId) return
+    if (index >= segments.length) {
+      void exhausted(id)
+      return
+    }
+    cursor = index
+    const seg = segments[index]
+    try {
+      seg.focus?.()
+    } catch {
+      /* 高亮失败不影响朗读 */
+    }
+    paint()
+    speakChunk(id, index, splitSpeech(seg.text), 0)
+  }
+
+  const startFrom = (index) => {
+    if (!supported) {
+      toast('当前浏览器不支持语音朗读', true)
+      return
+    }
+    cancel()
+    const id = runId
+    segments = collect()
+    if (!segments.length) {
+      toast('当前位置没有可朗读的文字', true)
+      state = 'idle'
+      paint()
+      return
+    }
+    cursor = Math.max(0, Math.min(segments.length - 1, Number(index) || 0))
+    state = 'playing'
+    paint()
+    bar.hidden = false
+    speakSegment(id, cursor)
+  }
+
+  const startFromCurrent = () => {
+    if (!supported) {
+      toast('当前浏览器不支持语音朗读', true)
+      return
+    }
+    const list = collect()
+    const at = getStartIndex ? Number(getStartIndex(list)) : 0
+    startFrom(Number.isFinite(at) ? at : 0)
+  }
+
+  const togglePlay = () => {
+    if (!supported) {
+      toast('当前浏览器不支持语音朗读', true)
+      return
+    }
+    if (state === 'playing') {
+      try {
+        synth.pause()
+      } catch {
+        /* 部分浏览器 pause 无效：保持 playing，用户可再点暂停或停止 */
+      }
+      state = 'paused'
+      paint()
+      return
+    }
+    if (state === 'paused') {
+      try {
+        synth.resume()
+      } catch {
+        /* 忽略 */
+      }
+      state = 'playing'
+      paint()
+      return
+    }
+    startFromCurrent()
+  }
+
+  const step = (dir) => {
+    if (state === 'idle' || !segments.length) {
+      startFromCurrent()
+      return
+    }
+    if (dir > 0 && cursor >= segments.length - 1) {
+      // 本页最后一段再点「下一段」：按读完处理（翻页 / 停止），而不是重读最后一段
+      cancel()
+      state = 'playing'
+      paint()
+      void exhausted(runId)
+      return
+    }
+    startFrom(Math.max(0, Math.min(segments.length - 1, cursor + dir)))
+  }
+
+  toggleBtn.onclick = togglePlay
+  bar.querySelector('[data-tts-prev]').onclick = () => step(-1)
+  bar.querySelector('[data-tts-next]').onclick = () => step(1)
+  bar.querySelector('[data-tts-close]').onclick = () => {
+    bar.hidden = true
+    stop()
+  }
+  rateSel.onchange = () => {
+    rate = Number(rateSel.value) || 1
+    writeStorage(TTS_RATE_KEY, String(rate))
+    // 正在读就立刻用新语速重读当前段（只影响之后创建的 utterance）
+    if (state === 'playing') startFrom(cursor)
+  }
+  timerSel.onchange = () => {
+    clearTimer()
+    const min = Number(timerSel.value) || 0
+    if (!min) return
+    timerId = window.setTimeout(() => {
+      timerId = 0
+      timerSel.value = '0'
+      stop()
+      toast('定时结束，朗读已停止')
+    }, min * 60_000)
+  }
+
+  paint()
+
+  return {
+    toggleBar() {
+      if (bar.hidden) {
+        bar.hidden = false
+        paint()
+      } else {
+        bar.hidden = true
+        stop()
+      }
+    },
+    stop,
+    isActive: () => !bar.hidden && state !== 'idle',
+    destroy() {
+      stop()
+      bar.hidden = true
+    },
+  }
 }
 
 /** 数字：半角 / 全角 / 汉字（含「〇」），不少 TXT 用「第１２３章」 */
@@ -881,6 +1236,7 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
         ${tocSideHtml()}
       </div>
       ${fabHtml()}
+      ${ttsBarHtml()}
       ${footerHtml({ stat: true })}`
 
     const view = stage.querySelector('[data-view]')
@@ -1025,6 +1381,10 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
     let currentIndex = 0
     let lastLoc = null
     let saveTimer = 0
+    /** 语音朗读控制器（延后创建：目录与章节映射就绪后才知道从哪一段读） */
+    let tts = null
+    /** TTS 自动翻页中：relocated 不要把它当成用户手动翻页而停掉 */
+    let ttsTurning = false
 
     const chapterAt = (index) => {
       let hit = null
@@ -1208,6 +1568,8 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
     rendition.on('relocated', (loc) => {
       if (!alive()) return
       paintLocation(loc)
+      // 用户手动翻页 / 跳章时停止朗读；TTS 自己翻页由 ttsTurning 放行
+      if (!ttsTurning) tts?.stop()
       // 新一节的 iframe 渲染完成：立即把背景 / 字号刷上去（themes API 只覆盖新内容，这里兜当前页）
       paintEpubTheme()
       clearTimeout(saveTimer)
@@ -1225,6 +1587,7 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
     epubDispose = () => {
       tocSide?.destroy()
       stopSeek()
+      tts?.destroy()
       clearTimeout(saveTimer)
       document.removeEventListener('keydown', onKey)
       view.removeEventListener('wheel', onWheel)
@@ -1286,6 +1649,75 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
           if (mark.cfi) rendition.display(mark.cfi).catch(() => {})
         },
       })
+    // 语音朗读：读当前页段落；读完自动翻页，跨章（spine 变化）即停，避免「不意外跳章」
+    tts = createTtsBar({
+      stage,
+      getSegments: () => {
+        const out = []
+        for (const contents of rendition.getContents?.() ?? []) {
+          const doc = contents?.document
+          if (!doc?.body) continue
+          // 只留最内层块，避免 li 里套 li / blockquote 里套 p 时重复读
+          let nodes = [...doc.body.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, blockquote')]
+          nodes = nodes.filter(
+            (el) => el.textContent.trim() && !el.querySelector('p, li, h1, h2, h3, h4, h5, h6, blockquote'),
+          )
+          if (!nodes.length) {
+            // 有些 epub 用 div 当段落：只取不嵌套块、长度合理的 div
+            nodes = [...doc.body.querySelectorAll('div')].filter((el) => {
+              const text = el.textContent.trim()
+              return text && text.length <= 1200 && !el.querySelector('div, p')
+            })
+          }
+          for (const el of nodes) {
+            const text = el.textContent.replace(/\s+/g, ' ').trim()
+            if (text) out.push({ text, focus: () => ttsFocus(el, doc) })
+          }
+        }
+        return out
+      },
+      getStartIndex: () => 0,
+      onExhausted: async () => {
+        const beforeCfi = lastLoc?.start?.cfi || ''
+        // 这个版本的 epub.js 没有 atEnd() 方法，currentLocation() 的结果里才有 atEnd 标记
+        if (rendition.currentLocation?.()?.atEnd) {
+          toast('已到书末')
+          return false
+        }
+        const before = chapterAt(currentIndex)?.href || ''
+        ttsTurning = true
+        await new Promise((resolve) => {
+          let settled = false
+          const timer = setTimeout(finish, 2500)
+          function finish() {
+            if (settled) return
+            settled = true
+            rendition.off?.('relocated', finish)
+            clearTimeout(timer)
+            resolve()
+          }
+          rendition.on('relocated', finish)
+          Promise.resolve(rendition.next()).then(finish, finish)
+        })
+        // 等 relocated 里的 paintLocation 落定（next() 的 promise 有时先于 relocated 回调）
+        await new Promise((r) => setTimeout(r, 80))
+        // 晚到的 relocated 也别误判成手动翻页
+        window.setTimeout(() => {
+          ttsTurning = false
+        }, 900)
+        if (!alive()) return false
+        const after = chapterAt(currentIndex)?.href || ''
+        const afterCfi = lastLoc?.start?.cfi || ''
+        if (before && after && after !== before) {
+          toast('本章读完，朗读已停止')
+          return false
+        }
+        // 翻页没有前进（书末 / 单页章节）：别把同一页再读一遍
+        if (beforeCfi && afterCfi && afterCfi === beforeCfi) return false
+        return true
+      },
+    })
+    stage.querySelector('[data-fab-tts]').onclick = () => tts?.toggleBar()
     prevBtn.onclick = () => go('prev')
     nextBtn.onclick = () => go('next')
 
@@ -1552,6 +1984,7 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
       ${tocSideHtml({ refresh: true })}
     </div>
     ${fabHtml()}
+    ${ttsBarHtml()}
     ${footerHtml({ prev: '上一章', next: '下一章' })}`
 
   const root = stage
@@ -1561,6 +1994,8 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
   const tocBtn = root.querySelector('[data-toc]')
   /** 右侧目录控制器：整本分章后一次建好，换章只同步高亮 */
   let tocSide = null
+  /** 语音朗读控制器（分章渲染后才知道有哪些段落） */
+  let tts = null
 
   /** 整本按行切开（含标题行）；正文渲染从章节的 bodyStart 开始 */
   const lines = []
@@ -1664,6 +2099,30 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
   }
   const stopSeek = setupSeek(root, seekTxt)
 
+  /** 从视口顶部那一段开始读（不是每章都从头） */
+  const ttsStartIndex = (segs) => {
+    const top = body.getBoundingClientRect().top
+    for (let i = 0; i < segs.length; i += 1) {
+      const el = segs[i].el
+      if (el && el.getBoundingClientRect().bottom > top + 8) return i
+    }
+    return Math.max(0, segs.length - 1)
+  }
+
+  tts = createTtsBar({
+    stage: root,
+    getSegments: () =>
+      [...body.querySelectorAll('p')]
+        .filter((el) => el.textContent.trim())
+        .map((el) => ({ text: el.textContent.trim(), el, focus: () => ttsFocus(el) })),
+    getStartIndex: ttsStartIndex,
+    onExhausted: () => {
+      // txt 一章就是完整一节：读完停下，不自动跳下一章
+      toast('本章读完，朗读已停止')
+      return false
+    },
+  })
+
   // ---------- 分章 / 目录 ----------
 
   /** 把整本文字切成行并分章；chapter.start/chars 是用于总进度的字符区间 */
@@ -1714,6 +2173,8 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
 
   function paint(ratio = null, keepScroll = false) {
     if (!chapters.length) return
+    // 重绘会换掉段落节点：正在朗读就停下（用户跳章 / 拖进度条时语义也更明确）
+    tts?.stop()
     index = Math.max(0, Math.min(chapters.length - 1, index))
     const c = chapters[index]
 
@@ -1981,6 +2442,7 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
       closeCtx()
       tocSide?.destroy()
       stopSeek()
+      tts?.destroy()
       clearTimeout(saveTimer)
       body.removeEventListener('scroll', onScroll)
       body.removeEventListener('contextmenu', onContextMenu)
@@ -2029,6 +2491,7 @@ function openTxtReader(id, title, version, fileUrl, sizeHint, stage, setChapter,
         paint(typeof mark.r === 'number' ? mark.r : 0)
       },
     })
+  stage.querySelector('[data-fab-tts]').onclick = () => tts?.toggleBar()
   stage.querySelector('[data-fab-set]').onclick = () => {
     openReaderSettings({
       theme: root.dataset.readerTheme || 'paper',
