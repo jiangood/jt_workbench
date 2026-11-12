@@ -2,7 +2,7 @@
 
 import { Hono, type Context } from 'hono'
 import { ok, ApiError, type Env } from '../core/envelope'
-import { putFile, deleteFile, serveFile } from '../core/files'
+import { putFile, deleteFile, serveFile, startMultipart, uploadPart, completeMultipart, abortMultipart, parseParts, ownKey, type StoredFile } from '../core/files'
 
 export const music = new Hono<Env>()
 
@@ -25,23 +25,62 @@ music.get('/list', async (c) => {
 music.post('/upload', async (c) => {
   const filename = c.req.query('filename')
   if (!filename) throw new ApiError(400, 400, 'filename required')
-  if (!c.req.raw.body) throw new ApiError(400, 400, 'empty body')
+  const action = c.req.query('action')
 
+  // 分片上传（大体积无损音频）：init → part × N → complete
+  if (action === 'init') {
+    return ok(await startMultipart(c.env, 'music', filename, c.req.header('content-type') ?? null))
+  }
+  if (action === 'part') {
+    const key = ownKey('music', c.req.query('key'))
+    const uploadId = c.req.query('uploadId')
+    if (!uploadId) throw new ApiError(400, 400, 'uploadId required')
+    if (!c.req.raw.body) throw new ApiError(400, 400, 'empty body')
+    return ok(await uploadPart(c.env, key, uploadId, Number(c.req.query('partNumber')), c.req.raw.body))
+  }
+  if (action === 'complete') {
+    const key = ownKey('music', c.req.query('key'))
+    const uploadId = c.req.query('uploadId')
+    if (!uploadId) throw new ApiError(400, 400, 'uploadId required')
+    const parts = parseParts(await c.req.json().catch(() => null))
+    const stored = await completeMultipart(c.env, key, uploadId, parts, filename, c.req.query('ct'))
+    return ok(await saveTrack(c, stored))
+  }
+  if (action === 'abort') {
+    const key = ownKey('music', c.req.query('key'))
+    const uploadId = c.req.query('uploadId')
+    if (uploadId) await abortMultipart(c.env, key, uploadId)
+    return ok(null)
+  }
+  if (action) throw new ApiError(400, 400, '不支持的上传操作')
+
+  if (!c.req.raw.body) throw new ApiError(400, 400, 'empty body')
   const stored = await putFile(c.env, 'music', filename, c.req.raw.headers.get('content-type'), c.req.raw.body)
-  const r = await c.env.DB
-    .prepare(
-      'INSERT INTO music (title, artist, album, duration, r2_key, filename, size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    )
-    .bind(
-      c.req.query('title') || filename.replace(/\.[^.]+$/, ''),
-      c.req.query('artist') || null,
-      c.req.query('album') || null,
-      duration(c.req.query('duration')),
-      stored.key, filename, stored.size, Date.now(),
-    )
-    .run()
-  return ok({ id: r.meta.last_row_id, size: stored.size })
+  return ok(await saveTrack(c, stored))
 })
+
+/** 文件已进 R2 之后落库；入库失败清掉刚写的对象，避免孤儿 */
+async function saveTrack(c: Context<Env>, stored: StoredFile) {
+  const filename = c.req.query('filename')!
+  try {
+    const r = await c.env.DB
+      .prepare(
+        'INSERT INTO music (title, artist, album, duration, r2_key, filename, size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      )
+      .bind(
+        c.req.query('title') || filename.replace(/\.[^.]+$/, ''),
+        c.req.query('artist') || null,
+        c.req.query('album') || null,
+        duration(c.req.query('duration')),
+        stored.key, filename, stored.size, Date.now(),
+      )
+      .run()
+    return { id: r.meta.last_row_id, size: stored.size }
+  } catch (err) {
+    await deleteFile(c.env, stored.key).catch(() => {})
+    throw err
+  }
+}
 
 /** 编辑元数据：标题必填，艺术家 / 专辑可清空（传空串 → NULL） */
 music.patch('/:id', async (c) => {

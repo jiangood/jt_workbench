@@ -1,8 +1,19 @@
 /** 笔记模块：目录树（note_folder）+ 正文 CRUD + 附件（R2） */
 
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { ok, ApiError, type Env } from '../core/envelope'
-import { putFile, deleteFile, serveFile } from '../core/files'
+import {
+  putFile,
+  deleteFile,
+  serveFile,
+  startMultipart,
+  uploadPart,
+  completeMultipart,
+  abortMultipart,
+  parseParts,
+  ownKey,
+  type StoredFile,
+} from '../core/files'
 
 interface Attach {
   key: string
@@ -168,23 +179,65 @@ note.delete('/:id', async (c) => {
   return ok(null)
 })
 
-/** 附件上传：?noteId=&filename= （浏览器直接 fetch body = File） */
+/** 附件上传：?noteId=&filename=&action=（action 为空时整文件单请求，否则走 R2 multipart） */
 note.post('/attach', async (c) => {
   const noteId = Number(c.req.query('noteId'))
   const filename = c.req.query('filename')
   if (!noteId || !filename) throw new ApiError(400, 400, 'noteId/filename required')
+  const action = c.req.query('action')
+
+  if (action === 'init') {
+    await noteRow(c, noteId) // 笔记不存在就别浪费一次上传
+    return ok(await startMultipart(c.env, 'note', filename, c.req.header('content-type') ?? null))
+  }
+  if (action === 'part') {
+    const key = ownKey('note', c.req.query('key'))
+    const uploadId = c.req.query('uploadId')
+    if (!uploadId) throw new ApiError(400, 400, 'uploadId required')
+    if (!c.req.raw.body) throw new ApiError(400, 400, 'empty body')
+    return ok(await uploadPart(c.env, key, uploadId, Number(c.req.query('partNumber')), c.req.raw.body))
+  }
+  if (action === 'complete') {
+    const key = ownKey('note', c.req.query('key'))
+    const uploadId = c.req.query('uploadId')
+    if (!uploadId) throw new ApiError(400, 400, 'uploadId required')
+    const parts = parseParts(await c.req.json().catch(() => null))
+    const stored = await completeMultipart(c.env, key, uploadId, parts, filename, c.req.query('ct'))
+    return ok(await appendAttachment(c, noteId, stored))
+  }
+  if (action === 'abort') {
+    const key = ownKey('note', c.req.query('key'))
+    const uploadId = c.req.query('uploadId')
+    if (uploadId) await abortMultipart(c.env, key, uploadId)
+    return ok(null)
+  }
+  if (action) throw new ApiError(400, 400, '不支持的上传操作')
+
   if (!c.req.raw.body) throw new ApiError(400, 400, 'empty body')
-
   const stored = await putFile(c.env, 'note', filename, c.req.raw.headers.get('content-type'), c.req.raw.body)
+  return ok(await appendAttachment(c, noteId, stored))
+})
 
+async function noteRow(c: Context<Env>, noteId: number): Promise<{ attachments: string }> {
   const row = await c.env.DB.prepare('SELECT attachments FROM note WHERE id = ?').bind(noteId).first<{ attachments: string }>()
   if (!row) throw new ApiError(404, 404, 'note not found')
-  const list = JSON.parse(row.attachments) as Attach[]
-  list.push({ key: stored.key, filename, size: stored.size, contentType: stored.contentType })
-  await c.env.DB.prepare('UPDATE note SET attachments = ? WHERE id = ?').bind(JSON.stringify(list), noteId).run()
+  return row
+}
 
-  return ok({ key: stored.key, size: stored.size, attachments: list })
-})
+/** 文件已进 R2 之后把附件追加进笔记；落库失败清掉对象，避免孤儿 */
+async function appendAttachment(c: Context<Env>, noteId: number, stored: StoredFile) {
+  const filename = c.req.query('filename')!
+  try {
+    const row = await noteRow(c, noteId)
+    const list = JSON.parse(row.attachments) as Attach[]
+    list.push({ key: stored.key, filename, size: stored.size, contentType: stored.contentType })
+    await c.env.DB.prepare('UPDATE note SET attachments = ? WHERE id = ?').bind(JSON.stringify(list), noteId).run()
+    return { key: stored.key, size: stored.size, attachments: list }
+  } catch (err) {
+    await deleteFile(c.env, stored.key).catch(() => {})
+    throw err
+  }
+}
 
 note.get('/attach/:noteId/:index', async (c) => {
   const row = await c.env.DB

@@ -1,9 +1,17 @@
 /** R2 文件收发（决策 #8：节点不连数据，文件一律经 Worker 流式进出；Range 流播放原生支持） */
 
+import { ApiError } from './envelope'
+
 export interface StoredFile {
   key: string
   size: number
   contentType: string
+}
+
+type BindingsLike = { R2: R2Bucket }
+
+function fileKey(module: string, filename: string): string {
+  return `${module}/${crypto.randomUUID()}/${encodeURIComponent(filename)}`
 }
 
 /** 流式上传：不缓冲整个 body（Worker 内存/CPU 预算友好） */
@@ -14,13 +22,106 @@ export async function putFile(
   contentType: string | null,
   body: ReadableStream<Uint8Array>,
 ): Promise<StoredFile> {
-  const key = `${module}/${crypto.randomUUID()}/${encodeURIComponent(filename)}`
+  const key = fileKey(module, filename)
   const ct = contentType || guessType(filename)
   const obj = await env.R2.put(key, body, { httpMetadata: { contentType: ct } })
   return { key, size: obj.size, contentType: ct }
 }
 
-type BindingsLike = { R2: R2Bucket }
+// ---------- 分片上传（Cloudflare 单请求体上限 100MB，大文件只能切片走 R2 multipart） ----------
+
+export interface MultipartUpload {
+  key: string
+  uploadId: string
+}
+
+/** 开一个 multipart 上传：key 由 Worker 生成，前端只拿 key + uploadId 回传 */
+export async function startMultipart(
+  env: BindingsLike,
+  module: string,
+  filename: string,
+  contentType: string | null,
+): Promise<MultipartUpload> {
+  const key = fileKey(module, filename)
+  const mp = await env.R2.createMultipartUpload(key, {
+    httpMetadata: { contentType: contentType || guessType(filename) },
+  })
+  return { key: mp.key, uploadId: mp.uploadId }
+}
+
+/**
+ * key 由前端带回，必须是本模块自己签发的形状（module/uuid/文件名）：
+ * 否则拿到上传地址的人可以往任意 key 写 / 覆盖别的模块文件。
+ */
+export function ownKey(module: string, key: string | undefined | null): string {
+  const re = new RegExp(`^${module}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/`)
+  if (!key || !re.test(key)) throw new ApiError(400, 400, '无效的上传标识')
+  return key
+}
+
+/** 单次分片写入（流式，不落地内存）；partNumber 从 1 开始 */
+export async function uploadPart(
+  env: BindingsLike,
+  key: string,
+  uploadId: string,
+  partNumber: number,
+  body: ReadableStream<Uint8Array>,
+): Promise<R2UploadedPart> {
+  if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > 10000) {
+    throw new ApiError(400, 400, '无效的分片号')
+  }
+  try {
+    return await env.R2.resumeMultipartUpload(key, uploadId).uploadPart(partNumber, body)
+  } catch (err) {
+    // R2 的错误（uploadId 失效 / 分片太小）原样带出去，前端能看到具体原因
+    throw new ApiError(400, 400, `分片上传失败：${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+/** 校验前端回传的分片清单：升序、去重交给 R2，这里只保证结构合法 */
+export function parseParts(input: unknown): R2UploadedPart[] {
+  const list = (input as { parts?: unknown } | null)?.parts
+  if (!Array.isArray(list) || !list.length || list.length > 10000) {
+    throw new ApiError(400, 400, '分片信息无效')
+  }
+  const parts = list.map((part) => {
+    const p = part as { partNumber?: unknown; etag?: unknown } | null
+    const partNumber = Number(p?.partNumber)
+    const etag = typeof p?.etag === 'string' ? p.etag : ''
+    if (!Number.isInteger(partNumber) || partNumber < 1 || !etag) {
+      throw new ApiError(400, 400, '分片信息无效')
+    }
+    return { partNumber, etag }
+  })
+  return parts.sort((a, b) => a.partNumber - b.partNumber)
+}
+
+/** 合并分片：成功后就是普通对象，serveFile / Range 都不受影响 */
+export async function completeMultipart(
+  env: BindingsLike,
+  key: string,
+  uploadId: string,
+  parts: R2UploadedPart[],
+  filename: string,
+  contentType?: string | null,
+): Promise<StoredFile> {
+  try {
+    const obj = await env.R2.resumeMultipartUpload(key, uploadId).complete(parts)
+    const ct = (contentType || '').slice(0, 200) || guessType(filename)
+    return { key, size: obj.size, contentType: ct }
+  } catch (err) {
+    throw new ApiError(400, 400, `合并不完整：${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+/** 取消上传：不 abort 的话未完成分片会一直占 R2 存储 */
+export async function abortMultipart(env: BindingsLike, key: string, uploadId: string): Promise<void> {
+  try {
+    await env.R2.resumeMultipartUpload(key, uploadId).abort()
+  } catch {
+    /* 已经 complete / abort 过的 uploadId 会报错，清理动作失败不影响前端 */
+  }
+}
 
 export async function deleteFile(env: BindingsLike, key: string): Promise<void> {
   await env.R2.delete(key)

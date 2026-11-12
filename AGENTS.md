@@ -30,6 +30,7 @@
 - **参数/密钥一律存 D1，Worker 不使用 `wrangler secret`**：
   `app_config`（参数中心，注册表在 `core/config.ts` 的 `CONFIG_FIELDS`，缺失时可自动随机生成）+ `node_registry`（节点登记，添加即入库、密钥长期有效）+ `auth_state`（管理员凭据）。`Bindings` 只保留 `DB` / `R2`；新增参数只加 `CONFIG_FIELDS` 条目，**不要再新增 secret/var**（`node_claim` 已废弃，表保留待后续清理）
 - 分工红线（决策 #14）：**Worker 只做简单计算与展示**——循环 / 批量 / 抓取 / 解析类逻辑一律放 agent；浏览器承担展示类计算（DOMPurify / music-metadata / JSZip / lunar）
+- **上传一律支持分片**：Cloudflare 单请求体上限 100MB（免费 / Pro 平台硬限制，超了必 413）。`public/upload.js` 对 >80MB 的文件自动切 32MB 分片，走 R2 原生 multipart（`core/files.ts` 的 `startMultipart / uploadPart / completeMultipart / abortMultipart`）；上传端点用 `action=init|part|complete|abort`，单文件上限 2GB。新增上传入口照 `book` / `music` / `note` 的写法接这四个 action，不要再只留整文件单请求
 - 前端 = **零构建 SPA（hash 路由）**：`public/index.html` 只是 shell（侧栏/播放条/弹窗），
   `app.js` 管路由，`views/*.js` 是视图（ES module，各自导出 `render(main, params)` / `destroy()`）；
   `lib.js` 提供 api / 图标 / 弹窗 / 转义 / 脚本懒加载 / 常驻播放器。无框架、无前端构建、无 TS

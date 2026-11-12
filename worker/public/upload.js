@@ -14,8 +14,16 @@
 
 import { icon } from './lib.js'
 
-/** Workers 免费版请求体上限：超了必然失败，不如本地直接标红 */
-const MAX_SIZE = 100 * 1024 * 1024
+/**
+ * 单请求体上限：Cloudflare Workers 免费 / Pro 计划都是 100MB（平台硬限制，超了必然 413）。
+ * 所以超过 SINGLE_MAX 的文件改走 R2 原生 multipart：前端按 CHUNK_SIZE 切片，
+ * 每片单独一个请求（远小于上限），Worker 逐片流式写入，最后 complete 合并成普通对象——
+ * 阅读 / 播放 / Range 请求都感知不到分片。
+ */
+const SINGLE_MAX = 80 * 1024 * 1024
+const CHUNK_SIZE = 32 * 1024 * 1024
+/** 分片后单文件上限：2GB（32MB × 64 片，远低于 R2 的 10000 片上限） */
+const MAX_SIZE = 2 * 1024 * 1024 * 1024
 /** 传输停滞判定：这么久没有新字节就提示「网络卡住」 */
 const STALL_MS = 60_000
 
@@ -36,7 +44,8 @@ function fmtBytes(n) {
   if (!n) return '0 B'
   if (n < 1024) return `${n} B`
   if (n < 1048576) return `${(n / 1024).toFixed(0)} KB`
-  return `${(n / 1048576).toFixed(1)} MB`
+  if (n < 1073741824) return `${(n / 1048576).toFixed(1)} MB`
+  return `${(n / 1073741824).toFixed(2)} GB`
 }
 
 /** ETA：跑满 1s 且已推进 >1% 才算，否则数字闪得慌 */
@@ -137,6 +146,7 @@ export function enqueue(files, opts = {}) {
       stalled: false,
       settled: false,
       prepared: {},
+      multipart: null,
       startedAt: 0,
       lastTick: 0,
       xhr: null,
@@ -169,7 +179,7 @@ export function enqueue(files, opts = {}) {
 
 function precheck(file) {
   if (!file.size) return '空文件（0 字节）'
-  if (file.size > MAX_SIZE) return `超过 100 MB 上限（${fmtBytes(file.size)}）`
+  if (file.size > MAX_SIZE) return `超过 2 GB 上限（${fmtBytes(file.size)}）`
   return null
 }
 
@@ -178,6 +188,7 @@ function purgeSettled() {
   for (let i = items.length - 1; i >= 0; i -= 1) {
     const item = items[i]
     if (isPending(item)) continue
+    abortMultipart(item)
     items.splice(i, 1)
     panel?.nodes.get(item.id)?.row.remove()
     panel?.nodes.delete(item.id)
@@ -218,45 +229,60 @@ async function runItem(item) {
   }
 }
 
+/** params + prepare 结果 + filename → 上传地址（整文件与分片走同一个端点） */
+function baseUrl(item) {
+  const qs = new URLSearchParams()
+  for (const [key, value] of Object.entries({ ...item.opts.params, ...item.prepared })) {
+    if (value !== null && value !== undefined && value !== '') qs.set(key, String(value))
+  }
+  qs.set('filename', item.file.name)
+  return item.opts.url(qs, item.file)
+}
+
+/** 在已带查询串的地址上追加分片协议参数（相对地址也能处理） */
+function withQuery(url, extra) {
+  const u = new URL(url, location.origin)
+  for (const [key, value] of Object.entries(extra)) u.searchParams.set(key, String(value))
+  return u.pathname + u.search
+}
+
+const isOk = (res) => res.status >= 200 && res.status < 300 && res.env?.code === 0
+
+/** 401 跳登录，其余取信封 message；成功返回空串 */
+function errorOf(res, fallback) {
+  if (res.status === 401) {
+    location.href = '/login'
+    return '登录已过期'
+  }
+  if (res.error) return res.error
+  return isOk(res) ? '' : res.env?.message || fallback
+}
+
 function send(item) {
+  return item.file.size > SINGLE_MAX ? sendChunked(item) : sendSingle(item)
+}
+
+/** 一次 XHR（POST）：负责进度、停滞计时、中止与信封解析，调用方只管结果 */
+function issue(item, url, body, ct, hooks = {}) {
   return new Promise((resolve) => {
-    const { opts, file } = item
-    const qs = new URLSearchParams()
-    for (const [key, value] of Object.entries({ ...opts.params, ...item.prepared })) {
-      if (value !== null && value !== undefined && value !== '') qs.set(key, String(value))
-    }
-    qs.set('filename', file.name)
-
-    let url
-    try {
-      url = opts.url(qs, file)
-    } catch (err) {
-      complete(item, 'failed', err?.message || '上传参数有误')
-      return resolve()
-    }
-
     const xhr = new XMLHttpRequest()
     item.xhr = xhr
-    item.loaded = 0
-    item.total = file.size
-    item.startedAt = performance.now()
-    item.lastTick = item.startedAt
-    setState(item, 'uploading')
-
-    xhr.open('POST', url)
-    xhr.setRequestHeader('content-type', opts.contentType?.(file) || file.type || 'application/octet-stream')
+    item.lastTick = performance.now()
+    try {
+      xhr.open('POST', url)
+    } catch (err) {
+      return resolve({ aborted: false, status: 0, env: null, error: err?.message })
+    }
+    if (ct) xhr.setRequestHeader('content-type', ct)
     xhr.upload.onprogress = (e) => {
       if (!e.lengthComputable) return
-      item.loaded = e.loaded
-      item.total = e.total || file.size
       item.lastTick = performance.now()
       item.stalled = false
+      hooks.progress?.(e.loaded, e.total)
       paint()
     }
-    // 字节发完到响应回来之间是服务端处理（书架还要同步豆瓣），单独一个态
-    xhr.upload.onload = () => {
-      if (item.state === 'uploading') setState(item, 'processing')
-    }
+    // 字节发完到响应回来之间是服务端处理（大文件最后还要合并分片 / 同步豆瓣），单独一个态
+    xhr.upload.onload = () => hooks.uploaded?.()
     xhr.onload = () => {
       let env = null
       try {
@@ -264,31 +290,130 @@ function send(item) {
       } catch {
         env = null
       }
-      if (xhr.status === 401) {
-        location.href = '/login'
-        complete(item, 'failed', '登录已过期')
-      } else if (xhr.status >= 200 && xhr.status < 300 && (!env || env.code === 0)) {
-        complete(item, 'done')
-      } else {
-        complete(item, 'failed', env?.message || `上传失败（HTTP ${xhr.status}）`)
-      }
-      resolve()
+      item.xhr = null
+      resolve({ aborted: false, status: xhr.status, env })
     }
     xhr.onerror = () => {
-      complete(item, 'failed', '网络错误，请检查连接')
-      resolve()
+      item.xhr = null
+      resolve({ aborted: false, status: 0, env: null, error: '网络错误，请检查连接' })
     }
     xhr.onabort = () => {
-      complete(item, 'canceled')
-      resolve()
+      item.xhr = null
+      resolve({ aborted: true, status: 0, env: null })
     }
     try {
-      xhr.send(file)
+      xhr.send(body)
     } catch (err) {
-      complete(item, 'failed', err?.message || '无法发起上传')
-      resolve()
+      item.xhr = null
+      resolve({ aborted: false, status: 0, env: null, error: err?.message || '无法发起上传' })
     }
   })
+}
+
+/** 小文件：整文件一次请求 */
+async function sendSingle(item) {
+  let url
+  try {
+    url = baseUrl(item)
+  } catch (err) {
+    return complete(item, 'failed', err?.message || '上传参数有误')
+  }
+  const ct = item.opts.contentType?.(item.file) || item.file.type || 'application/octet-stream'
+  item.loaded = 0
+  item.total = item.file.size
+  item.startedAt = performance.now()
+  setState(item, 'uploading')
+
+  const res = await issue(item, url, item.file, ct, {
+    progress: (loaded, total) => {
+      item.loaded = loaded
+      item.total = total || item.file.size
+    },
+    uploaded: () => {
+      if (item.state === 'uploading') setState(item, 'processing')
+    },
+  })
+  if (item.state === 'canceled' || res.aborted) return
+  const error = errorOf(res, `上传失败（HTTP ${res.status}）`)
+  complete(item, error ? 'failed' : 'done', error)
+}
+
+/**
+ * 大文件：R2 multipart。init 拿 key / uploadId → 逐片 POST → complete 合并并落库。
+ * 某片失败时保留 uploadId，「重试」从失败那片续传；取消 / 移除则 abort 掉未完成分片。
+ */
+async function sendChunked(item) {
+  const file = item.file
+  const ct = item.opts.contentType?.(file) || file.type || 'application/octet-stream'
+  let base
+  try {
+    base = baseUrl(item)
+  } catch (err) {
+    return complete(item, 'failed', err?.message || '上传参数有误')
+  }
+
+  item.startedAt = performance.now()
+  let mp = item.multipart
+  if (!mp) {
+    const res = await issue(item, withQuery(base, { action: 'init' }), null, ct)
+    if (item.state === 'canceled' || res.aborted) {
+      // 取消发生在 init 返回之后：这条新开的 multipart 也要清掉
+      if (isOk(res)) abortRemote(base, res.env.data.key, res.env.data.uploadId)
+      return
+    }
+    if (!isOk(res)) {
+      const error = errorOf(res, '初始化分片上传失败')
+      return complete(item, 'failed', error)
+    }
+    mp = item.multipart = {
+      key: res.env.data.key,
+      uploadId: res.env.data.uploadId,
+      parts: [],
+      base,
+    }
+  }
+  // 续传：上一轮已成功的分片不再重传，进度从那里接着走
+  item.loaded = Math.min(mp.parts.length * CHUNK_SIZE, file.size)
+  item.total = file.size
+  setState(item, 'uploading')
+
+  const count = Math.max(1, Math.ceil(file.size / CHUNK_SIZE))
+  while (mp.parts.length < count) {
+    if (item.state === 'canceled') return
+    const partNumber = mp.parts.length + 1
+    const start = (partNumber - 1) * CHUNK_SIZE
+    const end = Math.min(start + CHUNK_SIZE, file.size)
+    const url = withQuery(mp.base, { action: 'part', key: mp.key, uploadId: mp.uploadId, partNumber })
+    const res = await issue(item, url, file.slice(start, end), ct, {
+      progress: (loaded) => {
+        item.loaded = Math.min(start + loaded, file.size)
+      },
+      uploaded: () => {
+        // 最后一片发完才开始等服务端合并；中间几片不切 processing，进度条继续按片推进
+        if (partNumber === count && item.state === 'uploading') setState(item, 'processing')
+      },
+    })
+    if (item.state === 'canceled' || res.aborted) return
+    if (!isOk(res)) {
+      const error = errorOf(res, `第 ${partNumber} 片上传失败`)
+      return complete(item, 'failed', error)
+    }
+    mp.parts.push(res.env.data)
+    item.loaded = end
+    paint()
+  }
+
+  setState(item, 'processing')
+  const res = await issue(
+    item,
+    withQuery(mp.base, { action: 'complete', key: mp.key, uploadId: mp.uploadId, ct }),
+    JSON.stringify({ parts: mp.parts }),
+    'application/json',
+  )
+  item.multipart = null // 无论成败都不复用：complete 失败时 Worker 已把对象清掉
+  if (item.state === 'canceled' || res.aborted) return
+  const error = errorOf(res, `上传失败（HTTP ${res.status}）`)
+  complete(item, error ? 'failed' : 'done', error)
 }
 
 function setState(item, state) {
@@ -328,11 +453,10 @@ function complete(item, state, error) {
 function cancelItem(id) {
   const item = items.find((row) => row.id === id)
   if (!item || !isPending(item)) return
-  if (item.state === 'uploading' && item.xhr) {
-    item.xhr.abort() // 流式写入 R2，请求中断即不落地
-    return
-  }
-  // processing：字节已经发完，服务端可能正在落库，不提供取消（按钮也不显示）
+  // processing：字节已经发完，服务端可能正在合并 / 落库，不提供取消（按钮也不显示）
+  if (item.state === 'processing') return
+  if (item.state === 'uploading' && item.xhr) item.xhr.abort() // 流式写入 R2，请求中断即不落地
+  abortMultipart(item)
   complete(item, 'canceled')
   paint()
   if (!active) pump()
@@ -343,10 +467,25 @@ export function cancelAll() {
     // processing：字节已发完、服务端可能正在落库，中断也没用，等它自己结束
     if (!isPending(item) || item.state === 'processing') continue
     if (item.state === 'uploading' && item.xhr) item.xhr.abort()
-    else complete(item, 'canceled')
+    abortMultipart(item)
+    complete(item, 'canceled')
   }
   paint()
   if (!active) pump()
+}
+
+/** 清掉未完成的多片上传：不 abort 的话已写入的分片会一直占 R2 存储 */
+function abortMultipart(item) {
+  const mp = item.multipart
+  item.multipart = null
+  if (mp) abortRemote(mp.base, mp.key, mp.uploadId)
+}
+
+function abortRemote(base, key, uploadId) {
+  fetch(withQuery(base, { action: 'abort', key, uploadId }), {
+    method: 'POST',
+    keepalive: true,
+  }).catch(() => {})
 }
 
 function retryItem(id) {
@@ -371,6 +510,7 @@ function dropItem(id) {
   const i = items.findIndex((row) => row.id === id)
   if (i < 0 || isPending(items[i])) return
   const [item] = items.splice(i, 1)
+  abortMultipart(item)
   panel?.nodes.get(item.id)?.row.remove()
   panel?.nodes.delete(item.id)
   paint()
@@ -381,6 +521,7 @@ function hide() {
   if (!ui) return
   ui.root.hidden = true
   setCollapsed(false)
+  for (const item of items) abortMultipart(item)
   items.length = 0
   for (const rec of ui.nodes.values()) rec.row.remove()
   ui.nodes.clear()
