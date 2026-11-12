@@ -1189,6 +1189,20 @@ textarea[aria-invalid="true"] { border-color: var(--danger) }
 }
 .link-btn:hover { color: var(--primary-h); text-decoration: underline }
 
+/* 知识星球：评论展开区（issue #7） */
+.zsxq-comments {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-left: 2px;
+  padding-left: var(--sp-3);
+  border-left: 2px solid var(--border);
+}
+/* display:flex 会盖掉 UA 的 [hidden]，这里显式关掉 */
+.zsxq-comments[hidden] { display: none }
+.zsxq-comment { display: flex; flex-direction: column; gap: 2px; min-width: 0 }
+
+
 /* 笔记：目录 / 列表 / 编辑器 三栏，各栏独立滚动；窄屏改为上下堆叠 */
 .note-split {
   display: grid;
