@@ -383,6 +383,15 @@ export const zsxqProbeHandler: JobHandler = async (payload, ctx) => {
     } catch (e) {
       if (ctx.signal.aborted) return { items, summary: 'aborted' }
       logWarn(`topics.probe ${target.topicId}`, e)
+      // 探测失败（如 1059 限流/瞬时错误）：记为 unknown 仅推进 checked_at 排到队尾，避免同一批反复重试打满预算
+      items.push({
+        kind: 'topic_check',
+        topicId: target.topicId,
+        groupId: gid,
+        status: 'unknown',
+        code: e instanceof ZsxqApiError ? e.code : null,
+        message: describeError(e).slice(0, 200),
+      })
     }
     if (!(await pause(ctx.signal, 600 + Math.random() * 600))) return { items, summary: 'aborted' }
   }
