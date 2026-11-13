@@ -60,7 +60,7 @@ cd agent && npm ci && npm run dev      # build + node dist/agent.mjs（需 NODE_
 
 agent 是局域网里的哑计算节点：poll 领任务 → 执行 → 回传，无状态、无本地队列；升级交给 Watchtower，不手工重建。
 
-**部署只有两步：后台点「添加节点」→ 之后在该行点「查看接入方式」拿命令 → 在目标机器粘贴执行。** 宿主机不需要 `.env`，节点密钥由安装脚本直接写进 `docker-compose.yml`。
+**部署只有两步：后台点「添加节点」→ 之后在该行点「接入」拿命令 → 在目标机器粘贴执行。** 宿主机不需要 `.env`，节点密钥由安装脚本直接写进 `docker-compose.yml`。
 
 ### 1. Worker 侧前置（一次性）
 
@@ -74,13 +74,13 @@ agent 是局域网里的哑计算节点：poll 领任务 → 执行 → 回传�
 
 登录 `/#/admin` →「计算节点」→ **添加节点** → 输入名称（建议主机名，如 `nas-01`）。
 
-添加后立刻在列表里登记（接入前显示离线）；点击该行 **查看接入方式**，弹窗里有接入命令（节点密钥只写进生成的 compose，**页面不展示**）：
+添加后立刻在列表里登记（接入前显示离线）；点击该行 **接入**，弹窗里有接入命令（节点密钥只写进生成的 compose，**页面不展示**）：
 
 ```bash
 curl -fsSL 'https://jt.410518072.xyz/install/<key>.sh' | WORKBENCH_AGENT_FORCE=1 sh
 ```
 
-**命令长期有效**——现场机器不能马上接入（网络、命令不熟等）也没关系，之后随时回到该行点「查看接入方式」取回；弹窗开着时节点首次上线会自动提示「已接入（在线）」，关掉页面只是看不到即时提示。
+**命令长期有效**——现场机器不能马上接入（网络、命令不熟等）也没关系，之后随时回到该行点「接入」取回；弹窗开着时节点首次上线会自动提示「已接入（在线）」，关掉页面只是看不到即时提示。
 重置密钥后旧命令立即失效，需要从该行重新取回新命令。
 
 > 节点记录在添加时就写入 `node_registry`，接入前一直显示离线；注销节点会连同记录一起删除。
@@ -121,7 +121,7 @@ cd workbench-agent && docker compose logs -f workbench-agent
 | 日志 / 现象 | 含义 |
 |-------------|------|
 | `agent starting` + `pollIntervalMs:600000` | 正常，之后约每 10min 一轮 poll |
-| `节点未登记或密钥已失效` | 密钥被重置 / 节点被注销 / 记录被删：回后台该行「查看接入方式」取新命令重装（或重新添加节点） |
+| `节点未登记或密钥已失效` | 密钥被重置 / 节点被注销 / 记录被删：回后台该行「接入」取新命令重装（或重新添加节点） |
 | `缺少 NODE_KEY` | compose 里没有密钥（手动方案漏了），或用了旧的 agent 镜像 |
 | `poll failed` + `fetch failed` | Worker 地址不可达（域名 / 网络 / 证书问题） |
 | Watchtower 拉取并重建容器 | 正常升级：Watchtower 轮询发现新 `:latest` 镜像后自动更新 |
@@ -132,8 +132,8 @@ cd workbench-agent && docker compose logs -f workbench-agent
 - **日常升级**：发布 release（见「发布到线上」）→ 推 `:latest` + 回写 D1 `agent_latest_version`；Watchtower 按 `WATCHTOWER_POLL_INTERVAL`（默认 15 分钟）轮询拉取新镜像并重建容器。重建时原样复制 env / 挂载 / 网络 / 重启策略。
 - **配置变更**（换镜像、改 Worker 地址等）Watchtower 不负责，手动改 `workbench-agent/docker-compose.yml` 后 `docker compose up -d`。
 - **回滚**：把 `image:` 钉到 `ghcr.io/jiangood/workbench-agent:v<short-sha>`（对应提交的短 sha，也可用发布 tag）再 `up -d`；钉住后 Watchtower 不会把它拉回 `latest`，确认稳定后再改回 `:latest`。
-- **重装 / 换机**：在节点行点「查看接入方式」取回长期有效的命令（命令自带 `WORKBENCH_AGENT_FORCE=1`，已登记节点不设过期）。
-- **重置密钥**：节点行「重置密钥」→ 旧密钥立即失效（该 agent 持续 401，列表立刻显示离线），再用该行「查看接入方式」取回新命令重新部署；列表里不展示密钥本身。
+- **重装 / 换机**：在节点行点「接入」取回长期有效的命令（命令自带 `WORKBENCH_AGENT_FORCE=1`，已登记节点不设过期）。
+- **重置密钥**：节点行「重置密钥」→ 旧密钥立即失效（该 agent 持续 401，列表立刻显示离线），再用该行「接入」取回新命令重新部署；列表里不展示密钥本身。
 - **注销节点**：列表行「注销」→ 密钥立即失效（agent 持续 401），重新添加同名节点会生成新密钥和新接入命令。
 - **退路**：若 `nicholas-fedor/watchtower` 失维护，删掉该容器，宿主机 crontab 两行等效：
 

@@ -566,7 +566,7 @@ admin.post('/nodes', async (c) => {
   try {
     const nodeKey = randomNodeKey()
     if (!(await addNode(c.env, nodeId, nodeKey))) {
-      return fail(409, 409, '节点名称已存在：用该行「查看接入方式」重新部署，或先注销再添加')
+      return fail(409, 409, '节点名称已存在：用该行「接入」重新部署，或先注销再添加')
     }
     return ok({
       nodeId,

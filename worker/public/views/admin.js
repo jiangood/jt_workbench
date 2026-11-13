@@ -165,7 +165,7 @@ export async function render(main, params = {}) {
       </div>
       <div class="small muted" style="max-width: 980px">
         登记即生成长期有效的 <code>curl | sh</code> 命令，在目标 Linux 机器任意目录执行即可拉起容器；
-        命令随时可从该行「查看接入方式」取回，换密钥点「重置密钥」。
+        命令随时可从该行「接入」取回，换密钥点「重置密钥」。
       </div>
       <table>
         <thead><tr><th>节点</th><th>版本</th><th>状态</th><th>最后心跳</th><th>在持任务</th><th></th></tr></thead>
@@ -466,7 +466,7 @@ export async function render(main, params = {}) {
             <td class="small">${fmtTime(n.last_seen_at)}</td>
             <td class="small">${esc(n.heldJobs ?? 0)}</td>
             <td style="white-space: nowrap">
-              <button class="btn sm" data-act="install" data-node="${esc(n.node_id)}" type="button">查看接入方式</button>
+              <button class="btn sm" data-act="install" data-node="${esc(n.node_id)}" type="button">接入</button>
               <button class="btn sm warn" data-act="rotate" data-node="${esc(n.node_id)}" type="button">重置密钥</button>
               <button class="btn sm warn" data-act="del" data-node="${esc(n.node_id)}" type="button">注销</button>
             </td>
@@ -544,7 +544,7 @@ export async function render(main, params = {}) {
       ? `<span class="pill ok"><span class="dot"></span>节点已接入（在线）</span>
          <span class="small muted">换机 / 重装可直接使用下面的命令</span>`
       : `<span class="pill"><span class="dot"></span>等待接入</span>
-         <span class="small muted">命令长期有效，可以先关掉页面，之后从该行「查看接入方式」取回</span>`
+         <span class="small muted">命令长期有效，可以先关掉页面，之后从该行「接入」取回</span>`
 
   const installHtml = (install, online) => `
     <h2>接入方式『${esc(install.nodeId)}』</h2>
@@ -659,7 +659,7 @@ docker compose up -d</pre>
       if (!res.ok) return nodeSay(res.error.message, true)
       nodeList = res.data.nodes
       paintNodes()
-      nodeSay(`已重置 ${node.node_id} 的密钥：旧密钥立即失效，点「查看接入方式」取新命令重新部署`)
+      nodeSay(`已重置 ${node.node_id} 的密钥：旧密钥立即失效，点「接入」取新命令重新部署`)
       return
     }
 
@@ -723,7 +723,7 @@ docker compose up -d</pre>
       }
       nodeList = res.data.nodes
       paintNodes()
-      nodeSay(`已添加 ${name}：接入前显示离线，之后随时点该行「查看接入方式」取命令`)
+      nodeSay(`已添加 ${name}：接入前显示离线，之后随时点该行「接入」取命令`)
       showInstall(res.data.install)
     }
   }
