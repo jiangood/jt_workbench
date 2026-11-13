@@ -4,5 +4,6 @@ dist/
 .dev.vars
 .env
 *.local
+*.local.md
 .playwright-mcp/
 .idea/
