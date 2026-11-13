@@ -1187,7 +1187,6 @@ export async function render(main, params) {
             <span class="reader-chapter" data-chapter hidden></span>
             <span class="reader-progress-text" data-progress-text>0%</span>
             <span class="reader-est" data-est${estimate ? '' : ' hidden'}>${esc(estimate)}</span>
-            <span class="reader-stat" data-stat hidden></span>
             <span data-meta>${esc(meta)}</span>
           </p>
         </div>
@@ -1904,11 +1903,6 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
       // 目录缺失或落在两章之间时，退回节序号，标题栏始终有内容
       setChapter(hit?.label || (totalSections ? `第 ${currentIndex + 1} 节` : ''))
       tocSide?.setCurrent(tocIndexOf(hit?.href))
-      const stat = root.querySelector('[data-stat]')
-      if (stat) {
-        stat.textContent = totalSections ? `第 ${currentIndex + 1} / ${totalSections} 节` : ''
-        stat.hidden = !totalSections
-      }
       paintProgress()
     }
 

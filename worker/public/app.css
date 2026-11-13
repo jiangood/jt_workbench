@@ -2079,10 +2079,8 @@ body:has(.playerbar:not([hidden])) .reader-root[data-immersive="1"] .reader-stag
 }
 .reader-chapter:not([hidden])::after,
 .reader-progress-text::after,
-.reader-est:not([hidden])::after,
-.reader-stat:not([hidden])::after { content: " · " }
-.reader-est,
-.reader-stat {
+.reader-est:not([hidden])::after { content: " · " }
+.reader-est {
   font-size: var(--fs-sm);
   color: var(--muted-fg);
   white-space: nowrap;
@@ -2181,7 +2179,6 @@ body:has(.playerbar:not([hidden])) .reader-root[data-immersive="1"] .reader-stag
 @media (max-width: 640px) {
   .reader-page { padding: 0 }
   .reader-top { padding: 0 var(--sp-3) }
-  .reader-top .page-sub .reader-stat { display: none }
   .reader-top-links { gap: var(--sp-3) }
   .reader-body { position: relative }
   .reader-fabs {
