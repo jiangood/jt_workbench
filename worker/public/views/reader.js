@@ -990,8 +990,6 @@ export async function render(main, params) {
         <div class="reader-title">
           <h1 class="page-title" title="${esc(title)}">${esc(title)}</h1>
           <p class="page-sub">
-            <span class="reader-chapter" data-chapter hidden></span>
-            <span class="reader-progress-text" data-progress-text>0%</span>
             <span class="reader-est" data-est${estimate ? '' : ' hidden'}>${esc(estimate)}</span>
             <span data-meta>${esc(meta)}</span>
           </p>
@@ -1004,15 +1002,10 @@ export async function render(main, params) {
       <div class="reader-stage" id="reader-stage"></div>
     </div>`
 
-  // 当前章：顶栏副标题与浏览器标签页同步（切章时由各阅读器回调）
-  const chapterEl = main.querySelector('[data-chapter]')
-  const setChapter = (label) => {
-    // 异步下载 / epub relocated 可能在切页后才回调：页面已经换掉就别再改标题
-    if (!chapterEl.isConnected) return
-    const text = String(label || '').replace(/\s+/g, ' ').trim()
-    chapterEl.textContent = text
-    chapterEl.hidden = !text
-    document.title = text ? `${text} · ${title}` : `${title} · 个人工作台`
+  // 切章时由各阅读器回调（顶栏不再显示章节名，仅同步标签页标题）
+  const setChapter = () => {
+    if (!main.isConnected) return
+    document.title = `${title} · 个人工作台`
   }
 
   const stage = main.querySelector('#reader-stage')
@@ -1054,12 +1047,8 @@ function formatBookEstimate(minutes) {
   return mm ? `全书约 ${h} 小时 ${mm} 分` : `全书约 ${h} 小时`
 }
 
-/** 阅读进度：顶栏百分比（旧版可拖动进度条已按需求去掉，只剩数字） */
-function setProgress(root, ratio, text) {
-  const safe = Number.isFinite(ratio) ? Math.max(0, Math.min(1, ratio)) : 0
-  const label = root.querySelector('[data-progress-text]')
-  if (label) label.textContent = text ?? `${Math.round(safe * 100)}%`
-}
+/** 顶栏不再显示阅读进度百分比（保留调用点以兼容阅读器内部逻辑） */
+function setProgress() {}
 
 /**
  * 阅读进度回写书架卡片：同一百分比不重复发，翻页很快时攒 2 秒再发，离页时 flush。

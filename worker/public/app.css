@@ -2033,20 +2033,12 @@ body:has(.playerbar:not([hidden])) .reader-root[data-immersive="1"] .reader-stag
 }
 .reader-view iframe { border: 0 }
 
-/* 阅读进度：顶栏百分比（旧版可拖动进度条已按需求去掉，只剩数字）；epub 另有「第 x / y 节」 */
-.reader-progress-text {
-  font-size: var(--fs-sm);
-  color: var(--muted-fg);
-  font-variant-numeric: tabular-nums;
-}
-.reader-chapter:not([hidden])::after,
-.reader-progress-text::after,
-.reader-est:not([hidden])::after { content: " · " }
 .reader-est {
   font-size: var(--fs-sm);
   color: var(--muted-fg);
   white-space: nowrap;
 }
+.reader-est:not([hidden])::after { content: " · " }
 .reader-top .page-sub [data-meta] {
   min-width: 0;
   flex: 1 1 auto;
