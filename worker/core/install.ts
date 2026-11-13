@@ -93,6 +93,11 @@ else
   exit 1
 fi
 
+# 先拉最新 agent 镜像：机器上可能有旧镜像缓存，up -d 不会自动 pull
+if ! $DC pull workbench-agent; then
+  echo "拉取新镜像失败，将用本地已有镜像启动（网络恢复后重新执行本命令即可更新）" >&2
+fi
+
 $DC up -d
 
 echo
