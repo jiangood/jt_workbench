@@ -269,9 +269,10 @@ function openReaderSettings({
     : ''
 
   const dlg = showDialog(
-    `<h2>阅读设置</h2>${modeBlock}${fontBlock}${familyBlock}${weightBlock}${widthBlock}${autoBlock}${swatchBlock}${turnBlock}${actionBlock}`,
+    `<div class="dlg-head"><h2>阅读设置</h2><button class="icon-btn" type="button" data-dlg-close aria-label="关闭">${icon('close', 16)}</button></div>${modeBlock}${fontBlock}${familyBlock}${weightBlock}${widthBlock}${autoBlock}${swatchBlock}${turnBlock}${actionBlock}`,
     { label: '阅读设置' },
   )
+  dlg.body.querySelector('[data-dlg-close]')?.addEventListener('click', () => dlg.close())
   if (font) {
     dlg.body.querySelectorAll('[data-fs]').forEach((b) => {
       b.onclick = () => {

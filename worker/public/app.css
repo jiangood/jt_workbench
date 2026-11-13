@@ -1805,6 +1805,8 @@ dialog {
 dialog.xl { max-width: 1100px; width: 94% }
 dialog::backdrop { background: rgba(15, 23, 42, .45) }
 dialog h2, dialog h5 { font-size: var(--fs-lg); font-weight: 650; margin-bottom: var(--sp-3) }
+.dlg-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); margin-bottom: var(--sp-3) }
+.dlg-head h2, .dlg-head h5 { margin: 0 }
 
 /* 阅读页（#/reader?id=）：微信读书式沉浸布局——body.reading 时全局侧栏 / 顶栏隐藏（app.js 挂类），
  * 阅读页自带顶栏（书名 + 右上角「首页 / 我的书架」），正文区占满剩余高度，长内容只在内部滚动。
