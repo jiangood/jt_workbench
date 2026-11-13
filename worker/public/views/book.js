@@ -139,7 +139,7 @@ function bookCard(b) {
                 !b.hasFile
                   ? '<span class="badge warn">待上传</span>'
                   : readable
-                    ? '<span class="badge muted">EPUB</span>'
+                    ? ''
                     : '<span class="badge warn">格式已停用</span>'
               }
             </div>
