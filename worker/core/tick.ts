@@ -1,6 +1,7 @@
 /** Worker 内置任务（决策 #14 例外清单）：tick 锁内执行，永不下发 */
 // 1. reminder_scan：一条 D1 查询 + 至多几封邮件（SMTP 直连 / Resend，key 在 Worker 手里）
 // 2. 资讯-过期清理：news 保留期 DELETE + 90 天前 job_run + 过期 cache 行
+// 3. 熔断任务每日重开：网络恢复 / 新节点上线后自愈（详见 rearmBrokenJobs）
 
 import type { Bindings } from './envelope'
 import { sendMail } from './mail'
@@ -31,6 +32,24 @@ export async function runBuiltinTasks(db: D1Database, now: number): Promise<void
     db.prepare('DELETE FROM news_item WHERE fetched_at < ?').bind(now - 30 * 86400_000),
     db.prepare('DELETE FROM cache WHERE expires_at < ?').bind(now),
   ])
+  await rearmBrokenJobs(db, now)
+}
+
+// 熔断 ≠ 死刑：被熔断停用的任务每天自动重开一次，等新节点上线或网络恢复后自愈。
+// 条件 enabled=0 AND status='failed' 只匹配熔断停用（一次性任务跑完是 done，不受影响）；
+// last_run_at 距今超 24h 才重开 → 重开一轮若仍不通（3 轮 × 3 次 ≈ 6h）会再次熔断并刷新
+// last_run_at，天然形成「每天至多折腾一轮」的节奏，不会跟着 10 分钟的 tick 空转。
+const REARM_AFTER_MS = 24 * 60 * 60_000
+
+async function rearmBrokenJobs(db: D1Database, now: number): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE job SET enabled = 1, status = 'pending', attempts = 0, fail_streak = 0,
+         next_run_at = ?, lease_until = NULL, result = NULL
+       WHERE enabled = 0 AND status = 'failed' AND COALESCE(last_run_at, 0) < ?`,
+    )
+    .bind(now, now - REARM_AFTER_MS)
+    .run()
 }
 
 interface DueReminder {
