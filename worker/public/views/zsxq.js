@@ -135,14 +135,14 @@ function renderZsxqText(text) {
   let m
   while ((m = re.exec(src))) {
     out += esc(src.slice(last, m.index))
-    out += renderZsxqTag(parseZsxqAttrs(m[1] || ''))
+    out += renderZsxqTag(parseZsxqAttrs(m[1] || ''), src[m.index - 1] || '', src[re.lastIndex] || '')
     last = re.lastIndex
   }
   out += esc(src.slice(last))
   return out
 }
 
-function renderZsxqTag(attrs) {
+function renderZsxqTag(attrs, before = '', after = '') {
   const type = attrs.type || ''
   const title = decodeZsxqValue(attrs.title || '')
   const href = safeHref(attrs.href)
@@ -160,10 +160,12 @@ function renderZsxqTag(attrs) {
 
   if (type === 'web') {
     if (attrs.style === 'book') {
-      const name = label || '书籍'
+      // 原文常已写成《<e .../>》，避免再包一层书名号导致《《书名》》
+      const inner = label || '书籍'
+      const wrapped = (before === '《' ? '' : '《') + esc(inner) + (after === '》' ? '' : '》')
       return href
-        ? `<a class="zsxq-book" href="${esc(href)}" target="_blank" rel="noopener">《${esc(name)}》</a>`
-        : `<span class="zsxq-book">《${esc(name)}》</span>`
+        ? `<a class="zsxq-book" href="${esc(href)}" target="_blank" rel="noopener">${wrapped}</a>`
+        : `<span class="zsxq-book">${wrapped}</span>`
     }
     const text = label || (href ? href.replace(/^https?:\/\//, '').slice(0, 60) : '链接')
     return href
