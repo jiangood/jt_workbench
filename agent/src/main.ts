@@ -12,6 +12,7 @@ import {
   zsxqHandler,
   zsxqProbeHandler,
 } from './jobs/zsxq.js'
+import { ttsHandler } from './jobs/tts.js'
 
 const log = pino()
 
@@ -23,6 +24,7 @@ register('zsxq_backfill', zsxqBackfillHandler)
 register('zsxq_comments', zsxqCommentsHandler)
 register('zsxq_probe', zsxqProbeHandler)
 register('zsxq_groups', zsxqGroupsHandler)
+register('tts_synthesize', ttsHandler)
 
 /** poll 抖动（v4.8）：±60~90s，多节点部署时各节点 poll 时点自然错峰 */
 const jitterMs = () => {

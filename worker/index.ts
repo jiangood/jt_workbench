@@ -11,6 +11,7 @@ import { music } from './modules/music'
 import { book } from './modules/book'
 import { zsxq } from './modules/zsxq'
 import { admin } from './modules/admin'
+import tts from './modules/tts'
 import { serveInstallScript } from './core/install'
 
 const app = new Hono<Env>()
@@ -105,6 +106,7 @@ app.route('/api/reminder', reminder)
 app.route('/api/note', note)
 app.route('/api/music', music)
 app.route('/api/book', book)
+app.route('/api/tts', tts)
 app.route('/api/zsxq', zsxq)
 app.route('/api/admin', admin)
 

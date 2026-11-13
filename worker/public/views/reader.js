@@ -361,19 +361,18 @@ function openReaderSettings({
   return dlg
 }
 
-/* ---------------- 语音朗读（Web Speech API，issue #13 P1） ---------------- */
+/* ---------------- 语音朗读（服务端 Piper TTS + Web Speech 兜底） ---------------- */
 
 const TTS_RATE_KEY = 'book:tts:rate'
 const TTS_RATES = [0.8, 1, 1.2, 1.5, 2]
-/** 音色（voiceURI）与「读完本章是否接着读下一章」（issue #23） */
-const TTS_VOICE_KEY = 'book:tts:voice'
+const TTS_VOICE_KEY = 'book:tts:voice' // Web Speech 音色
 const TTS_FOLLOW_KEY = 'book:tts:follow'
-/** 首次打开朗读条时提一次平台边界（锁屏 / 后台行为因系统而异），不做多次打扰 */
+const TTS_ENGINE_KEY = 'book:tts:engine' // 'server' | 'speech'
 const TTS_HINT_KEY = 'book:tts:hint'
+const TTS_SERVER_VOICE = 'zh_CN-huayan-medium'
 
 const ttsFollowChapter = () => readStorage(TTS_FOLLOW_KEY) === '1'
 
-/** 当前朗读高亮的段落：{ el, doc? }；切段 / 停止时清掉 */
 let ttsMarked = null
 
 function clearTtsMark() {
@@ -385,7 +384,6 @@ function clearTtsMark() {
   ttsMarked = null
 }
 
-/** 高亮并滚到可见处（epub 在 iframe 里，样式要单独注入那个文档） */
 function ttsFocus(el, doc = null) {
   clearTtsMark()
   ttsMarked = { el, doc }
@@ -398,47 +396,64 @@ function ttsFocus(el, doc = null) {
       ;(doc.head || doc.documentElement).append(style)
     }
     el.classList.add('wb-tts-current')
-    el.scrollIntoView?.({ block: 'center' })
+    const target = doc?.defaultView?.frameElement
+      ? doc.defaultView.frameElement
+      : el
+    target?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
   } catch {
     /* 高亮失败不影响朗读 */
   }
 }
 
-/** 长段落切块：部分浏览器对超长 utterance 会提前截断，按句读点切到 180 字以内 */
-function splitSpeech(text, max = 180) {
-  const clean = String(text || '').replace(/\s+/g, ' ').trim()
-  if (!clean) return []
-  if (clean.length <= max) return [clean]
-  const stops = '。！？；…!?;.'
+function splitSpeech(text, limit = 180) {
+  const raw = String(text || '').replace(/\s+/g, ' ').trim()
+  if (!raw) return []
+  if (raw.length <= limit) return [raw]
+  const parts = raw.split(/([。！？!?；;…]+["”’')\]]*\s*)/)
   const out = []
-  let rest = clean
-  while (rest.length > max) {
-    let cut = -1
-    for (let i = max; i >= Math.floor(max * 0.5); i -= 1) {
-      if (stops.includes(rest[i])) {
-        cut = i + 1
-        break
+  let buf = ''
+  for (let i = 0; i < parts.length; i += 2) {
+    const chunk = (parts[i] || '') + (parts[i + 1] || '')
+    if (!chunk) continue
+    if (buf && buf.length + chunk.length > limit) {
+      out.push(buf.trim())
+      buf = chunk
+    } else {
+      buf += chunk
+    }
+  }
+  if (buf.trim()) out.push(buf.trim())
+  const flat = []
+  for (const p of out.length ? out : [raw]) {
+    if (p.length <= limit) flat.push(p)
+    else {
+      for (let i = 0; i < p.length; i += limit) {
+        const rest = p.slice(i).trim()
+        if (rest) flat.push(rest)
       }
     }
-    if (cut < 0) {
-      const space = rest.lastIndexOf(' ', max)
-      cut = space > max * 0.5 ? space + 1 : max
-    }
-    const head = rest.slice(0, cut).trim()
-    if (head) out.push(head)
-    rest = rest.slice(cut).trim()
   }
-  if (rest) out.push(rest)
-  return out
+  return flat
 }
 
-/** 朗读条：正文与页脚之间（不盖正文）；fab 打开，关闭时停止朗读 */
+async function sha40(text) {
+  const data = new TextEncoder().encode(String(text || '').trim())
+  const buf = await crypto.subtle.digest('SHA-256', data)
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 40)
+}
+
 function ttsBarHtml() {
   return `<div class="tts-bar" data-tts-bar hidden role="region" aria-label="语音朗读">
       <button class="tts-btn" type="button" data-tts-prev aria-label="上一段" title="上一段">${icon('prev', 16)}</button>
       <button class="tts-btn primary" type="button" data-tts-toggle aria-label="开始朗读" title="播放 / 暂停">${icon('play', 16)}</button>
       <button class="tts-btn" type="button" data-tts-next aria-label="下一段" title="下一段">${icon('next', 16)}</button>
       <span class="tts-status small" data-tts-status aria-live="polite">未开始</span>
+      <label class="tts-field">引擎
+        <select class="field field-sm" data-tts-engine aria-label="朗读引擎">
+          <option value="server">AI朗读</option>
+          <option value="speech">系统朗读</option>
+        </select>
+      </label>
       <label class="tts-field" data-tts-voice-wrap hidden>音色
         <select class="field field-sm" data-tts-voice aria-label="朗读音色"></select>
       </label>
@@ -462,17 +477,7 @@ function ttsBarHtml() {
     </div>`
 }
 
-/**
- * 朗读控制器（Web Speech API）。
- *
- * getSegments() 由阅读器按当前 DOM 生成 [{ text, focus }]，每段读一个 utterance；
- * getStartIndex(segments) 决定从哪一段开始（EPUB 从头）；
- * onExhausted() 读完当前内容时回调，返回 true 表示已续上新内容（继续读），false 停止。
- *
- * 平台边界：SpeechSynthesis 在桌面 Chrome / Edge / Safari / Android 可用；iOS 需要用户手势
- * 触发（我们的「开始」来自点击）。没有语音引擎时只提示，不影响阅读。
- */
-function createTtsBar({ stage, getSegments, getStartIndex, onExhausted }) {
+function createTtsBar({ stage, getSegments, getStartIndex, onExhausted, bookId = null }) {
   const bar = stage.querySelector('[data-tts-bar]')
   if (!bar) return { toggleBar() {}, stop() {}, destroy() {}, isActive: () => false }
   const toggleBtn = bar.querySelector('[data-tts-toggle]')
@@ -482,41 +487,42 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted }) {
   const voiceSel = bar.querySelector('[data-tts-voice]')
   const voiceWrap = bar.querySelector('[data-tts-voice-wrap]')
   const followBox = bar.querySelector('[data-tts-follow]')
-  const synth = typeof window !== 'undefined' ? window.speechSynthesis : null
-  const supported = Boolean(synth && typeof window.SpeechSynthesisUtterance === 'function')
+  const engineSel = bar.querySelector('[data-tts-engine]')
 
-  let state = 'idle' // idle | playing | paused
+  const synth = typeof window !== 'undefined' ? window.speechSynthesis : null
+  const speechSupported = Boolean(synth && typeof window.SpeechSynthesisUtterance === 'function')
+  const serverSupported = Number.isFinite(Number(bookId)) && Number(bookId) > 0
+
+  let engine = readStorage(TTS_ENGINE_KEY) || (serverSupported ? 'server' : 'speech')
+  if (engine === 'server' && !serverSupported) engine = 'speech'
+  if (engine === 'speech' && !speechSupported && serverSupported) engine = 'server'
+  engineSel.value = engine
+
+  let state = 'idle' // idle | playing | paused | loading
   let segments = []
   let cursor = 0
   let runId = 0
   let timerId = 0
   let rate = Number(readStorage(TTS_RATE_KEY)) || 1
-  let voice = null
+  let speechVoice = null
+  let audio = null
+  let pollTimer = 0
+  let preparedKeys = new Map() // key -> url
 
   if (TTS_RATES.includes(rate)) rateSel.value = String(rate)
-  else {
-    rate = 1
-    rateSel.value = '1'
-  }
+  else { rate = 1; rateSel.value = '1' }
 
-  // 音色：浏览器 / 系统提供多少列多少（部分平台异步返回，voiceschanged 里再刷一次）
   const loadVoices = () => {
     if (!voiceSel) return
     let voices = []
-    try {
-      voices = synth?.getVoices?.() ?? []
-    } catch {
-      voices = []
-    }
+    try { voices = synth?.getVoices?.() ?? [] } catch { voices = [] }
     const saved = readStorage(TTS_VOICE_KEY) || ''
-    voiceWrap.hidden = !voices.length
+    voiceWrap.hidden = engine !== 'speech' || !voices.length
     voiceSel.innerHTML =
       '<option value="">默认音色</option>' +
-      voices
-        .map((v) => `<option value="${esc(v.voiceURI)}">${esc(v.name)}${v.lang ? `（${esc(v.lang)}）` : ''}</option>`)
-        .join('')
-    voice = voices.find((v) => v.voiceURI === saved) || null
-    voiceSel.value = voice ? saved : ''
+      voices.map((v) => `<option value="${esc(v.voiceURI)}">${esc(v.name)}${v.lang ? `（${esc(v.lang)}）` : ''}</option>`).join('')
+    speechVoice = voices.find((v) => v.voiceURI === saved) || null
+    voiceSel.value = speechVoice ? saved : ''
   }
   loadVoices()
   synth?.addEventListener?.('voiceschanged', loadVoices)
@@ -527,34 +533,41 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted }) {
     toast(followBox.checked ? '读完本章后自动接下一章' : '读到本章结束就停')
   }
 
-  const clearTimer = () => {
-    if (!timerId) return
-    clearTimeout(timerId)
-    timerId = 0
-  }
+  const clearTimer = () => { if (timerId) { clearTimeout(timerId); timerId = 0 } }
+  const clearPoll = () => { if (pollTimer) { clearTimeout(pollTimer); pollTimer = 0 } }
+
+  const setStatus = (text) => { statusEl.textContent = text }
 
   const paint = () => {
     const playing = state === 'playing'
+    const loading = state === 'loading'
     toggleBtn.innerHTML = icon(playing ? 'pause' : 'play', 16)
     const label = playing ? '暂停朗读' : state === 'paused' ? '继续朗读' : '开始朗读'
     toggleBtn.setAttribute('aria-label', label)
     toggleBtn.title = label
     bar.dataset.state = state
-    if (!supported) {
-      statusEl.textContent = '当前浏览器不支持语音朗读'
-      return
-    }
-    if (state === 'idle') statusEl.textContent = segments.length ? '已停止' : '未开始'
-    else statusEl.textContent = `${state === 'paused' ? '已暂停 · ' : ''}第 ${cursor + 1} / ${segments.length} 段`
+    voiceWrap.hidden = engine !== 'speech' || !(synth?.getVoices?.().length)
+    engineSel.value = engine
+    if (state === 'idle') setStatus(segments.length ? '已停止' : '未开始')
+    else if (loading) setStatus('正在生成语音…')
+    else setStatus(`${state === 'paused' ? '已暂停 · ' : ''}第 ${cursor + 1} / ${segments.length || '?'} 段`)
+  }
+
+  const stopAudio = () => {
+    clearPoll()
+    try { audio?.pause() } catch {}
+    if (audio) { try { audio.src = '' } catch {} }
+    audio = null
+  }
+
+  const cancelSpeech = () => {
+    try { synth?.cancel() } catch {}
   }
 
   const cancel = () => {
     runId += 1
-    try {
-      synth?.cancel()
-    } catch {
-      /* 取消失败：新 utterance 开始时也会抢占 */
-    }
+    stopAudio()
+    cancelSpeech()
     clearTtsMark()
   }
 
@@ -564,150 +577,196 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted }) {
     timerSel.value = '0'
     state = 'idle'
     cursor = 0
+    preparedKeys = new Map()
     paint()
   }
 
   const collect = () => (getSegments?.() ?? []).filter((seg) => seg && String(seg.text || '').trim())
 
-  const speakChunk = (id, segIndex, chunks, at) => {
+  async function ensurePrepared(id, segs) {
+    // segs: [{key,text,focus}]
+    const missing = segs.filter((s) => !preparedKeys.has(s.key))
+    if (!missing.length) return true
+    // poll prepare until all ready or aborted
+    while (id === runId) {
+      let res
+      try {
+        res = await api('/api/tts/prepare', {
+          method: 'POST',
+          body: JSON.stringify({ bookId, voice: TTS_SERVER_VOICE, segments: missing.map((s) => ({ key: s.key, text: s.text })) }),
+        })
+      } catch (err) {
+        if (id !== runId) return false
+        throw err
+      }
+      const list = res?.segments || []
+      let allReady = true
+      for (const it of list) {
+        if (it?.ready && it?.url && it?.key) preparedKeys.set(it.key, it.url)
+      }
+      for (const s of missing) {
+        if (!preparedKeys.has(s.key)) allReady = false
+      }
+      if (allReady) return true
+      setStatus('正在生成语音…')
+      await new Promise((r) => { pollTimer = setTimeout(r, 3000) })
+      pollTimer = 0
+    }
+    return false
+  }
+
+  const exhausted = async (id) => {
+    let more = false
+    try { more = Boolean(await onExhausted?.()) } catch { more = false }
     if (id !== runId) return
-    if (at >= chunks.length) {
-      speakSegment(id, segIndex + 1)
+    if (!more) { stop(); return }
+    const raw = collect()
+    segments = await normalizeSegments(raw)
+    cursor = 0
+    if (!segments.length) { stop(); return }
+    state = engine === 'server' ? 'loading' : 'playing'
+    paint()
+    speakSegment(id, 0)
+  }
+
+  async function normalizeSegments(raw) {
+    const out = []
+    for (const s of raw) {
+      const text = String(s.text || '').replace(/\s+/g, ' ').trim()
+      if (!text) continue
+      const key = await sha40(text)
+      out.push({ text, focus: s.focus, key })
+    }
+    return out
+  }
+
+  const playServerSegment = async (id, index) => {
+    if (id !== runId) return
+    if (index >= segments.length) { void exhausted(id); return }
+    cursor = index
+    const seg = segments[index]
+    try { seg.focus?.() } catch {}
+    state = 'loading'
+    paint()
+    try {
+      const ok = await ensurePrepared(id, [seg])
+      if (!ok || id !== runId) return
+    } catch (err) {
+      if (id !== runId) return
+      stop()
+      toast(err?.message || '语音生成失败', true)
       return
     }
+    if (id !== runId) return
+    const url = preparedKeys.get(seg.key)
+    if (!url) { playServerSegment(id, index + 1); return }
+    stopAudio()
+    const a = new Audio(url)
+    audio = a
+    a.playbackRate = rate
+    a.onended = () => { if (id === runId) playServerSegment(id, index + 1) }
+    a.onerror = () => { if (id === runId) { stop(); toast('音频播放失败', true) } }
+    try {
+      await a.play()
+      if (id !== runId) return
+      state = 'playing'
+      paint()
+    } catch (err) {
+      if (id !== runId) return
+      stop()
+      toast(err?.message || '音频播放失败', true)
+    }
+  }
+
+  const speakChunkSpeech = (id, segIndex, chunks, at) => {
+    if (id !== runId) return
+    if (at >= chunks.length) { speakSegment(id, segIndex + 1); return }
     const text = chunks[at]
     const u = new window.SpeechSynthesisUtterance(text)
     u.lang = /[\u4e00-\u9fff]/.test(text) ? 'zh-CN' : 'en-US'
     u.rate = rate
     u.pitch = 1
-    if (voice) u.voice = voice
-    u.onend = () => {
-      if (id === runId) speakChunk(id, segIndex, chunks, at + 1)
-    }
+    if (speechVoice) u.voice = speechVoice
+    u.onend = () => { if (id === runId) speakChunkSpeech(id, segIndex, chunks, at + 1) }
     u.onerror = (e) => {
       if (id !== runId) return
       const err = e?.error || ''
-      // 手动停止 / 切段时的 cancel 不算错误
       if (err === 'interrupted' || err === 'canceled' || err === 'cancelled') return
       stop()
       toast(`朗读中断：${err || '系统语音不可用'}`, true)
     }
-    try {
-      synth.speak(u)
-    } catch (err) {
-      stop()
-      toast(err?.message || '朗读启动失败', true)
-    }
+    try { synth.speak(u) } catch (err) { stop(); toast(err?.message || '朗读启动失败', true) }
   }
 
-  const exhausted = async (id) => {
-    let more = false
-    try {
-      more = Boolean(await onExhausted?.())
-    } catch {
-      more = false
-    }
+  const speakSpeechSegment = (id, index) => {
     if (id !== runId) return
-    if (!more) {
-      stop()
-      return
-    }
-    segments = collect()
-    cursor = 0
-    if (!segments.length) {
-      stop()
-      return
-    }
-    state = 'playing'
+    if (index >= segments.length) { void exhausted(id); return }
+    cursor = index
+    const seg = segments[index]
+    try { seg.focus?.() } catch {}
     paint()
-    speakSegment(id, 0)
+    speakChunkSpeech(id, index, splitSpeech(seg.text), 0)
   }
 
   const speakSegment = (id, index) => {
-    if (id !== runId) return
-    if (index >= segments.length) {
-      void exhausted(id)
-      return
-    }
-    cursor = index
-    const seg = segments[index]
-    try {
-      seg.focus?.()
-    } catch {
-      /* 高亮失败不影响朗读 */
-    }
-    paint()
-    speakChunk(id, index, splitSpeech(seg.text), 0)
+    if (engine === 'server') void playServerSegment(id, index)
+    else speakSpeechSegment(id, index)
   }
 
-  const startFrom = (index) => {
-    if (!supported) {
-      toast('当前浏览器不支持语音朗读', true)
-      return
-    }
+  const startFrom = async (index) => {
+    if (engine === 'speech' && !speechSupported) { toast('当前浏览器不支持系统朗读', true); return }
+    if (engine === 'server' && !serverSupported) { toast('AI 朗读不可用', true); return }
     cancel()
     const id = runId
-    segments = collect()
-    if (!segments.length) {
-      toast('当前位置没有可朗读的文字', true)
-      state = 'idle'
-      paint()
-      return
-    }
+    const raw = collect()
+    segments = await normalizeSegments(raw)
+    if (id !== runId) return
+    if (!segments.length) { toast('当前位置没有可朗读的文字', true); state = 'idle'; paint(); return }
     cursor = Math.max(0, Math.min(segments.length - 1, Number(index) || 0))
-    state = 'playing'
+    state = engine === 'server' ? 'loading' : 'playing'
     paint()
     bar.hidden = false
     speakSegment(id, cursor)
   }
 
-  const startFromCurrent = () => {
-    if (!supported) {
-      toast('当前浏览器不支持语音朗读', true)
-      return
-    }
+  const startFromCurrent = async () => {
+    if (engine === 'speech' && !speechSupported) { toast('当前浏览器不支持系统朗读', true); return }
     const list = collect()
-    const at = getStartIndex ? Number(getStartIndex(list)) : 0
+    const segs = await normalizeSegments(list)
+    const at = getStartIndex ? Number(getStartIndex(segs)) : 0
     startFrom(Number.isFinite(at) ? at : 0)
   }
 
   const togglePlay = () => {
-    if (!supported) {
-      toast('当前浏览器不支持语音朗读', true)
-      return
-    }
-    if (state === 'playing') {
-      try {
-        synth.pause()
-      } catch {
-        /* 部分浏览器 pause 无效：保持 playing，用户可再点暂停或停止 */
+    if (state === 'loading') return
+    if (engine === 'server') {
+      if (state === 'playing' && audio) {
+        try { audio.pause() } catch {}
+        state = 'paused'; paint(); return
       }
-      state = 'paused'
-      paint()
-      return
+      if (state === 'paused' && audio) {
+        audio.play().then(() => { if (state === 'paused') { state = 'playing'; paint() } }).catch(() => {})
+        return
+      }
+      startFromCurrent(); return
+    }
+    if (!speechSupported) { toast('当前浏览器不支持系统朗读', true); return }
+    if (state === 'playing') {
+      try { synth.pause() } catch {}
+      state = 'paused'; paint(); return
     }
     if (state === 'paused') {
-      try {
-        synth.resume()
-      } catch {
-        /* 忽略 */
-      }
-      state = 'playing'
-      paint()
-      return
+      try { synth.resume() } catch {}
+      state = 'playing'; paint(); return
     }
     startFromCurrent()
   }
 
   const step = (dir) => {
-    if (state === 'idle' || !segments.length) {
-      startFromCurrent()
-      return
-    }
+    if (state === 'idle' || !segments.length) { startFromCurrent(); return }
     if (dir > 0 && cursor >= segments.length - 1) {
-      // 本页最后一段再点「下一段」：按读完处理（翻页 / 停止），而不是重读最后一段
       cancel()
-      state = 'playing'
+      state = engine === 'server' ? 'loading' : 'playing'
       paint()
       void exhausted(runId)
       return
@@ -718,46 +777,39 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted }) {
   toggleBtn.onclick = togglePlay
   bar.querySelector('[data-tts-prev]').onclick = () => step(-1)
   bar.querySelector('[data-tts-next]').onclick = () => step(1)
-  bar.querySelector('[data-tts-close]').onclick = () => {
-    bar.hidden = true
-    stop()
-  }
+  bar.querySelector('[data-tts-close]').onclick = () => { bar.hidden = true; stop() }
   rateSel.onchange = () => {
     rate = Number(rateSel.value) || 1
     writeStorage(TTS_RATE_KEY, String(rate))
-    // 正在读就立刻用新语速重读当前段（只影响之后创建的 utterance）
-    if (state === 'playing') startFrom(cursor)
+    if (engine === 'server' && audio) audio.playbackRate = rate
+    else if (state === 'playing') startFrom(cursor)
+  }
+  engineSel.onchange = () => {
+    const next = engineSel.value === 'speech' ? 'speech' : 'server'
+    if (next === 'server' && !serverSupported) { toast('AI 朗读不可用', true); engineSel.value = engine; return }
+    if (next === 'speech' && !speechSupported) { toast('当前浏览器不支持系统朗读', true); engineSel.value = engine; return }
+    const wasActive = state !== 'idle'
+    const at = cursor
+    stop()
+    engine = next
+    writeStorage(TTS_ENGINE_KEY, engine)
+    paint()
+    if (wasActive) startFrom(at)
   }
   voiceSel.onchange = () => {
     const uri = voiceSel.value
     let voices = []
-    try {
-      voices = synth?.getVoices?.() ?? []
-    } catch {
-      voices = []
-    }
-    voice = voices.find((v) => v.voiceURI === uri) || null
-    if (voice) writeStorage(TTS_VOICE_KEY, uri)
-    else {
-      try {
-        localStorage.removeItem(TTS_VOICE_KEY)
-      } catch {
-        /* 忽略 */
-      }
-    }
-    // 换音色同样立刻重读当前段：utterance 创建时就绑定了 voice
-    if (state === 'playing') startFrom(cursor)
+    try { voices = synth?.getVoices?.() ?? [] } catch { voices = [] }
+    speechVoice = voices.find((v) => v.voiceURI === uri) || null
+    if (speechVoice) writeStorage(TTS_VOICE_KEY, uri)
+    else { try { localStorage.removeItem(TTS_VOICE_KEY) } catch {} }
+    if (engine === 'speech' && state === 'playing') startFrom(cursor)
   }
   timerSel.onchange = () => {
     clearTimer()
     const min = Number(timerSel.value) || 0
     if (!min) return
-    timerId = window.setTimeout(() => {
-      timerId = 0
-      timerSel.value = '0'
-      stop()
-      toast('定时结束，朗读已停止')
-    }, min * 60_000)
+    timerId = window.setTimeout(() => { timerId = 0; timerSel.value = '0'; stop(); toast('定时结束，朗读已停止') }, min * 60_000)
   }
 
   paint()
@@ -769,7 +821,7 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted }) {
         paint()
         if (!readStorage(TTS_HINT_KEY)) {
           writeStorage(TTS_HINT_KEY, '1')
-          toast('锁屏 / 切后台后能否继续朗读取决于系统，可能被中断')
+          toast(engine === 'server' ? 'AI朗读将按段生成语音，首次可能需要等待' : '锁屏 / 切后台后能否继续朗读取决于系统，可能被中断')
         }
       } else {
         bar.hidden = true
@@ -780,182 +832,10 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted }) {
     isActive: () => !bar.hidden && state !== 'idle',
     destroy() {
       stop()
-      try {
-        synth?.removeEventListener?.('voiceschanged', loadVoices)
-      } catch {
-        /* 移除失败不影响销毁 */
-      }
+      try { synth?.removeEventListener?.('voiceschanged', loadVoices) } catch {}
       bar.hidden = true
     },
   }
-}
-
-/* ---------------- 翻页手势 / 点击热区 / 沉浸模式（issue #13 P2） ---------------- */
-
-/**
- * 阅读手势：左右滑动翻页、点击左右热区翻页、点中间切换沉浸模式。
- *
- * 只响应单指、短时、位移小的操作：长按选字、双指缩放、纵向滚动一律放行；
- * 起点在屏幕左右 24px 内不响应，避免撞上系统边缘返回手势。
- * doc 给定时监听 iframe 内部（epub），否则监听 surface（EPUB 外边距）。
- * onSwipePrev / onSwipeNext 缺省与点击一致。
- * 返回 teardown。
- *
- * 坐标必须换算到「可见页」：epub.js 分页模式下 iframe 宽度 = 整章分栏总宽
- * （手机上常见 7000–10000px，翻页靠父容器横向滚动），事件里的 clientX 是分栏坐标。
- * 直接拿它除以 innerWidth，整个屏幕都会落进中间 40% —— 点哪都只切沉浸模式、不翻页。
- */
-function setupReaderGestures({
-  surface,
-  doc = null,
-  onPrev,
-  onNext,
-  onSwipePrev = onPrev,
-  onSwipeNext = onNext,
-  onCenter,
-  enabled = () => true,
-  edge = 24,
-}) {
-  const target = doc ?? surface
-  if (!target?.addEventListener) return () => {}
-  // 触屏才启用：桌面鼠标点击保持原行为（按钮 / 方向键 / 滚轮触发的翻页不受影响）
-  if (!(window.matchMedia?.('(pointer: coarse)')?.matches ?? false)) return () => {}
-  let start = null
-
-  // epub 的 iframe 比可视页宽得多：用它在页面里的偏移把分栏坐标折回可见页坐标
-  const frameEl = doc?.defaultView?.frameElement ?? null
-
-  const pointOf = (e) => {
-    const t = e.changedTouches?.[0] ?? e.touches?.[0] ?? e
-    return { x: Number(t?.clientX) || 0, y: Number(t?.clientY) || 0 }
-  }
-  /** 可见页宽度 / 可见页内的 x：外层直接量 surface；iframe 内加上 iframe 在页面里的偏移 */
-  const pageBox = () => {
-    const box = surface.getBoundingClientRect?.() ?? { left: 0, width: surface.clientWidth || window.innerWidth }
-    const left = frameEl?.getBoundingClientRect ? frameEl.getBoundingClientRect().left - box.left : 0
-    return { width: box.width || surface.clientWidth || window.innerWidth, left }
-  }
-  const visibleX = (x) => {
-    const { left } = pageBox()
-    return x + left
-  }
-  const selectionText = () => {
-    try {
-      const sel = doc ? doc.getSelection?.() : window.getSelection?.()
-      return String(sel ?? '').trim()
-    } catch {
-      return ''
-    }
-  }
-  const ignored = (e) => {
-    if (!enabled()) return true
-    // 别把链接 / 按钮 / 输入框上的点击当成翻页
-    const el = e.target && typeof e.target.closest === 'function' ? e.target : null
-    if (el?.closest('a, button, input, textarea, select, [contenteditable="true"]')) return true
-    return Boolean(selectionText())
-  }
-  const onDown = (e) => {
-    // 多指（缩放 / 双指滑动）一律不参与翻页
-    if (e.isPrimary === false || (e.touches && e.touches.length > 1)) {
-      start = null
-      return
-    }
-    start = { ...pointOf(e), at: Date.now() }
-  }
-  const onUp = (e) => {
-    if (e.isPrimary === false) return
-    if (!start) return
-    const s = start
-    start = null
-    if (ignored(e)) return
-    const p = pointOf(e)
-    const dx = p.x - s.x
-    const dy = p.y - s.y
-    const dt = Date.now() - s.at
-    const { width } = pageBox()
-    // 屏幕左右边缘留给系统手势（换算到可见页坐标后判断）
-    if (visibleX(s.x) < edge || visibleX(s.x) > width - edge) return
-    // 横向滑动：至少 48px，且明显比纵向大
-    if (dt < 800 && Math.abs(dx) >= 48 && Math.abs(dx) > Math.abs(dy) * 1.4) {
-      if (dx < 0) onSwipeNext?.()
-      else onSwipePrev?.()
-      return
-    }
-    // 轻点：左右 30% 翻页，中间切换沉浸模式
-    if (dt < 450 && Math.abs(dx) < 12 && Math.abs(dy) < 12) {
-      const ratio = width ? visibleX(p.x) / width : 0.5
-      if (ratio < 0.3) onPrev?.()
-      else if (ratio > 0.7) onNext?.()
-      else onCenter?.()
-    }
-  }
-  const onCancel = () => {
-    start = null
-  }
-
-  target.addEventListener('pointerdown', onDown, { passive: true })
-  target.addEventListener('pointerup', onUp)
-  target.addEventListener('pointercancel', onCancel, { passive: true })
-  return () => {
-    target.removeEventListener('pointerdown', onDown)
-    target.removeEventListener('pointerup', onUp)
-    target.removeEventListener('pointercancel', onCancel)
-  }
-}
-
-/* ---------------- 全屏 / 屏幕常亮 ---------------- */
-
-let wakeLock = null
-
-async function toggleFullscreen() {
-  try {
-    if (document.fullscreenElement) {
-      await document.exitFullscreen?.()
-      return Boolean(document.fullscreenElement)
-    }
-    await document.documentElement.requestFullscreen?.()
-    return Boolean(document.fullscreenElement)
-  } catch {
-    toast('当前浏览器不支持全屏', true)
-    return false
-  }
-}
-
-async function toggleScreenWake() {
-  if (!('wakeLock' in navigator)) {
-    toast('当前浏览器不支持屏幕常亮', true)
-    return false
-  }
-  if (wakeLock) {
-    try {
-      await wakeLock.release()
-    } catch {
-      /* 已被系统释放 */
-    }
-    wakeLock = null
-    return false
-  }
-  try {
-    wakeLock = await navigator.wakeLock.request('screen')
-    wakeLock.addEventListener?.('release', () => {
-      wakeLock = null
-    })
-    toast('屏幕保持常亮')
-    return true
-  } catch {
-    wakeLock = null
-    toast('常亮开启失败（系统可能拒绝）', true)
-    return false
-  }
-}
-
-function releaseScreenWake() {
-  try {
-    wakeLock?.release?.()
-  } catch {
-    /* 已释放 */
-  }
-  wakeLock = null
 }
 
 let epubBook = null
@@ -1944,6 +1824,7 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
     stage.querySelector('[data-fab-toc]').onclick = showToc
     // 语音朗读：读当前页段落；读完自动翻页，跨章（spine 变化）即停，避免「不意外跳章」
     tts = createTtsBar({
+      bookId: id,
       stage,
       getSegments: () => {
         const out = []

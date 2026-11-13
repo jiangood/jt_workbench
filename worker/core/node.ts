@@ -653,3 +653,28 @@ node.post('/jobs/:id/fail', async (c) => {
   const jobs = await claimPipeline(c.env, nodeId, now)
   return nodeOk({ jobs })
 })
+
+// agent 上传 TTS 合成音频（Piper）：写入 R2 并登记缓存，供阅读器播放
+node.post('/tts/upload', async (c) => {
+  const bookId = Number(c.req.query('bookId'))
+  const key = String(c.req.query('key') || '').trim().toLowerCase()
+  const voice = String(c.req.query('voice') || 'zh_CN-huayan-medium').trim()
+  if (!Number.isFinite(bookId) || bookId <= 0) return nodeErr(400, 'bad bookId')
+  if (!/^[a-f0-9]{1,64}$/.test(key)) return nodeErr(400, 'bad key')
+  if (!/^[a-zA-Z0-9._-]{1,64}$/.test(voice)) return nodeErr(400, 'bad voice')
+  const ct = c.req.header('content-type') || 'audio/wav'
+  const body = c.req.raw.body
+  if (!body) return nodeErr(400, 'empty body')
+  const r2Key = `tts/${bookId}/${voice}/${key}.wav`
+  const obj = await c.env.R2.put(r2Key, body, { httpMetadata: { contentType: ct } })
+  const now = Date.now()
+  await c.env.DB
+    .prepare(
+      `INSERT INTO tts_segment (book_id, segment_key, voice, r2_key, size, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(book_id, segment_key, voice) DO UPDATE SET r2_key = excluded.r2_key, size = excluded.size, created_at = excluded.created_at`,
+    )
+    .bind(bookId, key, voice, r2Key, obj.size, now)
+    .run()
+  return nodeOk({ ok: true, r2Key })
+})
