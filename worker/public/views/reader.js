@@ -1172,9 +1172,7 @@ export async function render(main, params) {
   }
 
   const title = book.title || book.filename || '未命名'
-  const meta = [book.author || '未知作者', book.category, book.pubYear, (book.fmt || '').toUpperCase()]
-    .filter(Boolean)
-    .join(' · ')
+  const meta = [book.author || '未知作者', book.category, book.pubYear].filter(Boolean).join(' · ')
   // 版本号 = 文件自身的 uuid（换文件才变；改书名 / 阅读状态不影响缓存）
   const version = String(book.fileVersion ?? book.updatedAt ?? 0)
   const fileUrl = `/api/book/read/${id}?v=${encodeURIComponent(version)}`
