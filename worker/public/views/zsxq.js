@@ -143,22 +143,18 @@ function commentHtml(cm) {
     </div>`
 }
 
-/** 一条帖子：右上角一行（作者 / 星主 / 时间 / 赞 / 评论数）+ 正文 + 图片 + 附件；点卡片切换右栏评论 */
+/** 一条帖子：标题（主题色）放首行 + 右上角元信息 + 正文 + 图片 + 附件；点卡片切换右栏评论 */
 function topicHtml(t) {
-  const likes = Number(t.likesCount) || 0
-  const extra = [
-    likes > 0 ? `<span class="muted">${likes} 赞</span>` : '',
-    t.deleted ? '<span class="badge bad">已删除</span>' : '',
-  ].join('')
+  const extra = t.deleted ? '<span class="badge bad">已删除</span>' : ''
   return `<div class="zsxq-topic${t.deleted ? ' is-deleted' : ''}" data-topic="${esc(t.id)}">
-      <div class="flex wrap center small zsxq-topic-head">
+      ${t.title ? `<div class="zsxq-topic-title">${esc(t.title)}</div>` : ''}
+      <div class="flex wrap center small zsxq-topic-head${t.title ? ' mt-1' : ''}">
         <span class="fw-semibold">${esc(t.authorName || '未知作者')}</span>
         ${t.isOwner ? '<span class="badge">星主</span>' : ''}
         ${t.createTime ? `<span class="muted">${fmtTime(t.createTime)}</span>` : ''}
         ${extra}
         <span class="badge muted zsxq-count">${Number(t.commentsCount) || 0} 评论</span>
       </div>
-      ${t.title ? `<div class="fw-semibold mt-1">${esc(t.title)}</div>` : ''}
       <div class="pre mt-1">${esc(t.talkText || '(无正文)')}</div>
       ${imageStrip(t.images, 140)}
       ${(t.files ?? []).length ? `<div class="mt-2">${t.files.map(fileLine).join('')}</div>` : ''}
@@ -344,9 +340,8 @@ function renderCommentPane() {
     return
   }
   const st = commentState.get(selectedTopicId) ?? { page: 0, pages: 1, total: 0, items: [] }
-  const likes = Number(t.likesCount) || 0
   title.textContent = `评论 ${st.total}`
-  sub.textContent = `${t.authorName || '未知作者'}${likes ? ` · ${likes} 赞` : ''}`
+  sub.textContent = t.authorName || '未知作者'
   // 首次选中还没拉到数据：加载中 / 失败给重试入口（fetchCommentPage 完成后会重绘本面板）
   if (st.page === 0) {
     if (st.error) {
