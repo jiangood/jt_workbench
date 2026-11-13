@@ -1173,6 +1173,7 @@ export async function render(main, params) {
 
   const title = book.title || book.filename || '未命名'
   const meta = [book.author || '未知作者', book.category, book.pubYear].filter(Boolean).join(' · ')
+  const estimate = formatBookEstimate(book.readMinutes)
   // 版本号 = 文件自身的 uuid（换文件才变；改书名 / 阅读状态不影响缓存）
   const version = String(book.fileVersion ?? book.updatedAt ?? 0)
   const fileUrl = `/api/book/read/${id}?v=${encodeURIComponent(version)}`
@@ -1185,6 +1186,7 @@ export async function render(main, params) {
           <p class="page-sub">
             <span class="reader-chapter" data-chapter hidden></span>
             <span class="reader-progress-text" data-progress-text>0%</span>
+            <span class="reader-est" data-est${estimate ? '' : ' hidden'}>${esc(estimate)}</span>
             <span class="reader-stat" data-stat hidden></span>
             <span data-meta>${esc(meta)}</span>
           </p>
@@ -1237,6 +1239,15 @@ function message(text) {
 }
 
 /* ---------------- 通用：进度 / 目录 ---------------- */
+
+function formatBookEstimate(minutes) {
+  const m = Number(minutes)
+  if (!Number.isFinite(m) || m <= 0) return ''
+  if (m < 60) return `全书约 ${m} 分钟`
+  const h = Math.floor(m / 60)
+  const mm = m % 60
+  return mm ? `全书约 ${h} 小时 ${mm} 分` : `全书约 ${h} 小时`
+}
 
 /** 阅读进度：顶栏百分比（旧版可拖动进度条已按需求去掉，只剩数字） */
 function setProgress(root, ratio, text) {

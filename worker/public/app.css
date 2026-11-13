@@ -1815,8 +1815,8 @@ dialog h2, dialog h5 { font-size: var(--fs-lg); font-weight: 650; margin-bottom:
   align-items: center;
   gap: var(--sp-4);
   flex: 0 0 auto;
-  height: var(--reader-top-h);
-  padding: 0 var(--sp-5);
+  min-height: var(--reader-top-h);
+  padding: 6px var(--sp-5);
   border-bottom: 1px solid var(--border);
   background: var(--surface);
   /* 令牌来自 .reader-root：显式取色，避免继承到全局主题的已解析 color */
@@ -1831,7 +1831,16 @@ dialog h2, dialog h5 { font-size: var(--fs-lg); font-weight: 650; margin-bottom:
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.reader-top .page-sub { margin: 1px 0 0; font-size: var(--fs-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.reader-top .page-sub {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 4px;
+  margin: 1px 0 0;
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+  overflow: hidden;
+}
 /* 右上角返回链接：对齐微信读书顶栏的「首页 / 我的书架」 */
 .reader-top-links { flex: 0 0 auto; display: flex; align-items: center; gap: var(--sp-4); font-size: var(--fs-sm) }
 .reader-top-links a { color: var(--muted-fg); text-decoration: none }
@@ -2070,10 +2079,18 @@ body:has(.playerbar:not([hidden])) .reader-root[data-immersive="1"] .reader-stag
 }
 .reader-chapter:not([hidden])::after,
 .reader-progress-text::after,
+.reader-est:not([hidden])::after,
 .reader-stat:not([hidden])::after { content: " · " }
+.reader-est,
 .reader-stat {
   font-size: var(--fs-sm);
   color: var(--muted-fg);
+  white-space: nowrap;
+}
+.reader-top .page-sub [data-meta] {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
