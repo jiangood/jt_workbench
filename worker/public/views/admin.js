@@ -163,11 +163,7 @@ export async function render(main, params = {}) {
         <h2>计算节点</h2>
         <button class="btn primary sm" id="node-add" type="button">${icon('plus')}添加节点</button>
       </div>
-      <div class="small muted" style="max-width: 980px">
-        登记即生成长期有效的 <code>curl | sh</code> 命令，在目标 Linux 机器任意目录执行即可拉起容器；
-        命令随时可从该行「接入」取回，换密钥点「重置密钥」。
-      </div>
-      <div id="node-cfg" class="mt-2 mb-2" style="max-width: 980px"></div>
+      <div id="node-cfg" class="mb-2" style="max-width: 980px"></div>
       <table>
         <thead><tr><th>节点</th><th>版本</th><th>状态</th><th>最后心跳</th><th>在持任务</th><th></th></tr></thead>
         <tbody id="nodes-body"></tbody>
