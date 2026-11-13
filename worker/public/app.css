@@ -1327,6 +1327,12 @@ body:has(.playerbar:not([hidden])) .zsxq-pane-comments {
   overscroll-behavior: contain;
 }
 .zsxq-comment { display: flex; flex-direction: column; gap: 2px; min-width: 0 }
+.zsxq-comment.is-owner {
+  padding: 8px 10px;
+  border-left: 3px solid var(--primary);
+  border-radius: var(--r-sm);
+  background: var(--primary-wash);
+}
 
 /* 帖子卡片：元信息一行（左作者+徽标，右评论数），正文解析星球标记后可读展示 */
 .zsxq-meta {

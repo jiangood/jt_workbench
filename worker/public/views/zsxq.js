@@ -218,10 +218,10 @@ function imageStrip(images, maxHeight) {
     </div>`
 }
 
-/** 一条评论：作者 / 星主 / 时间 / 正文 / 图片（图片走懒代理） */
+/** 一条评论：作者 / 星主 / 时间 / 正文 / 图片（图片走懒代理）；星主评论高亮标识 */
 function commentHtml(cm) {
   const body = cm.text ? renderZsxqText(cm.text) : ''
-  return `<div class="zsxq-comment">
+  return `<div class="zsxq-comment${cm.isOwner ? ' is-owner' : ''}">
       ${authorLine(cm.authorName, cm.isOwner, cm.createTime)}
       ${body ? `<div class="small pre zsxq-body">${body}</div>` : '<div class="small muted">（无文字内容）</div>'}
       ${imageStrip(cm.images, 120)}
@@ -488,10 +488,10 @@ function updateTopicCount(id, total) {
   if (badge) badge.textContent = `${total} 评论`
 }
 
-/** 拉一页评论进缓存并刷新右栏；ownerOnly 与列表同口径 */
+/** 拉一页评论进缓存并刷新右栏：评论始终显示全部，星主评论单独标识 */
 async function fetchCommentPage(id, next) {
   const gen = renderGen
-  const query = `page=${next}&pageSize=${COMMENT_PAGE_SIZE}${ownerOnly ? '&ownerOnly=1' : ''}`
+  const query = `page=${next}&pageSize=${COMMENT_PAGE_SIZE}`
 
   let data
   try {
