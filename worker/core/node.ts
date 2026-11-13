@@ -264,9 +264,10 @@ async function claimPipeline(env: Bindings, nodeId: string, now: number): Promis
          lease_until IS NULL
          OR lease_until < ?
          OR (next_run_at < ? AND COALESCE(started_at, next_run_at, 0) < ?)
+         OR (next_run_at < ? AND COALESCE(last_run_at, 0) < ?)
        )`,
     )
-    .bind(now, staleBefore, staleBefore)
+    .bind(now, staleBefore, staleBefore, staleBefore, staleBefore)
     .run()
 
   // 取一批到期候选而不是只取一条：最早那条可能要礼让给更高分的节点
