@@ -4,6 +4,6 @@ dist/
 .dev.vars
 .env
 *.local
-*.local.md
+online-token.txt
 .playwright-mcp/
 .idea/
