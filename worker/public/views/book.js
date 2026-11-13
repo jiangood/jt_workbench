@@ -95,7 +95,7 @@ function progressBar(pct) {
 }
 
 /** 单张书卡：分组由外层 section 表达，卡片内不再重复分组徽标 */
-function bookCard(b) {
+function bookCard(b, statusFilter = 'all') {
   const cover = coverUrl(b.cover)
   const title = b.title || b.filename
   const meta = [b.author || '未知作者', b.pubYear].filter(Boolean).join(' · ')
@@ -117,7 +117,7 @@ function bookCard(b) {
           <${coverTag} class="book-cover${cover ? '' : ' no-cover'}"${coverAttrs}>
             <span class="book-cover-ph">${icon('book', 36)}</span>
             ${cover ? `<img src="${esc(cover)}" alt="" loading="lazy">` : ''}
-            ${statusBadge(b.status)}
+            ${statusFilter === 'all' ? statusBadge(b.status) : ''}
             ${showProgress ? progressBar(progress) : ''}
           </${coverTag}>
           <div class="book-body">
@@ -187,7 +187,7 @@ function bookCard(b) {
 }
 
 /** 分组分区 HTML：同名分组一整堆展示，未分组固定最后一区 */
-function renderGroups(sections, showGroupHead) {
+function renderGroups(sections, showGroupHead, statusFilter) {
   return `<div class="book-groups">
     ${sections
       .map(
@@ -202,7 +202,7 @@ function renderGroups(sections, showGroupHead) {
       </div>`
           : ''
       }
-      <div class="book-grid">${section.books.map(bookCard).join('')}</div>
+      <div class="book-grid">${section.books.map((b) => bookCard(b, statusFilter)).join('')}</div>
     </section>`,
       )
       .join('')}
@@ -210,12 +210,12 @@ function renderGroups(sections, showGroupHead) {
 }
 
 /** 结果区 HTML：搜索无命中时给一个清空入口，不留死胡同 */
-function resultsHTML(shown, sections, showGroupHead, hasBooks) {
+function resultsHTML(shown, sections, showGroupHead, hasBooks, statusFilter) {
   if (shown.length) {
     const meta = searchQuery
       ? `<p class="book-search-meta small muted" role="status">搜索「${esc(searchQuery)}」· ${shown.length} 本</p>`
       : ''
-    return `${meta}${renderGroups(sections, showGroupHead)}`
+    return `${meta}${renderGroups(sections, showGroupHead, statusFilter)}`
   }
   if (searchQuery) {
     return `<div class="empty" role="status">当前筛选下没有匹配「${esc(searchQuery)}」的书
@@ -290,7 +290,7 @@ export async function render(main) {
         </label>
       </div>
     </div>
-    <div id="book-results">${resultsHTML(shown, sections, showGroupHead, books.length)}</div>`
+    <div id="book-results">${resultsHTML(shown, sections, showGroupHead, books.length, filterStatus)}</div>`
 
   const resultsEl = main.querySelector('#book-results')
   const searchInput = main.querySelector('#book-search')
@@ -371,6 +371,7 @@ export async function render(main) {
       sectionsNow,
       !(sectionsNow.length === 1 && !sectionsNow[0].name),
       books.length,
+      filterStatus,
     )
 
     // 筛选条上的数字跟着搜索命中结果走
