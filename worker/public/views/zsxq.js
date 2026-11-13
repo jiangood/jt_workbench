@@ -193,6 +193,26 @@ function authorLine(authorName, isOwner, at, extra = '') {
     </div>`
 }
 
+function pad2(n) {
+  return String(n).padStart(2, '0')
+}
+
+function sameLocalDay(a, b) {
+  if (!a || !b) return false
+  const da = new Date(a)
+  const db = new Date(b)
+  return da.getFullYear() === db.getFullYear() && da.getMonth() === db.getMonth() && da.getDate() === db.getDate()
+}
+
+/** 评论时间：不显示秒；与帖子同一天仅显示时:分，否则显示 月/日 时:分 */
+function fmtCommentTime(ts, topicTs) {
+  if (!ts) return ''
+  const d = new Date(ts)
+  const hm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+  if (sameLocalDay(ts, topicTs)) return hm
+  return `${d.getMonth() + 1}/${d.getDate()} ${hm}`
+}
+
 /** 附件：「名称（大小）」+ 下载链接；没有 fileId 的旧数据只显示名字，避免 404 */
 function fileLine(f) {
   const id = f.fileId ?? f.file_id ?? null
@@ -220,11 +240,13 @@ function imageStrip(images, maxHeight) {
     </div>`
 }
 
-/** 一条评论：作者 / 星主 / 时间 / 正文 / 图片（图片走懒代理）；星主评论高亮标识 */
-function commentHtml(cm) {
+/** 一条评论：作者 / 星主 / 正文 / 图片；时间放右侧（与帖子同天不显示日期、不显示秒） */
+function commentHtml(cm, topicCreateTime) {
   const body = cm.text ? renderZsxqText(cm.text) : ''
+  const time = fmtCommentTime(cm.createTime, topicCreateTime)
+  const timeExtra = time ? `<span class="muted">${esc(time)}</span>` : ''
   return `<div class="zsxq-comment${cm.isOwner ? ' is-owner' : ''}">
-      ${authorLine(cm.authorName, cm.isOwner, cm.createTime)}
+      ${authorLine(cm.authorName, cm.isOwner, null, timeExtra)}
       ${body ? `<div class="small pre zsxq-body">${body}</div>` : '<div class="small muted">（无文字内容）</div>'}
       ${imageStrip(cm.images, 120)}
     </div>`
@@ -450,7 +472,7 @@ function renderCommentPane() {
     return
   }
   list.innerHTML =
-    st.items.map(commentHtml).join('') || '<div class="small muted">暂无评论</div>'
+    st.items.map((cm) => commentHtml(cm, t.createTime)).join('') || '<div class="small muted">暂无评论</div>'
   if (st.page < st.pages) {
     list.insertAdjacentHTML(
       'beforeend',
