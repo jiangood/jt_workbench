@@ -26,7 +26,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 async function main(): Promise<void> {
   const cfg = getConfig()
 
-  log.info({ workerUrl: cfg.workerUrl, pollIntervalMs: cfg.pollIntervalMs }, 'agent starting')
+  log.info({ serverUrl: cfg.serverUrl, pollIntervalMs: cfg.pollIntervalMs }, 'agent starting')
 
   while (true) {
     try {

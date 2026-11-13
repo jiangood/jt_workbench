@@ -10,8 +10,8 @@ export class ConflictError extends Error {}
 
 /** Worker API 封装；信封 {code, data, message}，返回 data（{now, jobs[]}）；agentVersion 统一注入 */
 async function call(path: string, body: Record<string, unknown> = {}): Promise<Envelope> {
-  const { workerUrl, nodeKey } = getConfig()
-  const res = await fetch(`${workerUrl}${path}`, {
+  const { serverUrl, nodeKey } = getConfig()
+  const res = await fetch(`${serverUrl}${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-node-key': nodeKey },
     body: JSON.stringify({ agentVersion: AGENT_VERSION, ...body }),

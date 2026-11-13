@@ -30,7 +30,7 @@ export function requestOrigin(c: Context<Env>): string {
   return new URL(c.req.url).origin
 }
 
-function buildCompose(workerUrl: string, nodeKey: string): string {
+function buildCompose(serverUrl: string, nodeKey: string): string {
   return `# 由 workbench 后台生成 · 已内联节点密钥，请勿提交仓库或外传
 services:
   workbench-agent:
@@ -38,7 +38,7 @@ services:
     restart: unless-stopped
     environment:
       - NODE_KEY=${nodeKey}
-      - WORKER_URL=${workerUrl}
+      - SERVER_URL=${serverUrl}
     labels:
       - com.centurylinklabs.watchtower.enable=true
 

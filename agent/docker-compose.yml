@@ -10,7 +10,7 @@ services:
     restart: unless-stopped
     environment:
       - NODE_KEY=<后台添加节点后生成>
-      - WORKER_URL=https://jt.410518072.xyz
+      - SERVER_URL=https://jt.410518072.xyz
     labels:
       - com.centurylinklabs.watchtower.enable=true
 

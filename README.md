@@ -145,7 +145,7 @@ cd workbench-agent && docker compose logs -f workbench-agent
 
 ```bash
 cd agent && npm ci && npm run build
-NODE_KEY=<compose 里的节点密钥> WORKER_URL=https://jt.410518072.xyz node dist/agent.mjs
+NODE_KEY=<compose 里的节点密钥> SERVER_URL=https://jt.410518072.xyz node dist/agent.mjs
 ```
 
 本地调试不需要走安装脚本：先在后台添加节点，从弹窗的手动方案里复制 `NODE_KEY` 即可。

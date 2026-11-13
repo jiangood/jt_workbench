@@ -48,7 +48,7 @@
 
 - 哑执行器：**任务 = 数据不是代码**（type 只是查表键，不执行任何来自网络的代码）
 - 不动态安装依赖；工具箱（cheerio / music-metadata / jszip 等）编译期预装进镜像
-- **节点身份不靠 ID，密钥由后台生成**：Worker 地址 / 密钥都走环境变量（安装脚本写进 compose 的 `WORKER_URL` / `NODE_KEY`）；后台「添加节点」直接把记录写进 `node_registry`（接入前显示离线）并生成 `curl | sh` 接入命令（`GET /install/<key>.sh`，长期有效；现场不能马上接入也没关系），脚本在当前目录创建 `workbench-agent/docker-compose.yml` 并写好这两个变量；`POLL_INTERVAL=600` 仅调试可选
+- **节点身份不靠 ID，密钥由后台生成**：Server 地址 / 密钥都走环境变量（安装脚本写进 compose 的 `SERVER_URL` / `NODE_KEY`）；后台「添加节点」直接把记录写进 `node_registry`（接入前显示离线）并生成 `curl | sh` 接入命令（`GET /install/<key>.sh`，长期有效；现场不能马上接入也没关系），脚本在当前目录创建 `workbench-agent/docker-compose.yml` 并写好这两个变量；`POLL_INTERVAL=600` 仅调试可选
 - **密钥不在页面展示**：`/api/admin/nodes` 不返回 `node_key`，取密钥只能从该行「查看接入方式」弹窗的 compose 里拿；换密钥点「重置密钥」（`POST /api/admin/nodes/:name/rotate-key`）——旧密钥立即失效、心跳行删除（立刻显示离线），随后用新接入命令重装（命令自带 `WORKBENCH_AGENT_FORCE=1`）
 - **密钥一律不进 agent 环境变量**（例外只有节点自身的 `NODE_KEY`，由安装脚本写进 compose）：与 Worker 同一条红线——第三方 token / API Key 存 D1（`app_config` + `CONFIG_FIELDS`），Worker 下发任务时注入 payload，agent 只读 `payload` 里的值（例：`zsxq_sync` 的 token）
 - 出站 fetch 一律挂 `AbortSignal.timeout(30s)`；SSRF 守卫默认拒绝内网/环回地址
