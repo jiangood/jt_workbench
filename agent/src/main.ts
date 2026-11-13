@@ -5,7 +5,13 @@ import { describeError } from './describe-error.js'
 import { run, register } from './runner.js'
 import { rssHandler } from './jobs/rss.js'
 import { stockHandler } from './jobs/stock.js'
-import { zsxqHandler, zsxqGroupsHandler } from './jobs/zsxq.js'
+import {
+  zsxqBackfillHandler,
+  zsxqCommentsHandler,
+  zsxqGroupsHandler,
+  zsxqHandler,
+  zsxqProbeHandler,
+} from './jobs/zsxq.js'
 
 const log = pino()
 
@@ -13,6 +19,9 @@ const log = pino()
 register('rss_fetch', rssHandler)
 register('stock_eod', stockHandler)
 register('zsxq_sync', zsxqHandler)
+register('zsxq_backfill', zsxqBackfillHandler)
+register('zsxq_comments', zsxqCommentsHandler)
+register('zsxq_probe', zsxqProbeHandler)
 register('zsxq_groups', zsxqGroupsHandler)
 
 /** poll 抖动（v4.8）：±60~90s，多节点部署时各节点 poll 时点自然错峰 */

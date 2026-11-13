@@ -133,7 +133,7 @@ zsxq.get('/topics', async (c) => {
   }
   const where = conds.length ? `WHERE ${conds.join(' AND ')}` : ''
 
-  const [rows, count, groups, job, progress] = await Promise.all([
+  const [rows, count, groups, splitJobs, progress] = await Promise.all([
     c.env.DB
       .prepare(
         `SELECT id, group_id AS groupId, title, talk_text AS talkText, images, files,
@@ -151,10 +151,10 @@ zsxq.get('/topics', async (c) => {
     c.env.DB.prepare('SELECT id, name, enabled FROM zsxq_group ORDER BY enabled DESC, id').all(),
     c.env.DB
       .prepare(
-        `SELECT id, payload, enabled, status, last_run_at, result
-         FROM job WHERE type = 'zsxq_sync' LIMIT 1`,
+        `SELECT id, type, payload, enabled, status, last_run_at, result
+         FROM job WHERE type IN ('zsxq_backfill','zsxq_comments','zsxq_probe')`,
       )
-      .first<SyncJobRow>(),
+      .all<SyncJobRow & { type: string }>(),
     loadSyncProgress(c.env.DB),
   ])
 
@@ -178,6 +178,20 @@ zsxq.get('/topics', async (c) => {
   await attachFileMeta(c.env.DB, topics)
 
   const total = count?.total ?? 0
+  const splitList = (splitJobs.results ?? []) as Array<SyncJobRow & { type: string }>
+  const groupRows = (groups.results ?? []) as Array<{ id: string | number; enabled?: number }>
+  const enabledGroups = groupRows.filter((g) => g.enabled === 1).map((g) => String(g.id))
+  const anyEnabled = splitList.some((j) => j.enabled === 1) || enabledGroups.length > 0
+  const backfills = splitList.filter((j) => j.type === 'zsxq_backfill')
+  const lastRunAt = backfills.reduce<number | null>((m, j) => (j.last_run_at && (!m || j.last_run_at > m) ? j.last_run_at : m), null)
+  const lastResultJob = [...backfills].sort((a, b) => (b.last_run_at ?? 0) - (a.last_run_at ?? 0))[0]
+  const status =
+    splitList.some((j) => j.status === 'leased') ? 'leased'
+    : splitList.some((j) => j.status === 'failed') ? 'failed'
+    : splitList.some((j) => j.status === 'pending') ? 'pending'
+    : splitList.length ? 'done'
+    : null
+
   return ok({
     topics,
     total,
@@ -185,14 +199,12 @@ zsxq.get('/topics', async (c) => {
     pageSize,
     pages: Math.max(1, Math.ceil(total / pageSize)),
     groups: groups.results,
-    // 页面用它在勾选列表里回填同步目标、展示启停状态与最近一次同步结果
     job: {
-      groupIds: payloadGroupIds(job?.payload ?? null),
-      enabled: job?.enabled === 1,
-      status: job?.status ?? null,
-      lastRunAt: job?.last_run_at ?? null,
-      result: job?.result ?? null,
-      // 全量回溯进度（0025 才有 zsxq_sync_state；未迁移时为空数组）
+      groupIds: enabledGroups,
+      enabled: anyEnabled,
+      status,
+      lastRunAt,
+      result: lastResultJob?.result ?? null,
       progress,
     },
   })
@@ -391,7 +403,7 @@ zsxq.post('/backup', async (c) => {
   })
 })
 
-/** zsxq_sync 任务：单行维护；勾选多个星球，保存即启用（选择变化 / 重新启用会立刻排一轮） */
+/** zsxq 同步任务（拆分为 per-group 的 backfill/comments/probe）：勾选星球并保存即维护对应任务 */
 zsxq.post('/job', async (c) => {
   const b = await c.req.json<{ groupId?: string; groupIds?: string[]; enabled?: boolean; runNow?: boolean }>()
   const groupIds = [
@@ -409,12 +421,10 @@ zsxq.post('/job', async (c) => {
 
   const db = c.env.DB
   const now = Date.now()
-  const existing = await db
-    .prepare(`SELECT id, payload, enabled FROM job WHERE type = 'zsxq_sync' LIMIT 1`)
-    .first<{ id: number; payload: string | null; enabled: number }>()
+  const selected = new Set(groupIds)
 
+  // 勾选状态落在 zsxq_group.enabled
   if (groupIds.length) {
-    // 勾选状态落在 zsxq_group.enabled：选中的置 1，其余置 0（首页「已启用」计数也用它）
     const placeholders = groupIds.map(() => '?').join(',')
     await db.batch([
       ...groupIds.map((id) => db.prepare('INSERT OR IGNORE INTO zsxq_group (id) VALUES (?)').bind(id)),
@@ -426,36 +436,95 @@ zsxq.post('/job', async (c) => {
     await db.prepare('UPDATE zsxq_group SET enabled = 0').run()
   }
 
-  if (!existing) {
-    if (!groupIds.length) return ok(null)
-    // cron 直接落标准 5 段：Quartz 的 `?` 在 croner 8 会被替换成解析当天的星期（issue #16，
-    // 线上曾因此把 next_run_at 排到一周后），0023 迁移已把存量行归一化，这里不再产脏值
-    await db
-      .prepare(`INSERT INTO job (type, payload, cron, enabled, status, next_run_at)
-                VALUES ('zsxq_sync', ?, '20 * * * *', ?, 'pending', ?)`)
-      .bind(JSON.stringify({ groupIds, groupId: groupIds[0], count: 20 }), enabling ? 1 : 0, now)
-      .run()
-    return ok(null)
+  const existing = await db
+    .prepare(
+      `SELECT id, type, payload, enabled FROM job
+       WHERE type IN ('zsxq_backfill','zsxq_comments','zsxq_probe')`,
+    )
+    .all<{ id: number; type: string; payload: string | null; enabled: number }>()
+
+  const byKey = new Map<string, { id: number; enabled: number }>()
+  for (const row of existing.results ?? []) {
+    const gid = payloadGroupIds(row.payload)[0]
+    if (gid) byKey.set(`${row.type}:${gid}`, { id: row.id, enabled: row.enabled })
   }
 
-  const prevIds = payloadGroupIds(existing.payload)
-  const selectionChanged =
-    prevIds.length !== groupIds.length || groupIds.some((id) => !prevIds.includes(id))
-  // 选择变化 / 从停用转启用 / 页面点「立即同步」：排到当前时刻，节点下次 poll 就能领走
-  const runNow = enabling && (!!b.runNow || selectionChanged || existing.enabled !== 1)
-  const payload = groupIds.length
-    ? JSON.stringify({ groupIds, groupId: groupIds[0], count: 20 })
-    : existing.payload
+  const cron = '*/10 6-23 * * *'
+  const stageTypes = ['zsxq_backfill', 'zsxq_comments', 'zsxq_probe'] as const
+  const ops: D1PreparedStatement[] = []
 
-  await db
-    .prepare(
-      `UPDATE job SET payload = COALESCE(?, payload), enabled = ?,
-         next_run_at = CASE WHEN ? THEN ? ELSE next_run_at END,
-         status = CASE WHEN ? AND status = 'done' THEN 'pending' ELSE status END
-       WHERE id = ?`,
+  // 先停用未选中的星球任务
+  for (const row of existing.results ?? []) {
+    const gid = payloadGroupIds(row.payload)[0]
+    if (!gid || selected.has(gid)) continue
+    ops.push(db.prepare('UPDATE job SET enabled = 0, next_run_at = NULL WHERE id = ?').bind(row.id))
+  }
+
+  const prevEnabledIds = (existing.results ?? [])
+    .filter((r) => r.enabled === 1)
+    .map((r) => payloadGroupIds(r.payload)[0])
+    .filter((v): v is string => !!v)
+  const prevSelected = new Set(prevEnabledIds)
+  const selectionChanged =
+    prevSelected.size !== selected.size || [...selected].some((id) => !prevSelected.has(id))
+  const hadAnyEnabled = (existing.results ?? []).some((r) => r.enabled === 1)
+  const runNow = enabling && (!!b.runNow || selectionChanged || !hadAnyEnabled)
+
+  for (const gid of groupIds) {
+    for (const type of stageTypes) {
+      const payload = JSON.stringify(type === 'zsxq_backfill' ? { groupId: gid, count: 20 } : { groupId: gid })
+      const key = `${type}:${gid}`
+      const found = byKey.get(key)
+      if (!found) {
+        ops.push(
+          db
+            .prepare(
+              `INSERT INTO job (type, payload, cron, enabled, status, next_run_at)
+               VALUES (?, ?, ?, ?, 'pending', ?)`,
+            )
+            .bind(type, payload, cron, enabling ? 1 : 0, enabling ? (runNow ? now : now) : null),
+        )
+      } else {
+        ops.push(
+          db
+            .prepare(
+              `UPDATE job SET payload = ?, cron = ?, enabled = ?,
+                 next_run_at = CASE
+                   WHEN ? THEN ?
+                   WHEN ? THEN COALESCE(next_run_at, ?)
+                   ELSE NULL END,
+                 status = CASE WHEN ? AND status = 'done' THEN 'pending' ELSE status END,
+                 lease_until = CASE WHEN ? THEN NULL ELSE lease_until END
+               WHERE id = ?`,
+            )
+            .bind(
+              payload,
+              cron,
+              enabling ? 1 : 0,
+              runNow ? 1 : 0,
+              now,
+              enabling ? 1 : 0,
+              now,
+              runNow ? 1 : 0,
+              runNow ? 1 : 0,
+              found.id,
+            ),
+        )
+      }
+    }
+  }
+
+  if (!enabling) {
+    ops.push(
+      db
+        .prepare(
+          `UPDATE job SET enabled = 0, next_run_at = NULL
+           WHERE type IN ('zsxq_backfill','zsxq_comments','zsxq_probe')`,
+        ),
     )
-    .bind(payload, enabling ? 1 : 0, runNow ? 1 : 0, now, runNow ? 1 : 0, existing.id)
-    .run()
+  }
+
+  if (ops.length) await db.batch(ops)
   return ok(null)
 })
 
@@ -464,7 +533,7 @@ zsxq.post('/sync', async (c) => {
   const res = await c.env.DB
     .prepare(
       `UPDATE job SET next_run_at = ?, status = CASE WHEN status = 'done' THEN 'pending' ELSE status END
-       WHERE type = 'zsxq_sync' AND enabled = 1`,
+       WHERE type IN ('zsxq_backfill','zsxq_comments','zsxq_probe') AND enabled = 1`,
     )
     .bind(Date.now())
     .run()

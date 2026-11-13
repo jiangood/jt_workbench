@@ -480,7 +480,7 @@ export async function ingest(
     )
     return results.reduce((n, r) => n + (r.meta.changes ?? 0), 0)
   }
-  if (type === 'zsxq_sync') {
+  if (type === 'zsxq_sync' || type === 'zsxq_backfill' || type === 'zsxq_comments' || type === 'zsxq_probe') {
     const topics: ZsxqTopicItem[] = []
     const comments: ZsxqCommentItem[] = []
     const states: ZsxqStateItem[] = []

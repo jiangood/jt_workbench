@@ -21,6 +21,9 @@ const JOB_TYPE_FALLBACK = {
   rss_fetch: '资讯抓取',
   stock_eod: '收盘行情',
   zsxq_sync: '星球同步',
+  zsxq_backfill: '星球回溯',
+  zsxq_comments: '星球评论对账',
+  zsxq_probe: '星球删除探测',
   zsxq_groups: '星球列表',
   reminder_scan: '提醒扫描',
 }

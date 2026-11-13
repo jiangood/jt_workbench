@@ -299,7 +299,13 @@ async function claimPipeline(env: Bindings, nodeId: string, now: number): Promis
 
     const payload = item.payload
     // 密钥不进 agent 环境变量：第三方 token 存 D1（app_config），下发这一刻注入 payload
-    if (row.type === 'zsxq_sync' || row.type === 'zsxq_groups') {
+    if (
+      row.type === 'zsxq_sync' ||
+      row.type === 'zsxq_groups' ||
+      row.type === 'zsxq_backfill' ||
+      row.type === 'zsxq_comments' ||
+      row.type === 'zsxq_probe'
+    ) {
       const token = await getConfig(env, 'zsxq_token')
       if (token) payload.token = token
     }
@@ -309,6 +315,22 @@ async function claimPipeline(env: Bindings, nodeId: string, now: number): Promis
       payload.cursors = await zsxqCursors(db, groupIds)
       // 老帖评论对账 / 删除探测：按「最久没核对」轮转，保证列表页之外的历史帖子也能覆盖
       payload.refresh = await zsxqReconcileTargets(db, groupIds, 'comments_checked_at')
+      payload.check = await zsxqReconcileTargets(db, groupIds, 'checked_at')
+    }
+    // 拆分后的阶段任务（方案 2+3）：按星球分片 + 各自队列/游标，互不挤占预算
+    if (row.type === 'zsxq_backfill') {
+      const groupIds = payloadGroupIds(payload)
+      payload.groupIds = groupIds
+      payload.cursors = await zsxqCursors(db, groupIds)
+    }
+    if (row.type === 'zsxq_comments') {
+      const groupIds = payloadGroupIds(payload)
+      payload.groupIds = groupIds
+      payload.refresh = await zsxqReconcileTargets(db, groupIds, 'comments_checked_at')
+    }
+    if (row.type === 'zsxq_probe') {
+      const groupIds = payloadGroupIds(payload)
+      payload.groupIds = groupIds
       payload.check = await zsxqReconcileTargets(db, groupIds, 'checked_at')
     }
     return [{ id: row.id, type: row.type, payload }]
@@ -350,6 +372,23 @@ function payloadGroupIds(payload: Record<string, unknown>): string[] {
 
 /** 每个星球每轮下发多少条对账目标：按最久没核对轮转，量控制在 agent 单轮请求预算内 */
 const ZSXQ_RECONCILE_LIMIT = 30
+
+/** 回溯是否未完成：任一目标星球未 done 即视为仍需继续切片追赶 */
+async function zsxqBackfillHasPending(db: D1Database, ids: string[]): Promise<boolean> {
+  if (!ids.length) return false
+  try {
+    const placeholders = ids.map(() => '?').join(',')
+    const res = await db
+      .prepare(`SELECT group_id AS groupId, done FROM zsxq_sync_state WHERE group_id IN (${placeholders})`)
+      .bind(...ids)
+      .all<{ groupId: string; done: number }>()
+    const done = new Set((res.results ?? []).filter((r) => r.done === 1).map((r) => r.groupId))
+    return ids.some((id) => !done.has(id))
+  } catch {
+    // 表不存在/查询失败：保守按未完成处理，让 backfill 继续尝试
+    return true
+  }
+}
 
 /**
  * 对账队列：挑「最久没核对」的主题下发。
@@ -474,9 +513,18 @@ node.post('/jobs/:id/complete', async (c) => {
       targetKey: string | null
     }>()
   if (!job) return nodeErr(409, 'lease lost')
-  const nextRunAt = job.cron ? nextCronRun(job.cron, now) : null
+  let nextRunAt = job.cron ? nextCronRun(job.cron, now) : null
   // 无 cron = 一次性任务：完成后置 done（next_run_at 不推进，回 pending 会被立刻重复领取）
-  const nextStatus = job.cron ? 'pending' : 'done'
+  let nextStatus = job.cron ? 'pending' : 'done'
+
+  // zsxq_backfill：历史回溯未完成时立即排下一片（时间窗口切片，快速追赶）；完成后按 cron 做增量
+  if (job.type === 'zsxq_backfill') {
+    const groupIds = payloadGroupIds(parsePayload(job.payload))
+    if (await zsxqBackfillHasPending(db, groupIds)) {
+      nextRunAt = now
+      nextStatus = 'pending'
+    }
+  }
 
   const res = await db
     .prepare(
