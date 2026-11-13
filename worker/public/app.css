@@ -1328,6 +1328,9 @@ body:has(.playerbar:not([hidden])) .zsxq-pane-comments {
 }
 .zsxq-comment { display: flex; flex-direction: column; gap: 2px; min-width: 0 }
 
+/* 帖子卡片：元信息（作者 / 时间 / 赞 / 评论数）统一收在右上角 */
+.zsxq-topic-head { justify-content: flex-end; gap: 6px }
+
 /* 左栏帖子卡片：整卡可点切换右栏；已删除标记不被选中态盖掉 */
 #zsxq-topic-list > .zsxq-topic { cursor: pointer }
 #zsxq-topic-list > .zsxq-topic:hover { border-color: var(--primary) }

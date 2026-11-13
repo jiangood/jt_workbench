@@ -143,7 +143,7 @@ function commentHtml(cm) {
     </div>`
 }
 
-/** 一条帖子：作者行 + 正文 + 图片 + 附件；评论在右栏，点卡片切换 */
+/** 一条帖子：右上角一行（作者 / 星主 / 时间 / 赞 / 评论数）+ 正文 + 图片 + 附件；点卡片切换右栏评论 */
 function topicHtml(t) {
   const likes = Number(t.likesCount) || 0
   const extra = [
@@ -151,7 +151,13 @@ function topicHtml(t) {
     t.deleted ? '<span class="badge bad">已删除</span>' : '',
   ].join('')
   return `<div class="zsxq-topic${t.deleted ? ' is-deleted' : ''}" data-topic="${esc(t.id)}">
-      ${authorLine(t.authorName, t.isOwner, t.createTime, extra)}
+      <div class="flex wrap center small zsxq-topic-head">
+        <span class="fw-semibold">${esc(t.authorName || '未知作者')}</span>
+        ${t.isOwner ? '<span class="badge">星主</span>' : ''}
+        ${t.createTime ? `<span class="muted">${fmtTime(t.createTime)}</span>` : ''}
+        ${extra}
+        <span class="badge muted zsxq-count">${Number(t.commentsCount) || 0} 评论</span>
+      </div>
       ${t.title ? `<div class="fw-semibold mt-1">${esc(t.title)}</div>` : ''}
       <div class="pre mt-1">${esc(t.talkText || '(无正文)')}</div>
       ${imageStrip(t.images, 140)}
@@ -161,9 +167,6 @@ function topicHtml(t) {
           ? `<div class="small muted mt-1">${icon('trash', 12)} 已在知识星球删除，本地归档的正文 / 评论 / 附件继续保留</div>`
           : ''
       }
-      <div class="flex center mt-2">
-        <span class="badge muted zsxq-count">${Number(t.commentsCount) || 0} 评论</span>
-      </div>
     </div>`
 }
 
