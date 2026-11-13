@@ -361,13 +361,11 @@ function openReaderSettings({
   return dlg
 }
 
-/* ---------------- 语音朗读（服务端 Piper TTS + Web Speech 兜底） ---------------- */
+/* ---------------- 语音朗读（服务端 Piper TTS） ---------------- */
 
 const TTS_RATE_KEY = 'book:tts:rate'
 const TTS_RATES = [0.8, 1, 1.2, 1.5, 2]
-const TTS_VOICE_KEY = 'book:tts:voice' // Web Speech 音色
 const TTS_FOLLOW_KEY = 'book:tts:follow'
-const TTS_ENGINE_KEY = 'book:tts:engine' // 'server' | 'speech'
 const TTS_HINT_KEY = 'book:tts:hint'
 const TTS_SERVER_VOICE = 'zh_CN-huayan-medium'
 
@@ -405,37 +403,6 @@ function ttsFocus(el, doc = null) {
   }
 }
 
-function splitSpeech(text, limit = 180) {
-  const raw = String(text || '').replace(/\s+/g, ' ').trim()
-  if (!raw) return []
-  if (raw.length <= limit) return [raw]
-  const parts = raw.split(/([。！？!?；;…]+["”’')\]]*\s*)/)
-  const out = []
-  let buf = ''
-  for (let i = 0; i < parts.length; i += 2) {
-    const chunk = (parts[i] || '') + (parts[i + 1] || '')
-    if (!chunk) continue
-    if (buf && buf.length + chunk.length > limit) {
-      out.push(buf.trim())
-      buf = chunk
-    } else {
-      buf += chunk
-    }
-  }
-  if (buf.trim()) out.push(buf.trim())
-  const flat = []
-  for (const p of out.length ? out : [raw]) {
-    if (p.length <= limit) flat.push(p)
-    else {
-      for (let i = 0; i < p.length; i += limit) {
-        const rest = p.slice(i).trim()
-        if (rest) flat.push(rest)
-      }
-    }
-  }
-  return flat
-}
-
 async function sha40(text) {
   const data = new TextEncoder().encode(String(text || '').trim())
   const buf = await crypto.subtle.digest('SHA-256', data)
@@ -448,15 +415,6 @@ function ttsBarHtml() {
       <button class="tts-btn primary" type="button" data-tts-toggle aria-label="开始朗读" title="播放 / 暂停">${icon('play', 16)}</button>
       <button class="tts-btn" type="button" data-tts-next aria-label="下一段" title="下一段">${icon('next', 16)}</button>
       <span class="tts-status small" data-tts-status aria-live="polite">未开始</span>
-      <label class="tts-field">引擎
-        <select class="field field-sm" data-tts-engine aria-label="朗读引擎">
-          <option value="server">AI朗读</option>
-          <option value="speech">系统朗读</option>
-        </select>
-      </label>
-      <label class="tts-field" data-tts-voice-wrap hidden>音色
-        <select class="field field-sm" data-tts-voice aria-label="朗读音色"></select>
-      </label>
       <label class="tts-field" title="读完本章后自动接下一章">
         <input type="checkbox" data-tts-follow> 跨章
       </label>
@@ -484,19 +442,9 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted, bookId =
   const statusEl = bar.querySelector('[data-tts-status]')
   const rateSel = bar.querySelector('[data-tts-rate]')
   const timerSel = bar.querySelector('[data-tts-timer]')
-  const voiceSel = bar.querySelector('[data-tts-voice]')
-  const voiceWrap = bar.querySelector('[data-tts-voice-wrap]')
   const followBox = bar.querySelector('[data-tts-follow]')
-  const engineSel = bar.querySelector('[data-tts-engine]')
 
-  const synth = typeof window !== 'undefined' ? window.speechSynthesis : null
-  const speechSupported = Boolean(synth && typeof window.SpeechSynthesisUtterance === 'function')
   const serverSupported = Number.isFinite(Number(bookId)) && Number(bookId) > 0
-
-  let engine = readStorage(TTS_ENGINE_KEY) || (serverSupported ? 'server' : 'speech')
-  if (engine === 'server' && !serverSupported) engine = 'speech'
-  if (engine === 'speech' && !speechSupported && serverSupported) engine = 'server'
-  engineSel.value = engine
 
   let state = 'idle' // idle | playing | paused | loading
   let segments = []
@@ -504,28 +452,12 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted, bookId =
   let runId = 0
   let timerId = 0
   let rate = Number(readStorage(TTS_RATE_KEY)) || 1
-  let speechVoice = null
   let audio = null
   let pollTimer = 0
   let preparedKeys = new Map() // key -> url
 
   if (TTS_RATES.includes(rate)) rateSel.value = String(rate)
   else { rate = 1; rateSel.value = '1' }
-
-  const loadVoices = () => {
-    if (!voiceSel) return
-    let voices = []
-    try { voices = synth?.getVoices?.() ?? [] } catch { voices = [] }
-    const saved = readStorage(TTS_VOICE_KEY) || ''
-    voiceWrap.hidden = engine !== 'speech' || !voices.length
-    voiceSel.innerHTML =
-      '<option value="">默认音色</option>' +
-      voices.map((v) => `<option value="${esc(v.voiceURI)}">${esc(v.name)}${v.lang ? `（${esc(v.lang)}）` : ''}</option>`).join('')
-    speechVoice = voices.find((v) => v.voiceURI === saved) || null
-    voiceSel.value = speechVoice ? saved : ''
-  }
-  loadVoices()
-  synth?.addEventListener?.('voiceschanged', loadVoices)
 
   followBox.checked = ttsFollowChapter()
   followBox.onchange = () => {
@@ -546,8 +478,6 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted, bookId =
     toggleBtn.setAttribute('aria-label', label)
     toggleBtn.title = label
     bar.dataset.state = state
-    voiceWrap.hidden = engine !== 'speech' || !(synth?.getVoices?.().length)
-    engineSel.value = engine
     if (state === 'idle') setStatus(segments.length ? '已停止' : '未开始')
     else if (loading) setStatus('正在生成语音…')
     else setStatus(`${state === 'paused' ? '已暂停 · ' : ''}第 ${cursor + 1} / ${segments.length || '?'} 段`)
@@ -560,14 +490,9 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted, bookId =
     audio = null
   }
 
-  const cancelSpeech = () => {
-    try { synth?.cancel() } catch {}
-  }
-
   const cancel = () => {
     runId += 1
     stopAudio()
-    cancelSpeech()
     clearTtsMark()
   }
 
@@ -624,7 +549,7 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted, bookId =
     segments = await normalizeSegments(raw)
     cursor = 0
     if (!segments.length) { stop(); return }
-    state = engine === 'server' ? 'loading' : 'playing'
+    state = 'loading'
     paint()
     speakSegment(id, 0)
   }
@@ -678,44 +603,12 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted, bookId =
     }
   }
 
-  const speakChunkSpeech = (id, segIndex, chunks, at) => {
-    if (id !== runId) return
-    if (at >= chunks.length) { speakSegment(id, segIndex + 1); return }
-    const text = chunks[at]
-    const u = new window.SpeechSynthesisUtterance(text)
-    u.lang = /[\u4e00-\u9fff]/.test(text) ? 'zh-CN' : 'en-US'
-    u.rate = rate
-    u.pitch = 1
-    if (speechVoice) u.voice = speechVoice
-    u.onend = () => { if (id === runId) speakChunkSpeech(id, segIndex, chunks, at + 1) }
-    u.onerror = (e) => {
-      if (id !== runId) return
-      const err = e?.error || ''
-      if (err === 'interrupted' || err === 'canceled' || err === 'cancelled') return
-      stop()
-      toast(`朗读中断：${err || '系统语音不可用'}`, true)
-    }
-    try { synth.speak(u) } catch (err) { stop(); toast(err?.message || '朗读启动失败', true) }
-  }
-
-  const speakSpeechSegment = (id, index) => {
-    if (id !== runId) return
-    if (index >= segments.length) { void exhausted(id); return }
-    cursor = index
-    const seg = segments[index]
-    try { seg.focus?.() } catch {}
-    paint()
-    speakChunkSpeech(id, index, splitSpeech(seg.text), 0)
-  }
-
   const speakSegment = (id, index) => {
-    if (engine === 'server') void playServerSegment(id, index)
-    else speakSpeechSegment(id, index)
+    void playServerSegment(id, index)
   }
 
   const startFrom = async (index) => {
-    if (engine === 'speech' && !speechSupported) { toast('当前浏览器不支持系统朗读', true); return }
-    if (engine === 'server' && !serverSupported) { toast('AI 朗读不可用', true); return }
+    if (!serverSupported) { toast('AI 朗读不可用', true); return }
     cancel()
     const id = runId
     const raw = collect()
@@ -723,14 +616,14 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted, bookId =
     if (id !== runId) return
     if (!segments.length) { toast('当前位置没有可朗读的文字', true); state = 'idle'; paint(); return }
     cursor = Math.max(0, Math.min(segments.length - 1, Number(index) || 0))
-    state = engine === 'server' ? 'loading' : 'playing'
+    state = 'loading'
     paint()
     bar.hidden = false
     speakSegment(id, cursor)
   }
 
   const startFromCurrent = async () => {
-    if (engine === 'speech' && !speechSupported) { toast('当前浏览器不支持系统朗读', true); return }
+    if (!serverSupported) { toast('AI 朗读不可用', true); return }
     const list = collect()
     const segs = await normalizeSegments(list)
     const at = getStartIndex ? Number(getStartIndex(segs)) : 0
@@ -739,25 +632,13 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted, bookId =
 
   const togglePlay = () => {
     if (state === 'loading') return
-    if (engine === 'server') {
-      if (state === 'playing' && audio) {
-        try { audio.pause() } catch {}
-        state = 'paused'; paint(); return
-      }
-      if (state === 'paused' && audio) {
-        audio.play().then(() => { if (state === 'paused') { state = 'playing'; paint() } }).catch(() => {})
-        return
-      }
-      startFromCurrent(); return
-    }
-    if (!speechSupported) { toast('当前浏览器不支持系统朗读', true); return }
-    if (state === 'playing') {
-      try { synth.pause() } catch {}
+    if (state === 'playing' && audio) {
+      try { audio.pause() } catch {}
       state = 'paused'; paint(); return
     }
-    if (state === 'paused') {
-      try { synth.resume() } catch {}
-      state = 'playing'; paint(); return
+    if (state === 'paused' && audio) {
+      audio.play().then(() => { if (state === 'paused') { state = 'playing'; paint() } }).catch(() => {})
+      return
     }
     startFromCurrent()
   }
@@ -766,7 +647,7 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted, bookId =
     if (state === 'idle' || !segments.length) { startFromCurrent(); return }
     if (dir > 0 && cursor >= segments.length - 1) {
       cancel()
-      state = engine === 'server' ? 'loading' : 'playing'
+      state = 'loading'
       paint()
       void exhausted(runId)
       return
@@ -781,30 +662,9 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted, bookId =
   rateSel.onchange = () => {
     rate = Number(rateSel.value) || 1
     writeStorage(TTS_RATE_KEY, String(rate))
-    if (engine === 'server' && audio) audio.playbackRate = rate
-    else if (state === 'playing') startFrom(cursor)
+    if (audio) audio.playbackRate = rate
   }
-  engineSel.onchange = () => {
-    const next = engineSel.value === 'speech' ? 'speech' : 'server'
-    if (next === 'server' && !serverSupported) { toast('AI 朗读不可用', true); engineSel.value = engine; return }
-    if (next === 'speech' && !speechSupported) { toast('当前浏览器不支持系统朗读', true); engineSel.value = engine; return }
-    const wasActive = state !== 'idle'
-    const at = cursor
-    stop()
-    engine = next
-    writeStorage(TTS_ENGINE_KEY, engine)
-    paint()
-    if (wasActive) startFrom(at)
-  }
-  voiceSel.onchange = () => {
-    const uri = voiceSel.value
-    let voices = []
-    try { voices = synth?.getVoices?.() ?? [] } catch { voices = [] }
-    speechVoice = voices.find((v) => v.voiceURI === uri) || null
-    if (speechVoice) writeStorage(TTS_VOICE_KEY, uri)
-    else { try { localStorage.removeItem(TTS_VOICE_KEY) } catch {} }
-    if (engine === 'speech' && state === 'playing') startFrom(cursor)
-  }
+
   timerSel.onchange = () => {
     clearTimer()
     const min = Number(timerSel.value) || 0
@@ -821,7 +681,7 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted, bookId =
         paint()
         if (!readStorage(TTS_HINT_KEY)) {
           writeStorage(TTS_HINT_KEY, '1')
-          toast(engine === 'server' ? 'AI朗读将按段生成语音，首次可能需要等待' : '锁屏 / 切后台后能否继续朗读取决于系统，可能被中断')
+          toast('AI朗读将按段生成语音，首次可能需要等待')
         }
       } else {
         bar.hidden = true
@@ -832,7 +692,6 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted, bookId =
     isActive: () => !bar.hidden && state !== 'idle',
     destroy() {
       stop()
-      try { synth?.removeEventListener?.('voiceschanged', loadVoices) } catch {}
       bar.hidden = true
     },
   }
