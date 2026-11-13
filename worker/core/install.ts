@@ -85,24 +85,34 @@ cat > "$COMPOSE" <<'YAML'
 ${buildCompose(origin, nodeKey)}YAML
 
 if docker compose version >/dev/null 2>&1; then
-  DC="docker compose"
+  USE_V2=1
 elif command -v docker-compose >/dev/null 2>&1; then
-  DC="docker-compose"
+  USE_V2=0
 else
   echo "未找到 docker compose（v2 插件或独立 docker-compose）" >&2
   exit 1
 fi
 
+# compose 文件在当前目录的子目录里，而 docker compose 只向上层查找配置：
+# 必须显式 -f 指定，否则报 "no configuration file provided: not found"
+dc() {
+  if [ "$USE_V2" = 1 ]; then
+    docker compose -f "$COMPOSE" "$@"
+  else
+    docker-compose -f "$COMPOSE" "$@"
+  fi
+}
+
 # 先拉最新 agent 镜像：机器上可能有旧镜像缓存，up -d 不会自动 pull
-if ! $DC pull workbench-agent; then
+if ! dc pull workbench-agent; then
   echo "拉取新镜像失败，将用本地已有镜像启动（网络恢复后重新执行本命令即可更新）" >&2
 fi
 
-$DC up -d
+dc up -d
 
 echo
 echo "已启动：$(pwd)/$COMPOSE"
-echo "查看日志：$DC logs -f workbench-agent"
+echo "查看日志：dc logs -f workbench-agent"
 echo "节点会在下一次 poll 上线（通常 1 分钟内，兜底 10 分钟）。"
 `
 }
