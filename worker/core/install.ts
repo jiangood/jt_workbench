@@ -112,7 +112,7 @@ dc up -d
 
 echo
 echo "已启动：$(pwd)/$COMPOSE"
-echo "查看日志：dc logs -f workbench-agent"
+echo "查看日志：docker compose -f $COMPOSE logs -f workbench-agent"
 echo "节点会在下一次 poll 上线（通常 1 分钟内，兜底 10 分钟）。"
 `
 }

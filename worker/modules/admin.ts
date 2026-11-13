@@ -454,6 +454,28 @@ async function jobsPayload(env: Env['Bindings']) {
 /** 定时任务列表（只读）：job_run 保留 90 天由 core/tick.ts 清理，这里不新增存储 */
 admin.get('/jobs', async (c) => ok(await jobsPayload(c.env)))
 
+/**
+ * 重新启用被熔断 / 手动停用的任务：清零尝试与熔断计数、清掉旧错误结果，
+ * next_run_at 拉到当前时间——下个节点 poll（或内置 tick）立即执行，之后按 cron 正常续排。
+ * 只对 enabled = 0 的任务生效，重复点击幂等；fail_streak 列可能尚未迁移，探测后再拼。
+ */
+admin.post('/jobs/:id/enable', async (c) => {
+  const id = Number(c.req.param('id'))
+  if (!Number.isInteger(id) || id <= 0) return fail(400, 400, 'invalid job id')
+  const db = c.env.DB
+  const setStreak = (await hasJobFailStreak(db)) ? 'fail_streak = 0,' : ''
+  const res = await db
+    .prepare(
+      `UPDATE job SET enabled = 1, status = 'pending', attempts = 0, ${setStreak}
+         next_run_at = ?, lease_until = NULL, result = NULL
+       WHERE id = ? AND enabled = 0`,
+    )
+    .bind(Date.now(), id)
+    .run()
+  if (!res.meta.changes) return fail(404, 404, '任务不存在或已在运行中')
+  return ok({ id, enabled: true })
+})
+
 /** 单任务最近执行日志（默认 50 条，最多 100）：执行时间 / 节点 / 版本 / 结果 / 错误原文 */
 admin.get('/jobs/:id/runs', async (c) => {
   const id = Number(c.req.param('id'))

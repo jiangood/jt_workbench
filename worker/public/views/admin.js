@@ -349,7 +349,11 @@ export async function render(main, params = {}) {
           <td class="small"${result ? ` title="${esc(result)}"` : ''}>${
             result ? esc(truncate(result, 48)) : '<span class="muted">—</span>'
           }</td>
-          <td class="nowrap"><button class="btn sm" type="button" data-runs="${esc(job.id)}">执行日志</button></td>
+          <td class="nowrap">${
+            job.enabled
+              ? ''
+              : `<button class="btn sm" type="button" data-enable="${esc(job.id)}">启用</button> `
+          }<button class="btn sm" type="button" data-runs="${esc(job.id)}">执行日志</button></td>
         </tr>`
       })
       .join('')
@@ -364,6 +368,14 @@ export async function render(main, params = {}) {
     jobList = res.data.jobs ?? []
     paintJobs()
     jobSay(`已刷新 · 共 ${jobList.length} 个任务 · ${fmtTime(res.data.generatedAt)}`)
+  }
+
+  /** 重新启用被熔断 / 停用的任务：next_run_at 拉到当前时间，下个轮询立即执行 */
+  const enableJob = async (job, btn) => {
+    const res = await run(btn, () => api(`/api/admin/jobs/${job.id}/enable`, { method: 'POST' }), { silent: true })
+    if (!res.ok) return jobSay(res.error.message, true)
+    await loadJobs()
+    jobSay(`已启用 ${jobName(job)}——节点下个轮询（≤1 分钟）就会执行，之后按原节奏续排`)
   }
 
   /** 执行日志表：错误原文超过 160 字折叠成 details，展开可看全（节点最多上报 1000 字） */
@@ -421,7 +433,13 @@ export async function render(main, params = {}) {
 
   paintJobs()
   jobsRefresh.onclick = (e) => loadJobs(e.currentTarget)
-  jobsBody.onclick = (e) => {
+  jobsBody.onclick = async (e) => {
+    const enableBtn = e.target.closest('[data-enable]')
+    if (enableBtn) {
+      const job = jobList.find((j) => String(j.id) === enableBtn.dataset.enable)
+      if (job) await enableJob(job, enableBtn)
+      return
+    }
     const row = e.target.closest('tr[data-job]')
     if (!row) return
     const job = jobList.find((j) => String(j.id) === row.dataset.job)
