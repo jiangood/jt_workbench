@@ -718,7 +718,7 @@ docker compose up -d</pre>
       }
       nodeList = res.data.nodes
       paintNodes()
-      nodeSay(`已添加 ${name}：接入前显示离线，之后随时点该行「接入」取命令`)
+      nodeSay(`已添加 ${name}`)
       showInstall(res.data.install)
     }
   }
