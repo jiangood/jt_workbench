@@ -590,13 +590,19 @@ async function probeTopic(
 }
 
 /**
- * 详情接口失败是否可判定为「帖子不存在」。
- * 只认非瞬时错误；token 失效 / 未登录（1001 / 401）是凭据问题，不能拿来标删除。
+ * 详情接口失败是否可判定为「帖子不存在/已删除」。
+ * 必须非常保守：权限、风控、参数/接口兼容性等非瞬时错误都不能当成删除，
+ * 否则会把仍在线的帖子误标（已发生过批量误判）。只认明确的「不存在/已删除」信号。
  */
 function isGoneError(e: unknown): boolean {
   if (!(e instanceof ZsxqApiError)) return false
   if (e.retryable) return false
-  return e.code !== 1001 && e.code !== 401
+  if (e.code === 1001 || e.code === 401 || e.code === 403 || e.httpStatus === 401 || e.httpStatus === 403) {
+    return false
+  }
+  if (e.code === 404 || e.httpStatus === 404) return true
+  const msg = `${e.message ?? ''}`
+  return /不存在|已删除|被删除|找不到|not\s*found|not\s*exist|deleted/i.test(msg)
 }
 
 /** 详情里的互动计数：counts.comments / counts.likes，兼容顶层 comments_count / likes_count */

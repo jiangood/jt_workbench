@@ -96,6 +96,8 @@ export class ZsxqApiError extends Error {
     message: string,
     /** 是否值得重试（1059 / 5xx / 风控页这类瞬时错误） */
     public retryable = false,
+    /** HTTP 状态码（便于区分 404 等明确不存在场景） */
+    public httpStatus?: number,
   ) {
     super(message)
     this.name = 'ZsxqApiError'
@@ -135,6 +137,8 @@ export class ZsxqClient {
       throw new ZsxqApiError(
         lastErr.code,
         `${lastErr.message}（知识星球接口瞬时故障或限流，已自动重试 ${MAX_ATTEMPTS} 次，请稍后再试）`,
+        lastErr.retryable,
+        lastErr.httpStatus,
       )
     }
     throw lastErr
@@ -162,13 +166,13 @@ export class ZsxqClient {
       body = (await res.json()) as typeof body
     } catch (e) {
       // 风控页 / 网关错误页会返回 HTML，JSON 解析失败时保留状态码与原因；这类页面通常是瞬时的
-      throw new ZsxqApiError(res.status, `非 JSON 响应（HTTP ${res.status}）: ${describeError(e)}`, true)
+      throw new ZsxqApiError(res.status, `非 JSON 响应（HTTP ${res.status}）: ${describeError(e)}`, true, res.status)
     }
     if (!body.succeeded) {
       const code = body.code ?? res.status
       // 业务码 1059 与 HTTP 5xx 都算瞬时；1001「未登录」这类要立刻报出来，别白等重试
       const retryable = isTransientCode(code) || res.status >= 500
-      throw new ZsxqApiError(code, body.error ?? body.info ?? `HTTP ${res.status}`, retryable)
+      throw new ZsxqApiError(code, body.error ?? body.info ?? `HTTP ${res.status}`, retryable, res.status)
     }
     return body.resp_data as T
   }
