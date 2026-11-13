@@ -256,12 +256,17 @@ async function bumpScore(
  */
 async function claimPipeline(env: Bindings, nodeId: string, now: number): Promise<Job[]> {
   const db = env.DB
+  const staleBefore = now - 15 * 60_000
   await db
     .prepare(
-      `UPDATE job SET status = 'pending', lease_until = NULL, node_id = NULL
-       WHERE status = 'leased' AND lease_until < ?`,
+      `UPDATE job SET status = 'pending', lease_until = NULL, node_id = NULL, started_at = NULL
+       WHERE status = 'leased' AND (
+         lease_until IS NULL
+         OR lease_until < ?
+         OR (next_run_at < ? AND COALESCE(started_at, next_run_at, 0) < ?)
+       )`,
     )
-    .bind(now)
+    .bind(now, staleBefore, staleBefore)
     .run()
 
   // 取一批到期候选而不是只取一条：最早那条可能要礼让给更高分的节点
