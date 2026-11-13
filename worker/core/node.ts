@@ -138,6 +138,37 @@ interface DispatchCtx {
 
 const scoreKey = (target: string, nodeId: string) => `${target}\u0000${nodeId}`
 
+// 新任务类型需要对应能力的 agent，避免旧节点领取后 unknown type 失败/卡住
+const MIN_AGENT_VERSION_BY_TYPE: Record<string, string> = {
+  zsxq_backfill: '0.13.19',
+  zsxq_comments: '0.13.19',
+  zsxq_probe: '0.13.19',
+}
+
+function parseSemver(v: string): [number, number, number] | null {
+  const m = String(v ?? '').trim().match(/^(\d+)\.(\d+)\.(\d+)/)
+  if (!m) return null
+  return [Number(m[1]), Number(m[2]), Number(m[3])]
+}
+
+function gteVersion(a: string, b: string): boolean {
+  const pa = parseSemver(a)
+  const pb = parseSemver(b)
+  if (!pa || !pb) return false
+  for (let i = 0; i < 3; i++) {
+    if (pa[i] > pb[i]) return true
+    if (pa[i] < pb[i]) return false
+  }
+  return true
+}
+
+function supportsJobType(agentVersion: string | null | undefined, type: string): boolean {
+  const min = MIN_AGENT_VERSION_BY_TYPE[type]
+  if (!min) return true
+  if (!agentVersion) return false
+  return gteVersion(agentVersion, min)
+}
+
 /**
  * 在线节点 = 30 分钟内 poll 过的 + 正持有租约的。
  * 后者很关键：节点跑一个长任务时会停止 poll，只看 last_seen 会把它误判成离线，
@@ -271,6 +302,13 @@ async function claimPipeline(env: Bindings, nodeId: string, now: number): Promis
     .bind(now, staleBefore, staleBefore, staleBefore, staleBefore, staleBefore)
     .run()
 
+  const nodeState = await db
+    .prepare('SELECT agent_version AS agentVersion FROM node_state WHERE node_id = ?')
+    .bind(nodeId)
+    .first<{ agentVersion: string | null }>()
+    .catch(() => null)
+  const nodeVersion = nodeState?.agentVersion ?? null
+
   // 取一批到期候选而不是只取一条：最早那条可能要礼让给更高分的节点
   const candidates = await db
     .prepare(
@@ -300,6 +338,7 @@ async function claimPipeline(env: Bindings, nodeId: string, now: number): Promis
   const ctx = targets.length ? await loadDispatchCtx(db, targets, now) : null
 
   for (const item of planned) {
+    if (!supportsJobType(nodeVersion, item.row.type)) continue
     if (item.target && ctx && !canTake(ctx, item.target, nodeId, item.row.nextRunAt)) continue
 
     const claim = await db
