@@ -935,8 +935,8 @@ textarea[aria-invalid="true"] { border-color: var(--danger) }
 /* 书架（book 视图）：分组筛选 + 封面卡片 */
 .book-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(192px, 1fr));
-  gap: var(--sp-3);
+  grid-template-columns: repeat(auto-fill, minmax(156px, 1fr));
+  gap: var(--sp-2);
 }
 /* 分组分区：同名分组一整堆展示，未分组固定最后一区 */
 .book-groups {
@@ -1088,17 +1088,16 @@ a.book-cover:focus-visible {
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: 6px;
-  padding: 12px 12px 14px;
+  gap: 4px;
+  padding: 8px 10px 10px;
 }
 .book-title {
   display: -webkit-box;
   overflow: hidden;
-  min-height: 2.7em;
   margin: 0;
-  font-size: var(--fs-md);
+  font-size: var(--fs-sm);
   font-weight: 600;
-  line-height: 1.35;
+  line-height: 1.3;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
@@ -1123,7 +1122,8 @@ a.book-cover:focus-visible {
   white-space: nowrap;
 }
 .book-rating .ico { color: var(--accent) }
-.book-read-time {
+.book-read-time,
+.book-est-time {
   display: inline-flex;
   align-items: center;
   gap: 3px;
@@ -1132,9 +1132,9 @@ a.book-cover:focus-visible {
 .book-actions {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   margin-top: auto;
-  padding-top: 8px;
+  padding-top: 4px;
 }
 /* 主操作（阅读 / 上传）在幽灵图标里保留主色调，别让整排都灰掉 */
 .book-tools .btn.key { color: var(--primary) }

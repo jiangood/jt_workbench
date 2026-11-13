@@ -54,6 +54,7 @@ interface BookRow {
   filename: string | null
   size: number | null
   progress: number | null
+  read_minutes: number | null
   created_at: number
   updated_at: number
   finished_at: number | null
@@ -67,6 +68,7 @@ book.get('/list', async (c) => {
     .prepare(
       `SELECT id, title, author, category, status, cover, summary, rating, pub_year AS pubYear,
               douban_id AS doubanId, douban_url AS doubanUrl, fmt, filename, size, progress,
+              read_minutes AS readMinutes,
               CASE WHEN r2_key IS NOT NULL THEN 1 ELSE 0 END AS hasFile,
               -- 文件版本 = R2 key 里的 uuid：只有换文件才变（改书名 / 阅读状态不动），缓存才不会被无谓作废
               substr(r2_key, 6, 36) AS fileVersion,
@@ -375,6 +377,7 @@ function bookFormat(filename: string): string {
 async function saveBookFile(c: Context<Env>, stored: StoredFile, fmt: string) {
   const filename = c.req.query('filename')!
   const bookId = c.req.query('bookId')
+  const readMinutes = normalizeReadMinutes(c.req.query('readMinutes'))
   const now = Date.now()
   let id: number
   let existing: BookRow | null = null
@@ -386,8 +389,10 @@ async function saveBookFile(c: Context<Env>, stored: StoredFile, fmt: string) {
 
     if (existing) {
       await c.env.DB
-        .prepare('UPDATE book SET fmt = ?, r2_key = ?, filename = ?, size = ?, updated_at = ? WHERE id = ?')
-        .bind(fmt, stored.key, filename, stored.size, now, existing.id)
+        .prepare(
+          'UPDATE book SET fmt = ?, r2_key = ?, filename = ?, size = ?, read_minutes = ?, updated_at = ? WHERE id = ?',
+        )
+        .bind(fmt, stored.key, filename, stored.size, readMinutes, now, existing.id)
         .run()
       id = existing.id
     } else {
@@ -397,9 +402,9 @@ async function saveBookFile(c: Context<Env>, stored: StoredFile, fmt: string) {
       const status = normalizeStatus(c.req.query('status'))
       const r = await c.env.DB
         .prepare(
-          `INSERT INTO book (title, author, category, status, fmt, r2_key, filename, size,
+          `INSERT INTO book (title, author, category, status, fmt, r2_key, filename, size, read_minutes,
                              created_at, updated_at, finished_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
           title.slice(0, MAX_TITLE),
@@ -410,6 +415,7 @@ async function saveBookFile(c: Context<Env>, stored: StoredFile, fmt: string) {
           stored.key,
           filename,
           stored.size,
+          readMinutes,
           now,
           now,
           status === 'read' ? now : null,
@@ -489,6 +495,7 @@ book.get('/:id', async (c) => {
     .prepare(
       `SELECT id, title, author, category, status, cover, summary, rating, pub_year AS pubYear,
               douban_id AS doubanId, douban_url AS doubanUrl, fmt, filename, size, progress,
+              read_minutes AS readMinutes,
               CASE WHEN r2_key IS NOT NULL THEN 1 ELSE 0 END AS hasFile,
               substr(r2_key, 6, 36) AS fileVersion,
               created_at AS createdAt, updated_at AS updatedAt, finished_at AS finishedAt,
@@ -815,6 +822,11 @@ function normalizeProgress(value: unknown): number | null {
 function normalizeRating(value: unknown): number | null {
   const n = Number(value)
   return Number.isFinite(n) && n > 0 && n <= 10 ? n : null
+}
+
+function normalizeReadMinutes(value: unknown): number | null {
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? Math.max(1, Math.round(n)) : null
 }
 
 function decodeEntities(value: string): string {

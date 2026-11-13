@@ -70,6 +70,15 @@ const STATUS_ICON = { unread: 'book', reading: 'clock', read: 'online' }
 const statusLabel = (s) => STATUS[s]?.label ?? '待读'
 const statusBadge = (s) => `<span class="badge ${STATUS[s]?.cls ?? 'muted'}">${statusLabel(s)}</span>`
 
+function formatEstimate(minutes) {
+  const m = Number(minutes)
+  if (!Number.isFinite(m) || m <= 0) return ''
+  if (m < 60) return `${m} 分钟`
+  const h = Math.floor(m / 60)
+  const mm = m % 60
+  return mm ? `${h} 小时 ${mm} 分` : `${h} 小时`
+}
+
 /** 豆瓣图床带 Referer 防盗链，封面统一走 Worker 代理 */
 const coverUrl = (url) => (url ? `/api/book/cover?url=${encodeURIComponent(url)}` : '')
 
@@ -96,6 +105,7 @@ function bookCard(b) {
   const showProgress = b.hasFile && Number.isFinite(progress) && progress > 0
   // 本机累计阅读时长（issue #23）：没有记录 / 不足 1 分钟不占位
   const readTime = b.hasFile ? fmtReadTime(readBookStats(b.id).ms) : ''
+  const estimate = b.readMinutes ? formatEstimate(b.readMinutes) : ''
   // 有文件时封面本身就是阅读入口；工具栏里再留一个小图标，照顾「看不出封面能点」的人
   const readable = b.hasFile && isReadable(b)
   const coverTag = readable ? 'a' : 'div'
@@ -115,6 +125,11 @@ function bookCard(b) {
             <p class="book-by small muted" title="${esc(meta)}">${esc(meta)}</p>
             <div class="book-meta">
               ${b.rating ? `<span class="book-rating small muted">${icon('star', 12)}${esc(b.rating)}</span>` : ''}
+              ${
+                estimate
+                  ? `<span class="book-est-time small muted" title="预计读完 ${esc(estimate)}">${icon('clock', 12)}预计 ${esc(estimate)}</span>`
+                  : ''
+              }
               ${
                 readTime
                   ? `<span class="book-read-time small muted" title="本机累计阅读 ${esc(readTime)}">${icon('clock', 12)}${esc(readTime)}</span>`
@@ -967,6 +982,26 @@ function pickFile(bookId, main) {
   input.click()
 }
 
+async function estimateEpubMinutes(zip) {
+  let text = ''
+  const files = Object.values(zip.files).filter(
+    (f) => !f.dir && /\.(x?html?|htm)$/i.test(f.name) && !/container\.xml$/i.test(f.name),
+  )
+  for (const f of files) {
+    try {
+      text += await f.async('string')
+    } catch {
+      /* 跳过无法读取的条目 */
+    }
+    if (text.length > 1_200_000) break
+  }
+  const plain = text.replace(/<[^>]+>/g, ' ').replace(/&[^;]+;/g, ' ')
+  const cjk = (plain.match(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/g) || []).length
+  const words = (plain.replace(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/g, ' ').match(/[A-Za-z0-9]+(?:'[A-Za-z]+)?/g) || [])
+    .length
+  return Math.max(1, Math.ceil(cjk / 400 + words / 220))
+}
+
 /** epub 元数据：浏览器端 JSZip 读 OPF（v3 决策 #9）；失败返回空对象，用文件名兜底 */
 async function parseEpubMeta(file) {
   if (!file.name.toLowerCase().endsWith('.epub')) return {}
@@ -976,9 +1011,16 @@ async function parseEpubMeta(file) {
     const containerXml = await zip.file('META-INF/container.xml')?.async('text')
     const opfPath = containerXml?.match(/full-path="([^"]+)"/)?.[1]
     const opf = opfPath ? await zip.file(opfPath)?.async('text') : ''
+    let readMinutes
+    try {
+      readMinutes = await estimateEpubMinutes(zip)
+    } catch {
+      readMinutes = undefined
+    }
     return {
       title: opf?.match(/<dc:title[^>]*>([^<]+)</)?.[1],
       author: opf?.match(/<dc:creator[^>]*>([^<]+)</)?.[1],
+      readMinutes,
     }
   } catch {
     return {}
