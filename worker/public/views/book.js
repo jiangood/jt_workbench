@@ -52,10 +52,10 @@ const SORT_FN = {
 }
 
 const STATUS_TABS = [
-  { value: 'all', label: '全部' },
-  { value: 'unread', label: '待读' },
   { value: 'reading', label: '阅读中' },
+  { value: 'unread', label: '待读' },
   { value: 'read', label: '已读' },
+  { value: 'all', label: '全部' },
 ]
 
 const STATUS = {
