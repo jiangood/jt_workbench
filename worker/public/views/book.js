@@ -3,7 +3,7 @@ import { api, closeMoreMenu, esc, fmtReadTime, icon, loadScriptOnce, moreMenu, r
 import { emptyState, filterGroup as filterButtons, setupFilter } from '../ui.js'
 import { enqueue } from '../upload.js'
 
-let filterStatus = 'all'
+let filterStatus = 'reading'
 /**
  * 排序方式：recent（默认）= 最近阅读倒序、同时间按 id；
  * time = 上传（加入书架）时间倒序；title = 书名，中文按拼音、数字按大小
