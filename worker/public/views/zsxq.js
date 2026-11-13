@@ -33,7 +33,11 @@ let configOpen = false
 let alive = true
 let renderGen = 0
 let backingUp = false
-/** 评论展开状态（topicId → {page, pages, total, open}）；重绘 / 翻页 / 切筛选后清空 */
+/** 双栏模式：左栏帖子列表 / 右栏评论面板；右栏当前选中（未选 = 空态提示） */
+let selectedTopicId = null
+/** 当前页的帖子缓存：重绘后恢复选中态时取作者 / 赞数用 */
+let lastTopics = []
+/** 各话题已拉取的评论缓存（topicId → {page, pages, total, items}）；翻页 / 切筛选后清空 */
 const commentState = new Map()
 
 const stopPoll = () => {
@@ -139,14 +143,14 @@ function commentHtml(cm) {
     </div>`
 }
 
-/** 一条帖子：作者行 + 正文 + 图片 + 附件 + 评论展开区 */
+/** 一条帖子：作者行 + 正文 + 图片 + 附件；评论在右栏，点卡片切换 */
 function topicHtml(t) {
   const likes = Number(t.likesCount) || 0
   const extra = [
     likes > 0 ? `<span class="muted">${likes} 赞</span>` : '',
     t.deleted ? '<span class="badge bad">已删除</span>' : '',
   ].join('')
-  return `<div class="zsxq-topic${t.deleted ? ' is-deleted' : ''}">
+  return `<div class="zsxq-topic${t.deleted ? ' is-deleted' : ''}" data-topic="${esc(t.id)}">
       ${authorLine(t.authorName, t.isOwner, t.createTime, extra)}
       ${t.title ? `<div class="fw-semibold mt-1">${esc(t.title)}</div>` : ''}
       <div class="pre mt-1">${esc(t.talkText || '(无正文)')}</div>
@@ -158,11 +162,8 @@ function topicHtml(t) {
           : ''
       }
       <div class="flex center mt-2">
-        <button class="btn sm" type="button" data-comments="${esc(t.id)}" aria-expanded="false">评论 ${
-          Number(t.commentsCount) || 0
-        }</button>
+        <span class="badge muted zsxq-count">${Number(t.commentsCount) || 0} 评论</span>
       </div>
-      <div class="zsxq-comments mt-2" hidden></div>
     </div>`
 }
 
@@ -171,8 +172,6 @@ export async function render(main) {
   alive = true
   renderGen += 1
   const gen = renderGen
-  // 重绘后评论区收起：展开状态不跨页 / 不跨筛选
-  commentState.clear()
 
   const stateQuery = stateFilter === 'all' ? '' : `&state=${stateFilter}`
   const [d, g] = await Promise.all([
@@ -189,6 +188,7 @@ export async function render(main) {
   const refreshing = g.refresh?.status === 'pending' || g.refresh?.status === 'leased'
   const total = Number(d.total) || 0
   const pages = Math.max(1, Number(d.pages) || 1)
+  lastTopics = d.topics ?? []
   // 筛选后总数变少：页码越界时回到最后一页重取一次（pages >= 1，不会递归下去）
   if (total > 0 && page > pages) {
     page = pages
@@ -219,9 +219,10 @@ export async function render(main) {
           <option value="active" ${stateFilter === 'active' ? 'selected' : ''}>正常</option>
           <option value="deleted" ${stateFilter === 'deleted' ? 'selected' : ''}>已删除</option>
         </select>
-        <button class="btn sm" id="owner-only" type="button" aria-pressed="${ownerOnly}">${
-          ownerOnly ? '显示全部' : '只看星主'
-        }</button>
+        <label class="check" title="只看星主发的帖子">
+          <input type="checkbox" id="owner-only" ${ownerOnly ? 'checked' : ''}>
+          <span>只看星主</span>
+        </label>
         <button class="btn sm${g.hasToken ? '' : ' primary'}" id="open-config" aria-haspopup="dialog">${icon(
           'gear',
           14,
@@ -232,18 +233,26 @@ export async function render(main) {
     </div>
     <p class="small muted mt-1" id="zsxq-progress">历史回溯：${progressText(job.progress, groups)}</p>
 
-    <div class="list">
-      ${
-        d.topics.map(topicHtml).join('') ||
-        `<div class="empty">${
-          stateFilter === 'deleted'
-            ? '暂无已删除话题：节点会定期探测，删帖被确认后自动标记到这里'
-            : ownerOnly
-              ? '只看星主时暂无帖子（星主帖由新版采集任务标记，可先「立即同步」）'
-              : '暂无话题（在「同步配置」里勾选星球并启用同步，由节点定时拉取）'
-        }</div>`
-      }
-    </div>
+    ${
+      lastTopics.length
+        ? `<div class="zsxq-split">
+        <div class="list" id="zsxq-topic-list">${lastTopics.map(topicHtml).join('')}</div>
+        <aside class="zsxq-pane-comments" id="zsxq-comment-pane" aria-label="评论面板">
+          <div class="zsxq-pane-head">
+            <span class="fw-semibold" id="zsxq-comment-title">评论</span>
+            <span class="small muted" id="zsxq-comment-sub">在左侧选择一条帖子</span>
+          </div>
+          <div class="zsxq-comment-list" id="zsxq-comment-list"></div>
+        </aside>
+      </div>`
+        : `<div class="empty">${
+            stateFilter === 'deleted'
+              ? '暂无已删除话题：节点会定期探测，删帖被确认后自动标记到这里'
+              : ownerOnly
+                ? '只看星主时暂无帖子（星主帖由新版采集任务标记，可先「立即同步」）'
+                : '暂无话题（在「同步配置」里勾选星球并启用同步，由节点定时拉取）'
+          }</div>`
+    }
     <nav class="mt-3 flex center">
       <button class="btn sm" id="prev" ${page <= 1 ? 'disabled' : ''}>上一页</button>
       <span class="small muted">第 ${page} / ${pages} 页${total ? ` · 共 ${total} 条` : ''}</span>
@@ -253,15 +262,17 @@ export async function render(main) {
   // 翻页后回顶，别让用户停在上一页底部
   const go = async (delta) => {
     page += delta
+    resetSelection()
     await rerender(render, main)
     scrollToTop()
   }
   main.querySelector('#prev').onclick = () => go(-1)
   main.querySelector('#next').onclick = () => go(1)
 
-  main.querySelector('#owner-only').onclick = async () => {
-    ownerOnly = !ownerOnly
+  main.querySelector('#owner-only').onchange = async (e) => {
+    ownerOnly = e.target.checked
     page = 1
+    resetSelection()
     await rerender(render, main)
     scrollToTop()
   }
@@ -269,6 +280,7 @@ export async function render(main) {
   main.querySelector('#state-filter').onchange = async (e) => {
     stateFilter = e.target.value in STATE_LABELS ? e.target.value : 'all'
     page = 1
+    resetSelection()
     await rerender(render, main)
     scrollToTop()
   }
@@ -286,42 +298,111 @@ export async function render(main) {
     if (res.ok) toast('已排入同步队列，节点下次轮询开始同步')
   }
 
-  // 评论：按帖子独立展开 / 收起，首次点开拉第 1 页，「加载更多评论」按页追加
-  main.querySelectorAll('.zsxq-topic').forEach((card) => {
-    const btn = card.querySelector('[data-comments]')
-    const box = card.querySelector('.zsxq-comments')
-    if (btn && box) btn.onclick = () => toggleComments(btn, box)
-  })
+  // 双栏：点左侧帖子卡片 → 右栏显示它的评论（点链接 / 附件不触发）
+  const topicList = main.querySelector('#zsxq-topic-list')
+  if (topicList) {
+    topicList.addEventListener('click', (e) => {
+      if (e.target.closest('a')) return
+      const card = e.target.closest('.zsxq-topic')
+      if (card) selectTopic(card.dataset.topic, { scroll: true })
+    })
+  }
+
+  // 重绘（备份完成 / 星球列表拉完等）后恢复选中；选中的帖子不在当前页则回空态
+  if (selectedTopicId && lastTopics.some((t) => String(t.id) === String(selectedTopicId))) {
+    selectTopic(selectedTopicId)
+  } else {
+    selectedTopicId = null
+    renderCommentPane()
+  }
 
   setupMoreMenus(main)
   const backupItem = main.querySelector('#more-zsxq .more-item')
   if (backupItem) backupItem.onclick = () => void backupOwner(main)
 }
 
-/** 展开 / 收起评论区：首次展开才发请求，收起只切显隐 */
-async function toggleComments(btn, box) {
-  const id = btn.dataset.comments
-  const st = commentState.get(id) ?? { page: 0, pages: 1, total: 0, open: false }
-  commentState.set(id, st)
-
-  if (st.open) {
-    st.open = false
-    box.hidden = true
-    btn.setAttribute('aria-expanded', 'false')
-    return
-  }
-  st.open = true
-  box.hidden = false
-  btn.setAttribute('aria-expanded', 'true')
-  if (st.page > 0) return
-
-  box.innerHTML = '<div class="small muted">加载评论…</div>'
-  await loadCommentPage(btn, box, st, 1)
+/** 翻页 / 切筛选后清掉选中与评论缓存，右栏回到空态 */
+function resetSelection() {
+  selectedTopicId = null
+  commentState.clear()
 }
 
-/** 拉一页评论并追加到展开区；ownerOnly 与列表同口径 */
-async function loadCommentPage(btn, box, st, next) {
-  const id = btn.dataset.comments
+/** 右栏评论面板：按选中话题渲染缓存 / 加载态 / 空态 */
+function renderCommentPane() {
+  const title = document.getElementById('zsxq-comment-title')
+  const sub = document.getElementById('zsxq-comment-sub')
+  const list = document.getElementById('zsxq-comment-list')
+  if (!title || !sub || !list) return
+  const t = lastTopics.find((x) => String(x.id) === String(selectedTopicId))
+  if (!selectedTopicId || !t) {
+    title.textContent = '评论'
+    sub.textContent = '在左侧选择一条帖子'
+    list.innerHTML = '<div class="small muted">点左侧任意一条帖子，评论会显示在这里</div>'
+    return
+  }
+  const st = commentState.get(selectedTopicId) ?? { page: 0, pages: 1, total: 0, items: [] }
+  const likes = Number(t.likesCount) || 0
+  title.textContent = `评论 ${st.total}`
+  sub.textContent = `${t.authorName || '未知作者'}${likes ? ` · ${likes} 赞` : ''}`
+  // 首次选中还没拉到数据：加载中 / 失败给重试入口（fetchCommentPage 完成后会重绘本面板）
+  if (st.page === 0) {
+    if (st.error) {
+      list.innerHTML =
+        '<div class="small muted">评论加载失败</div><button class="btn sm" type="button" data-retry-comments>重试</button>'
+      const retry = list.querySelector('[data-retry-comments]')
+      retry.onclick = () => {
+        st.error = false
+        list.innerHTML = '<div class="small muted">加载评论…</div>'
+        void fetchCommentPage(selectedTopicId, 1)
+      }
+    } else {
+      list.innerHTML = '<div class="small muted">加载评论…</div>'
+    }
+    return
+  }
+  list.innerHTML =
+    st.items.map(commentHtml).join('') || '<div class="small muted">暂无评论</div>'
+  if (st.page < st.pages) {
+    list.insertAdjacentHTML(
+      'beforeend',
+      '<button class="btn sm" type="button" data-more-comments>加载更多评论</button>',
+    )
+    const more = list.querySelector('[data-more-comments]')
+    more.onclick = async () => {
+      more.disabled = true
+      more.classList.add('is-busy')
+      await fetchCommentPage(selectedTopicId, st.page + 1)
+    }
+  }
+}
+
+/** 选中左侧帖子 → 右栏显示它的评论；已拉取过的直接用缓存，不再发请求 */
+function selectTopic(id, { scroll = false } = {}) {
+  if (!id) return
+  selectedTopicId = String(id)
+  document.querySelectorAll('#zsxq-topic-list .zsxq-topic').forEach((c) => {
+    c.classList.toggle('is-active', c.dataset.topic === selectedTopicId)
+  })
+  const st = commentState.get(selectedTopicId) ?? { page: 0, pages: 1, total: 0, items: [] }
+  commentState.set(selectedTopicId, st)
+  renderCommentPane()
+  if (st.page === 0) void fetchCommentPage(selectedTopicId, 1)
+  // 窄屏双栏堆叠成上下块时，选中后滚到评论面板，别让用户自己找
+  if (scroll && window.matchMedia('(max-width: 900px)').matches) {
+    document.getElementById('zsxq-comment-pane')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+}
+
+/** 卡片上的评论数徽标随拉取结果更新 */
+function updateTopicCount(id, total) {
+  const badge = document.querySelector(
+    `#zsxq-topic-list .zsxq-topic[data-topic="${esc(id)}"] .zsxq-count`,
+  )
+  if (badge) badge.textContent = `${total} 评论`
+}
+
+/** 拉一页评论进缓存并刷新右栏；ownerOnly 与列表同口径 */
+async function fetchCommentPage(id, next) {
   const gen = renderGen
   const query = `page=${next}&pageSize=${COMMENT_PAGE_SIZE}${ownerOnly ? '&ownerOnly=1' : ''}`
 
@@ -330,46 +411,35 @@ async function loadCommentPage(btn, box, st, next) {
     data = await api(`/api/zsxq/topics/${encodeURIComponent(id)}/comments?${query}`)
   } catch (err) {
     if (gen !== renderGen) return
-    if (next === 1) {
-      box.innerHTML = '<div class="small muted">评论加载失败，收起后重试</div>'
-      st.page = 0
+    // 失败回退页码：再点「加载更多评论」可重试同一页；首屏失败在右栏给重试按钮
+    const st = commentState.get(id)
+    if (st && st.page >= next) st.page = next - 1
+    if (st && next === 1) st.error = true
+    const stillSelected = String(selectedTopicId) === String(id)
+    if (stillSelected && next === 1) {
+      renderCommentPane()
+    } else {
+      const more = document.querySelector('#zsxq-comment-list [data-more-comments]')
+      if (more) {
+        more.disabled = false
+        more.classList.remove('is-busy')
+      }
+      toast(err?.message || '加载评论失败', true)
     }
-    const more = box.querySelector('[data-more-comments]')
-    if (more) {
-      more.disabled = false
-      more.classList.remove('is-busy')
-    }
-    toast(err?.message || '加载评论失败', true)
     return
   }
   // 切页 / 重绘了：别往已经不在文档里的旧节点写
   if (gen !== renderGen) return
 
+  const st = commentState.get(id) ?? { page: 0, pages: 1, total: 0, items: [] }
   st.page = next
   st.pages = Math.max(1, Number(data.pages) || 1)
   st.total = Number(data.total) || 0
-  btn.textContent = `评论 ${st.total}`
-
-  if (next === 1) box.innerHTML = ''
-  box.querySelector('[data-more-comments]')?.remove()
-
   const comments = Array.isArray(data.comments) ? data.comments : []
-  const html = comments.map(commentHtml).join('')
-  if (html) box.insertAdjacentHTML('beforeend', html)
-  else if (next === 1) box.insertAdjacentHTML('beforeend', '<div class="small muted">暂无评论</div>')
-
-  if (st.page < st.pages) {
-    box.insertAdjacentHTML(
-      'beforeend',
-      '<button class="btn sm" type="button" data-more-comments>加载更多评论</button>',
-    )
-    const more = box.querySelector('[data-more-comments]')
-    more.onclick = async () => {
-      more.disabled = true
-      more.classList.add('is-busy')
-      await loadCommentPage(btn, box, st, st.page + 1)
-    }
-  }
+  st.items = next === 1 ? comments : [...st.items, ...comments]
+  commentState.set(id, st)
+  updateTopicCount(id, st.total)
+  if (String(selectedTopicId) === String(id)) renderCommentPane()
 }
 
 /**
@@ -481,7 +551,7 @@ function openConfig(main, g, job) {
          : `<div class="small muted" id="group-empty">${emptyGroupsHint(g)}</div>`
      }
      <label class="check mt-2"><input type="checkbox" id="sync-enabled" ${job.enabled ? 'checked' : ''}> 启用同步</label>
-     <p class="small muted mt-1">每日 20:20 自动同步，保存后立刻排一轮。</p>
+     <p class="small muted mt-1">每小时 20 分自动同步，保存后立刻排一轮。</p>
      <p class="small muted mt-1">历史回溯：${progressText(job.progress, groups)}</p>
      ${job.enabled && job.result ? `<p class="small muted">最近一次同步：${esc(String(job.result).slice(0, 160))}</p>` : ''}
 
@@ -584,6 +654,7 @@ export function destroy() {
   configOpen = false
   alive = false
   renderGen += 1
-  commentState.clear()
+  resetSelection()
+  lastTopics = []
   closeMoreMenu()
 }

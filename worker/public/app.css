@@ -1246,24 +1246,11 @@ a.book-cover:focus-visible {
 .list > a:hover { border-color: var(--primary); background: var(--surface-2) }
 .list > a.active { border-color: var(--primary); background: var(--primary-wash) }
 
-/* 资讯列表：未读圆点 + 已读弱化 + 行内状态按钮 */
+/* 资讯列表 */
 .news-item { min-width: 0 }
 /* 资讯卡片间隔在列表基础间距上放大 0.5 倍（无限滚动下阅读更透气） */
 #items.list { gap: calc(var(--sp-2) * 1.5) }
 .news-line { min-width: 0 }
-.news-dot {
-  flex: 0 0 auto;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--primary);
-  box-shadow: 0 0 0 3px var(--primary-wash);
-}
-.news-item.is-read .news-dot {
-  border: 1px solid var(--border-strong);
-  background: transparent;
-  box-shadow: none;
-}
 .news-title {
   min-width: 0;
   overflow: hidden;
@@ -1271,7 +1258,6 @@ a.book-cover:focus-visible {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.news-item.is-read .news-title { color: var(--muted-fg); font-weight: 400 }
 .news-item .item-preview:empty { display: none }
 /* 资讯预览里的原文配图收敛成缩略图，段落也别把列表撑高（issue #19） */
 .news-item .item-preview img {
@@ -1299,18 +1285,60 @@ a.book-cover:focus-visible {
 .zsxq-state-filter { width: auto; min-width: 92px }
 .list > .zsxq-topic.is-deleted { border-left: 3px solid var(--danger-line) }
 
-/* 知识星球：评论展开区（issue #7） */
-.zsxq-comments {
+/* 知识星球：双栏（左帖子流 / 右评论面板），右栏粘性常驻、独立滚动 */
+.zsxq-split {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(300px, 2fr);
+  gap: var(--sp-4);
+  align-items: start;
+}
+.zsxq-pane-comments {
+  position: sticky;
+  top: var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - var(--sp-4) * 2);
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+/* 播放条出现时底部被占掉一条，右栏同步压缩 */
+body:has(.playerbar:not([hidden])) .zsxq-pane-comments {
+  max-height: calc(100dvh - var(--sp-4) * 2 - var(--playerbar-h));
+}
+.zsxq-pane-head {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.zsxq-comment-list {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
-  margin-left: 2px;
-  padding-left: var(--sp-3);
-  border-left: 2px solid var(--border);
+  padding: var(--sp-3) 14px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
-/* display:flex 会盖掉 UA 的 [hidden]，这里显式关掉 */
-.zsxq-comments[hidden] { display: none }
 .zsxq-comment { display: flex; flex-direction: column; gap: 2px; min-width: 0 }
+
+/* 左栏帖子卡片：整卡可点切换右栏；已删除标记不被选中态盖掉 */
+#zsxq-topic-list > .zsxq-topic { cursor: pointer }
+#zsxq-topic-list > .zsxq-topic:hover { border-color: var(--primary) }
+#zsxq-topic-list > .zsxq-topic.is-active { border-color: var(--primary); background: var(--primary-wash) }
+#zsxq-topic-list > .zsxq-topic.is-active.is-deleted { border-left-color: var(--danger-line) }
+
+/* 窄屏放不下双栏：上下堆叠，评论面板变成列表下方的一块限高区域 */
+@media (max-width: 900px) {
+  .zsxq-split { grid-template-columns: minmax(0, 1fr) }
+  .zsxq-pane-comments { position: static; max-height: 60vh }
+}
 
 /* 笔记：目录 / 列表 / 编辑器 三栏，各栏独立滚动；窄屏改为上下堆叠 */
 .note-split {
@@ -1630,19 +1658,6 @@ body:has(.playerbar:not([hidden])) .note-split {
 }
 .home-news-item:last-child { border-bottom: 0 }
 .home-news-item:hover .home-news-title { color: var(--primary) }
-.home-news-item.is-read .home-news-title { color: var(--muted-fg); font-weight: 400 }
-.home-news-dot {
-  flex: 0 0 auto;
-  width: 6px;
-  height: 6px;
-  border: 1px solid var(--border-strong);
-  border-radius: 50%;
-}
-.home-news-dot.is-unread {
-  border-color: transparent;
-  background: var(--primary);
-  box-shadow: 0 0 0 3px var(--primary-wash);
-}
 .home-news-title {
   flex: 1 1 auto;
   min-width: 0;

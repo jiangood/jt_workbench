@@ -428,9 +428,11 @@ zsxq.post('/job', async (c) => {
 
   if (!existing) {
     if (!groupIds.length) return ok(null)
+    // cron 直接落标准 5 段：Quartz 的 `?` 在 croner 8 会被替换成解析当天的星期（issue #16，
+    // 线上曾因此把 next_run_at 排到一周后），0023 迁移已把存量行归一化，这里不再产脏值
     await db
       .prepare(`INSERT INTO job (type, payload, cron, enabled, status, next_run_at)
-                VALUES ('zsxq_sync', ?, '0 20 * * * ?', ?, 'pending', ?)`)
+                VALUES ('zsxq_sync', ?, '20 * * * *', ?, 'pending', ?)`)
       .bind(JSON.stringify({ groupIds, groupId: groupIds[0], count: 20 }), enabling ? 1 : 0, now)
       .run()
     return ok(null)
