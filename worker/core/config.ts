@@ -126,6 +126,14 @@ export const CONFIG_FIELDS: ConfigField[] = [
     hint: '仅当服务商模板选「Resend HTTP API」时使用；配置 SMTP 后不再需要，留空即可',
   },
   {
+    key: 'app_version',
+    label: '系统版本',
+    kind: 'text',
+    maxLen: 64,
+    hidden: true, // 由发布流水线在 Worker 部署后写入（发布 tag，如 v0.13.12），页面只读展示
+    hint: 'GitHub Release 发布时自动写入，用于确认线上部署版本',
+  },
+  {
     key: 'agent_latest_version',
     label: 'agent 最新版本',
     kind: 'text',

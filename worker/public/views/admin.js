@@ -148,11 +148,13 @@ export async function render(main, params = {}) {
   const activeTab = TABS.some((t) => t.id === params.tab) ? params.tab : 'nodes'
   const paneAttrs = (id) => `id="pane-${id}" role="tabpanel" aria-labelledby="tab-${id}" data-pane="${id}"${id === activeTab ? '' : ' hidden'}`
 
+  const appVersion = cfg.appVersion || '—'
+
   main.innerHTML = `
     <div class="page-head">
       <div>
         <h1 class="page-title">系统管理</h1>
-        <p class="page-sub">定时任务、节点与执行日志、参数维护（参数全部存 D1，可随时改）</p>
+        <p class="page-sub">定时任务、节点与执行日志、参数维护（参数全部存 D1，可随时改） · 系统版本 <code class="mono">${esc(appVersion)}</code></p>
       </div>
     </div>
 

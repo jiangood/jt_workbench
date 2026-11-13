@@ -18,7 +18,7 @@ import { buildInstall, requestOrigin } from '../core/install'
 import { sendMail } from '../core/mail'
 import { lunarLabel } from '../core/lunar'
 import { parseOffsets } from '../core/recurrence'
-import { findField, getConfigs, listConfig, resetConfig, setConfig, validateConfig } from '../core/config'
+import { findField, getConfig, getConfigs, listConfig, resetConfig, setConfig, validateConfig } from '../core/config'
 
 const ONLINE_MS = 30 * 60_000 // 3× poll 间隔容错（v4.6）
 const EXPORT_WINDOW_MS = 7 * 86400_000 // 与「任务运行」页一致：最近 7 天
@@ -528,7 +528,12 @@ admin.get('/jobs/:id/runs', async (c) => {
 })
 
 /** 参数中心（D1 app_config，决策 #23）：列表 / 保存 / 随机重置；明文只给已登录管理员 */
-admin.get('/config', async (c) => ok({ fields: await listConfig(c.env) }))
+admin.get('/config', async (c) =>
+  ok({
+    fields: await listConfig(c.env),
+    appVersion: await getConfig(c.env, 'app_version'),
+  }),
+)
 
 admin.post('/config', async (c) => {
   const body = await readBody<{ key?: string; value?: string }>(c)

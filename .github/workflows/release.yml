@@ -123,6 +123,20 @@ jobs:
         working-directory: worker
         run: npm run deploy
 
+      # Worker 部署成功后回写系统版本（发布 tag），便于后台确认线上实际版本
+      - name: Worker — publish app version
+        if: steps.diff.outputs.worker == 'true'
+        working-directory: worker
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if ! printf '%s' "$RELEASE_TAG" | grep -Eq '^v?[0-9A-Za-z._-]+$'; then
+            echo "::error::发布 tag 含非法字符：$RELEASE_TAG"
+            exit 1
+          fi
+          npx wrangler d1 execute jt_workbench --remote --yes --command \
+            "INSERT INTO app_config (k, v, updated_at) VALUES ('app_version', '${RELEASE_TAG}', $(date +%s)000) ON CONFLICT (k) DO UPDATE SET v = excluded.v, updated_at = excluded.updated_at"
+
       - uses: docker/setup-buildx-action@v3
         if: steps.diff.outputs.agent == 'true'
 
