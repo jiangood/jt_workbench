@@ -21,7 +21,10 @@ const BACKUP_IMAGES = 10
 const BACKUP_MAX_ROUNDS = 12
 
 let page = 1
-// 只看星主：列表与评论请求同时带 ownerOnly=1，关闭后恢复
+let total = 0
+let loading = false
+let observer = null
+// 只看星主：仅过滤左侧帖子列表，评论始终显示全部
 let ownerOnly = false
 // 删除状态筛选：all（含已删除，默认）/ active / deleted
 let stateFilter = 'all'
@@ -29,15 +32,15 @@ const STATE_LABELS = { all: '全部', active: '正常', deleted: '已删除' }
 let pollTimer = 0
 // 低频配置（token / 星球勾选）收在弹窗里：页面重绘时保持弹窗打开，数据刷新后原地更新
 let configOpen = false
-// 视图存活 + 渲染代数：备份循环 / 评论请求在切页或重绘后立刻停手
+// 视图存活 + 渲染代数：备份循环 / 评论请求 / 追加加载在重绘后立刻停手
 let alive = true
 let renderGen = 0
 let backingUp = false
 /** 双栏模式：左栏帖子列表 / 右栏评论面板；右栏当前选中（未选 = 空态提示） */
 let selectedTopicId = null
-/** 当前页的帖子缓存：重绘后恢复选中态时取作者 / 赞数用 */
+/** 已加载帖子的累积缓存（无限滚动追加）；用于恢复选中态与评论面板取作者信息 */
 let lastTopics = []
-/** 各话题已拉取的评论缓存（topicId → {page, pages, total, items}）；翻页 / 切筛选后清空 */
+/** 各话题已拉取的评论缓存（topicId → {page, pages, total, items}）；切筛选 / 重置后清空 */
 const commentState = new Map()
 
 const stopPoll = () => {
@@ -279,34 +282,90 @@ function topicHtml(t) {
     </div>`
 }
 
+function topicQuery(pageNum) {
+  const stateQuery = stateFilter === 'all' ? '' : `&state=${stateFilter}`
+  return `/api/zsxq/topics?page=${pageNum}&pageSize=${PAGE_SIZE}${ownerOnly ? '&ownerOnly=1' : ''}${stateQuery}`
+}
+
+function setLoadStatus(main) {
+  const el = main?.querySelector?.('#zsxq-load-status')
+  if (!el) return
+  if (!total) {
+    el.textContent = ''
+    return
+  }
+  el.textContent = lastTopics.length >= total ? `已全部加载（共 ${total} 条）` : '上滑加载更多'
+}
+
+function setupInfiniteScroll(main, gen) {
+  const sentinel = main.querySelector('#zsxq-sentinel')
+  if (!sentinel || typeof IntersectionObserver === 'undefined') return
+  observer = new IntersectionObserver(
+    (entries) => {
+      if (entries.some((e) => e.isIntersecting)) void loadMore(main, gen)
+    },
+    { rootMargin: '400px 0px' },
+  )
+  observer.observe(sentinel)
+}
+
+async function loadMore(main, gen) {
+  if (loading || gen !== renderGen || lastTopics.length >= total) return
+  loading = true
+  const status = main.querySelector('#zsxq-load-status')
+  if (status) status.textContent = '加载中…'
+  try {
+    while (lastTopics.length < total) {
+      const data = await api(topicQuery(page))
+      if (gen !== renderGen) return
+      page += 1
+      total = Number(data.total) || total
+      const items = Array.isArray(data.topics) ? data.topics : []
+      const list = main.querySelector('#zsxq-topic-list')
+      if (!list) return
+      if (items.length) {
+        lastTopics = [...lastTopics, ...items]
+        list.insertAdjacentHTML('beforeend', items.map(topicHtml).join(''))
+      }
+      if (items.length) break
+      // 整页为空但未到底（异常情况）继续往后取，避免卡住
+      if (page > (Number(data.pages) || page)) break
+    }
+  } catch (err) {
+    if (gen === renderGen) {
+      if (status) status.textContent = '加载失败，上滑重试'
+      toast(err?.message || '加载更多失败', true)
+    }
+    return
+  } finally {
+    if (gen === renderGen) loading = false
+  }
+  if (gen !== renderGen) return
+  setLoadStatus(main)
+}
+
 export async function render(main) {
   stopPoll()
   alive = true
   renderGen += 1
   const gen = renderGen
+  page = 1
+  total = 0
+  loading = false
+  observer?.disconnect()
+  observer = null
+  resetSelection()
 
-  const stateQuery = stateFilter === 'all' ? '' : `&state=${stateFilter}`
-  const [d, g] = await Promise.all([
-    api(
-      `/api/zsxq/topics?page=${page}&pageSize=${PAGE_SIZE}${ownerOnly ? '&ownerOnly=1' : ''}${stateQuery}`,
-    ),
-    api('/api/zsxq/groups'),
-  ])
+  const [d, g] = await Promise.all([api(topicQuery(page)), api('/api/zsxq/groups')])
   if (gen !== renderGen) return
 
   const groups = g.groups ?? []
   const job = d.job ?? {}
   const selected = new Set(job.groupIds ?? [])
   const refreshing = g.refresh?.status === 'pending' || g.refresh?.status === 'leased'
-  const total = Number(d.total) || 0
-  const pages = Math.max(1, Number(d.pages) || 1)
-  lastTopics = d.topics ?? []
-  // 筛选后总数变少：页码越界时回到最后一页重取一次（pages >= 1，不会递归下去）
-  if (total > 0 && page > pages) {
-    page = pages
-    return render(main)
-  }
-  if (!total) page = 1
+  total = Number(d.total) || 0
+  lastTopics = Array.isArray(d.topics) ? d.topics : []
+  page = 2
 
   const statusText = [
     job.enabled ? `同步已启用${selected.size ? ` · ${selected.size} 个星球` : ''}` : '同步未启用',
@@ -348,7 +407,11 @@ export async function render(main) {
     ${
       lastTopics.length
         ? `<div class="zsxq-split">
-        <div class="list" id="zsxq-topic-list">${lastTopics.map(topicHtml).join('')}</div>
+        <div>
+          <div class="list" id="zsxq-topic-list">${lastTopics.map(topicHtml).join('')}</div>
+          <p class="small muted center mt-2" id="zsxq-load-status" role="status"></p>
+          <div id="zsxq-sentinel" aria-hidden="true"></div>
+        </div>
         <aside class="zsxq-pane-comments" id="zsxq-comment-pane" aria-label="评论面板">
           <div class="zsxq-pane-head">
             <span class="fw-semibold" id="zsxq-comment-title">评论</span>
@@ -358,33 +421,21 @@ export async function render(main) {
         </aside>
       </div>`
         : `<div class="empty">${
-            stateFilter === 'deleted'
-              ? '暂无已删除话题：节点会定期探测，删帖被确认后自动标记到这里'
-              : ownerOnly
-                ? '只看星主时暂无帖子（星主帖由新版采集任务标记，可先「立即同步」）'
-                : '暂无话题（在「同步配置」里勾选星球并启用同步，由节点定时拉取）'
+            total
+              ? '加载中…'
+              : stateFilter === 'deleted'
+                ? '暂无已删除话题：节点会定期探测，删帖被确认后自动标记到这里'
+                : ownerOnly
+                  ? '只看星主时暂无帖子（星主帖由新版采集任务标记，可先「立即同步」）'
+                  : '暂无话题（在「同步配置」里勾选星球并启用同步，由节点定时拉取）'
           }</div>`
-    }
-    <nav class="mt-3 flex center">
-      <button class="btn sm" id="prev" ${page <= 1 ? 'disabled' : ''}>上一页</button>
-      <span class="small muted">第 ${page} / ${pages} 页${total ? ` · 共 ${total} 条` : ''}</span>
-      <button class="btn sm" id="next" ${page >= pages ? 'disabled' : ''}>下一页</button>
-    </nav>`
+    }`
 
-  // 翻页后回顶，别让用户停在上一页底部
-  const go = async (delta) => {
-    page += delta
-    resetSelection()
-    await rerender(render, main)
-    scrollToTop()
-  }
-  main.querySelector('#prev').onclick = () => go(-1)
-  main.querySelector('#next').onclick = () => go(1)
+  setLoadStatus(main)
 
   main.querySelector('#owner-only').onchange = async (e) => {
     ownerOnly = e.target.checked
     page = 1
-    resetSelection()
     await rerender(render, main)
     scrollToTop()
   }
@@ -392,7 +443,6 @@ export async function render(main) {
   main.querySelector('#state-filter').onchange = async (e) => {
     stateFilter = e.target.value in STATE_LABELS ? e.target.value : 'all'
     page = 1
-    resetSelection()
     await rerender(render, main)
     scrollToTop()
   }
@@ -420,20 +470,17 @@ export async function render(main) {
     })
   }
 
-  // 重绘（备份完成 / 星球列表拉完等）后恢复选中；选中的帖子不在当前页则回空态
-  if (selectedTopicId && lastTopics.some((t) => String(t.id) === String(selectedTopicId))) {
-    selectTopic(selectedTopicId)
-  } else {
-    selectedTopicId = null
-    renderCommentPane()
-  }
+  // 重绘后右栏回空态（选中帖子可能不在当前已加载列表中）
+  renderCommentPane()
 
   setupMoreMenus(main)
   const backupItem = main.querySelector('#more-zsxq .more-item')
   if (backupItem) backupItem.onclick = () => void backupOwner(main)
+
+  setupInfiniteScroll(main, gen)
 }
 
-/** 翻页 / 切筛选后清掉选中与评论缓存，右栏回到空态 */
+/** 切筛选 / 重置后清掉选中与评论缓存，右栏回到空态 */
 function resetSelection() {
   selectedTopicId = null
   commentState.clear()
@@ -762,6 +809,8 @@ function pollGroups(main) {
 
 export function destroy() {
   stopPoll()
+  observer?.disconnect()
+  observer = null
   configOpen = false
   alive = false
   renderGen += 1
