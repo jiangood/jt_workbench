@@ -97,13 +97,97 @@ function progressText(progress, groups) {
   return (parts.length > 3 ? [...parts.slice(0, 3), `等 ${parts.length} 个星球`] : parts).join(' · ')
 }
 
-/** 发帖 / 评论人一行：作者名 + 星主徽标 + 时间 */
+// ---------- 正文渲染：解析星球 <e type="..."/> 标记，避免裸标签/编码串直接展示 ----------
+
+function decodeZsxqValue(value) {
+  if (!value) return ''
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
+
+function safeHref(href) {
+  const raw = decodeZsxqValue(href || '')
+  try {
+    const u = new URL(raw, 'https://wx.zsxq.com')
+    if (u.protocol === 'http:' || u.protocol === 'https:') return u.href
+  } catch {}
+  return ''
+}
+
+function parseZsxqAttrs(raw) {
+  const attrs = {}
+  const re = /([a-zA-Z_:-]+)\s*=\s*"([^"]*)"/g
+  let m
+  while ((m = re.exec(raw))) attrs[m[1]] = m[2]
+  return attrs
+}
+
+/** 把星球富文本标记转成可读 HTML；纯文本段落逐段转义，链接仅允许 http/https */
+function renderZsxqText(text) {
+  if (!text) return ''
+  const src = String(text)
+  const re = /<e\b([^>]*?)\s*\/>/g
+  let out = ''
+  let last = 0
+  let m
+  while ((m = re.exec(src))) {
+    out += esc(src.slice(last, m.index))
+    out += renderZsxqTag(parseZsxqAttrs(m[1] || ''))
+    last = re.lastIndex
+  }
+  out += esc(src.slice(last))
+  return out
+}
+
+function renderZsxqTag(attrs) {
+  const type = attrs.type || ''
+  const title = decodeZsxqValue(attrs.title || '')
+  const href = safeHref(attrs.href)
+  const label = title || decodeZsxqValue(attrs.name || attrs.text || '')
+
+  if (type === 'mention') {
+    const name = label.replace(/^@/, '')
+    return `<span class="zsxq-mention">${esc(name ? `@${name}` : '@某人')}</span>`
+  }
+
+  if (type === 'hashtag') {
+    const tag = label.replace(/^#|#$/g, '')
+    return `<span class="zsxq-hashtag">#${esc(tag || '话题')}#</span>`
+  }
+
+  if (type === 'web') {
+    if (attrs.style === 'book') {
+      const name = label || '书籍'
+      return href
+        ? `<a class="zsxq-book" href="${esc(href)}" target="_blank" rel="noopener">《${esc(name)}》</a>`
+        : `<span class="zsxq-book">《${esc(name)}》</span>`
+    }
+    const text = label || (href ? href.replace(/^https?:\/\//, '').slice(0, 60) : '链接')
+    return href
+      ? `<a class="zsxq-link" href="${esc(href)}" target="_blank" rel="noopener">${esc(text)}</a>`
+      : `<span class="muted">${esc(text || '[链接]')}</span>`
+  }
+
+  if (type === 'text') return esc(label)
+
+  // 未识别标记：尽量展示可读文本，避免把原始标签/编码漏到页面
+  if (label) return esc(label)
+  if (href) return `<a class="zsxq-link" href="${esc(href)}" target="_blank" rel="noopener">${esc(href)}</a>`
+  return ''
+}
+
+/** 帖子 / 评论元信息：作者 + 星主徽标 + 时间，评论数等附加项靠右 */
 function authorLine(authorName, isOwner, at, extra = '') {
-  return `<div class="flex wrap center small">
-      <span class="fw-semibold">${esc(authorName || '未知作者')}</span>
-      ${isOwner ? '<span class="badge">星主</span>' : ''}
-      ${at ? `<span class="muted">${fmtTime(at)}</span>` : ''}
-      ${extra}
+  return `<div class="zsxq-meta small">
+      <span class="zsxq-meta-main">
+        <span class="fw-semibold">${esc(authorName || '未知作者')}</span>
+        ${isOwner ? '<span class="badge ok">星主</span>' : ''}
+        ${at ? `<span class="muted">${fmtTime(at)}</span>` : ''}
+      </span>
+      ${extra ? `<span class="zsxq-meta-extra">${extra}</span>` : ''}
     </div>`
 }
 
@@ -136,26 +220,31 @@ function imageStrip(images, maxHeight) {
 
 /** 一条评论：作者 / 星主 / 时间 / 正文 / 图片（图片走懒代理） */
 function commentHtml(cm) {
+  const body = cm.text ? renderZsxqText(cm.text) : ''
   return `<div class="zsxq-comment">
       ${authorLine(cm.authorName, cm.isOwner, cm.createTime)}
-      ${cm.text ? `<div class="small pre">${esc(cm.text)}</div>` : ''}
+      ${body ? `<div class="small pre zsxq-body">${body}</div>` : '<div class="small muted">（无文字内容）</div>'}
       ${imageStrip(cm.images, 120)}
     </div>`
 }
 
-/** 一条帖子：标题（主题色）放首行 + 右上角元信息 + 正文 + 图片 + 附件；点卡片切换右栏评论 */
+/** 一条帖子：元信息 + 正文（解析 <e> 标记） + 图片 + 附件；点卡片切换右栏评论 */
 function topicHtml(t) {
-  const extra = t.deleted ? '<span class="badge bad">已删除</span>' : ''
+  // 星球帖无固定标题字段时 talkText 已是完整正文；去掉重复标题行，只保留正文
+  const bodyText = t.talkText || t.title || ''
+  const body = bodyText ? renderZsxqText(bodyText) : ''
+  const hasMedia = (t.images?.length ?? 0) > 0 || (t.files?.length ?? 0) > 0
+  const extra = [
+    t.deleted ? '<span class="badge bad">已删除</span>' : '',
+    `<span class="badge muted zsxq-count">${Number(t.commentsCount) || 0} 评论</span>`,
+  ]
+    .filter(Boolean)
+    .join('')
   return `<div class="zsxq-topic${t.deleted ? ' is-deleted' : ''}" data-topic="${esc(t.id)}">
-      ${t.title ? `<div class="zsxq-topic-title">${esc(t.title)}</div>` : ''}
-      <div class="flex wrap center small zsxq-topic-head${t.title ? ' mt-1' : ''}">
-        <span class="fw-semibold">${esc(t.authorName || '未知作者')}</span>
-        ${t.isOwner ? '<span class="badge">星主</span>' : ''}
-        ${t.createTime ? `<span class="muted">${fmtTime(t.createTime)}</span>` : ''}
-        ${extra}
-        <span class="badge muted zsxq-count">${Number(t.commentsCount) || 0} 评论</span>
-      </div>
-      <div class="pre mt-1">${esc(t.talkText || '(无正文)')}</div>
+      ${authorLine(t.authorName, t.isOwner, t.createTime, extra)}
+      <div class="pre mt-1 zsxq-body${body ? '' : ' muted'}">${
+        body || (hasMedia ? '（分享了图片或附件）' : '（无文字内容）')
+      }</div>
       ${imageStrip(t.images, 140)}
       ${(t.files ?? []).length ? `<div class="mt-2">${t.files.map(fileLine).join('')}</div>` : ''}
       ${

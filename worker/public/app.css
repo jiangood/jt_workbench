@@ -1328,9 +1328,25 @@ body:has(.playerbar:not([hidden])) .zsxq-pane-comments {
 }
 .zsxq-comment { display: flex; flex-direction: column; gap: 2px; min-width: 0 }
 
-/* 帖子卡片：标题放首行用主题色；元信息（作者 / 时间 / 评论数）统一收在右上角 */
-.zsxq-topic-title { color: var(--primary); font-weight: 600; line-height: 1.4 }
-.zsxq-topic-head { justify-content: flex-end; gap: 6px }
+/* 帖子卡片：元信息一行（左作者+徽标，右评论数），正文解析星球标记后可读展示 */
+.zsxq-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+.zsxq-meta-main { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0 }
+.zsxq-meta-extra { margin-left: auto; display: inline-flex; align-items: center; gap: 6px }
+.zsxq-body {
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.zsxq-comment .zsxq-body { font-size: inherit }
+.zsxq-mention { color: var(--primary); font-weight: 500 }
+.zsxq-hashtag { color: var(--primary) }
+.zsxq-link, .zsxq-book { color: var(--primary); text-decoration: underline; text-underline-offset: 2px }
+.zsxq-link:hover, .zsxq-book:hover { color: var(--primary-h) }
 
 /* 左栏帖子卡片：整卡可点切换右栏；已删除标记不被选中态盖掉 */
 #zsxq-topic-list > .zsxq-topic { cursor: pointer }
