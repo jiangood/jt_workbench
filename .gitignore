@@ -7,3 +7,4 @@ dist/
 online-token.txt
 .playwright-mcp/
 .idea/
+.opencode/
