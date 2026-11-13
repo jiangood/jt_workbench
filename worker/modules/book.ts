@@ -428,8 +428,18 @@ async function saveBookFile(c: Context<Env>, stored: StoredFile, fmt: string) {
     throw err
   }
 
-  // 覆盖旧文件：新文件入库成功后再删旧 key
-  if (existing?.r2_key) await deleteFile(c.env, existing.r2_key).catch(() => {})
+  // 覆盖旧文件：新文件入库成功后再删旧 key；内容已变，旧听书缓存一并失效
+  if (existing?.r2_key) {
+    await deleteFile(c.env, existing.r2_key).catch(() => {})
+    const segs = await c.env.DB
+      .prepare('SELECT r2_key AS r2Key FROM tts_segment WHERE book_id = ?')
+      .bind(id)
+      .all<{ r2Key: string }>()
+    for (const seg of segs.results ?? []) {
+      if (seg.r2Key) await deleteFile(c.env, seg.r2Key).catch(() => {})
+    }
+    await c.env.DB.prepare('DELETE FROM tts_segment WHERE book_id = ?').bind(id).run()
+  }
 
   // 上传完成即补豆瓣信息（还没关联豆瓣条目时自动匹一次；匹配不到不影响上传结果）
   let douban: { title: string; doubanId: string } | null = null
@@ -456,12 +466,25 @@ book.get('/read/:id', async (c) => {
 })
 
 book.delete('/:id', async (c) => {
+  const id = c.req.param('id')
   const row = await c.env.DB
     .prepare('SELECT r2_key FROM book WHERE id = ?')
-    .bind(c.req.param('id'))
+    .bind(id)
     .first<{ r2_key: string | null }>()
   if (row?.r2_key) await deleteFile(c.env, row.r2_key)
-  await c.env.DB.prepare('DELETE FROM book WHERE id = ?').bind(c.req.param('id')).run()
+
+  // 清理听书缓存：音频在 R2，索引在 tts_segment（按书绑定）
+  const segs = await c.env.DB
+    .prepare('SELECT r2_key AS r2Key FROM tts_segment WHERE book_id = ?')
+    .bind(id)
+    .all<{ r2Key: string }>()
+  for (const seg of segs.results ?? []) {
+    if (seg.r2Key) await deleteFile(c.env, seg.r2Key).catch(() => {})
+  }
+  await c.env.DB.batch([
+    c.env.DB.prepare('DELETE FROM tts_segment WHERE book_id = ?').bind(id),
+    c.env.DB.prepare('DELETE FROM book WHERE id = ?').bind(id),
+  ])
   return ok(null)
 })
 

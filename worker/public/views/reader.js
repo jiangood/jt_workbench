@@ -431,11 +431,12 @@ function ttsBarHtml() {
           <option value="60">60 分钟</option>
         </select>
       </label>
+      <button class="tts-btn" type="button" data-tts-pregen title="预生成全书音频（提前缓存，减少等待）">预生成</button>
       <button class="tts-btn" type="button" data-tts-close aria-label="关闭朗读" title="关闭">${icon('close', 16)}</button>
     </div>`
 }
 
-function createTtsBar({ stage, getSegments, getStartIndex, onExhausted, bookId = null }) {
+function createTtsBar({ stage, getSegments, getStartIndex, onExhausted, bookId = null, pregen = null }) {
   const bar = stage.querySelector('[data-tts-bar]')
   if (!bar) return { toggleBar() {}, stop() {}, destroy() {}, isActive: () => false }
   const toggleBtn = bar.querySelector('[data-tts-toggle]')
@@ -443,6 +444,7 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted, bookId =
   const rateSel = bar.querySelector('[data-tts-rate]')
   const timerSel = bar.querySelector('[data-tts-timer]')
   const followBox = bar.querySelector('[data-tts-follow]')
+  const pregenBtn = bar.querySelector('[data-tts-pregen]')
 
   const serverSupported = Number.isFinite(Number(bookId)) && Number(bookId) > 0
 
@@ -655,6 +657,36 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted, bookId =
     startFrom(Math.max(0, Math.min(segments.length - 1, cursor + dir)))
   }
 
+  let pregenerating = false
+  if (pregenBtn) {
+    const canPregen = serverSupported && typeof pregen === 'function'
+    pregenBtn.hidden = !canPregen
+    pregenBtn.disabled = !canPregen
+    pregenBtn.onclick = async () => {
+      if (pregenerating || !canPregen) return
+      pregenerating = true
+      pregenBtn.disabled = true
+      const prev = statusEl.textContent
+      try {
+        await pregen({
+          report(text) { setStatus(text) },
+          isCancelled: () => !bar.isConnected || !aliveStage(),
+        })
+      } catch (err) {
+        toast(err?.message || '预生成失败', true)
+      } finally {
+        pregenerating = false
+        if (pregenBtn.isConnected) pregenBtn.disabled = false
+        if (statusEl.isConnected) setStatus(state === 'idle' ? (segments.length ? '已停止' : '未开始') : prev)
+        paint()
+      }
+    }
+  }
+
+  function aliveStage() {
+    return bar.isConnected
+  }
+
   toggleBtn.onclick = togglePlay
   bar.querySelector('[data-tts-prev]').onclick = () => step(-1)
   bar.querySelector('[data-tts-next]').onclick = () => step(1)
@@ -681,7 +713,7 @@ function createTtsBar({ stage, getSegments, getStartIndex, onExhausted, bookId =
         paint()
         if (!readStorage(TTS_HINT_KEY)) {
           writeStorage(TTS_HINT_KEY, '1')
-          toast('AI朗读将按段生成语音，首次可能需要等待')
+          toast('AI朗读将按段生成语音，首次可能需要等待；可点“预生成”提前缓存全书')
         }
       } else {
         bar.hidden = true
@@ -1681,6 +1713,28 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
     }
     // 目录统一从悬浮工具栏 / 右侧栏进（页脚按钮已去掉）
     stage.querySelector('[data-fab-toc]').onclick = showToc
+    const extractTextSegments = (doc) => {
+      if (!doc?.body) return []
+      // 只留最内层块，避免 li 里套 li / blockquote 里套 p 时重复读
+      let nodes = [...doc.body.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, blockquote')]
+      nodes = nodes.filter(
+        (el) => el.textContent.trim() && !el.querySelector('p, li, h1, h2, h3, h4, h5, h6, blockquote'),
+      )
+      if (!nodes.length) {
+        // 有些 epub 用 div 当段落：只取不嵌套块、长度合理的 div
+        nodes = [...doc.body.querySelectorAll('div')].filter((el) => {
+          const text = el.textContent.trim()
+          return text && text.length <= 1200 && !el.querySelector('div, p')
+        })
+      }
+      const out = []
+      for (const el of nodes) {
+        const text = el.textContent.replace(/\s+/g, ' ').trim()
+        if (text) out.push(text)
+      }
+      return out
+    }
+
     // 语音朗读：读当前页段落；读完自动翻页，跨章（spine 变化）即停，避免「不意外跳章」
     tts = createTtsBar({
       bookId: id,
@@ -1690,26 +1744,95 @@ async function openEpubReader(id, version, fileUrl, stage, setChapter) {
         for (const contents of rendition.getContents?.() ?? []) {
           const doc = contents?.document
           if (!doc?.body) continue
-          // 只留最内层块，避免 li 里套 li / blockquote 里套 p 时重复读
-          let nodes = [...doc.body.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, blockquote')]
-          nodes = nodes.filter(
-            (el) => el.textContent.trim() && !el.querySelector('p, li, h1, h2, h3, h4, h5, h6, blockquote'),
-          )
-          if (!nodes.length) {
-            // 有些 epub 用 div 当段落：只取不嵌套块、长度合理的 div
-            nodes = [...doc.body.querySelectorAll('div')].filter((el) => {
-              const text = el.textContent.trim()
-              return text && text.length <= 1200 && !el.querySelector('div, p')
-            })
+          for (const text of extractTextSegments(doc)) {
+            out.push({ text, focus: () => {} })
           }
-          for (const el of nodes) {
-            const text = el.textContent.replace(/\s+/g, ' ').trim()
-            if (text) out.push({ text, focus: () => ttsFocus(el, doc) })
+          // 重新定位到元素以支持高亮：按文本顺序匹配节点
+          const texts = extractTextSegments(doc)
+          const nodes = (() => {
+            let ns = [...doc.body.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, blockquote')]
+            ns = ns.filter((el) => el.textContent.trim() && !el.querySelector('p, li, h1, h2, h3, h4, h5, h6, blockquote'))
+            if (!ns.length) {
+              ns = [...doc.body.querySelectorAll('div')].filter((el) => {
+                const text = el.textContent.trim()
+                return text && text.length <= 1200 && !el.querySelector('div, p')
+              })
+            }
+            return ns
+          })()
+          // 覆盖为带 focus 的版本
+          out.length = 0
+          for (let i = 0; i < nodes.length; i++) {
+            const text = nodes[i].textContent.replace(/\s+/g, ' ').trim()
+            if (!text) continue
+            const el = nodes[i]
+            out.push({ text, focus: () => ttsFocus(el, doc) })
           }
         }
         return out
       },
       getStartIndex: () => 0,
+      pregen: async ({ report, isCancelled }) => {
+        const items = epubBook?.spine?.spineItems || []
+        if (!items.length) throw new Error('无法读取全书内容')
+        report('正在扫描全书…')
+        const seen = new Set()
+        const all = []
+        for (let i = 0; i < items.length; i++) {
+          if (isCancelled?.()) return
+          const item = items[i]
+          let doc = null
+          try {
+            const section = epubBook.spine.get(item.href)
+            if (section?.load) {
+              doc = await section.load(epubBook.load.bind(epubBook))
+            } else {
+              const raw = await epubBook.load(item.href)
+              if (typeof raw === 'string') doc = new DOMParser().parseFromString(raw, 'application/xhtml+xml')
+              else if (raw && raw.documentElement) doc = raw
+            }
+          } catch {
+            /* 单章解析失败：跳过，尽量覆盖其它章节 */
+          }
+          try {
+            const texts = extractTextSegments(doc)
+            for (const t of texts) {
+              const key = await sha40(t)
+              if (seen.has(key)) continue
+              seen.add(key)
+              all.push({ key, text: t })
+            }
+          } finally {
+            try { item.unload?.() } catch {}
+            try { epubBook.spine.get(item.href)?.unload?.() } catch {}
+          }
+          if ((i + 1) % 5 === 0 || i + 1 === items.length) {
+            report(`扫描中 ${i + 1}/${items.length} 章…`)
+          }
+        }
+        if (!all.length) {
+          toast('没有可生成的文本')
+          return
+        }
+        const batchSize = 200
+        let queued = 0
+        let ready = 0
+        for (let i = 0; i < all.length; i += batchSize) {
+          if (isCancelled?.()) return
+          const batch = all.slice(i, i + batchSize)
+          report(`提交中 ${Math.min(i + batch.length, all.length)}/${all.length} 段…`)
+          const res = await api('/api/tts/prepare', {
+            method: 'POST',
+            body: JSON.stringify({ bookId: id, voice: TTS_SERVER_VOICE, segments: batch }),
+          })
+          const list = res?.segments || []
+          for (const it of list) {
+            if (it?.ready) ready++
+            else queued++
+          }
+        }
+        toast(`预生成已提交：共 ${all.length} 段，已缓存 ${ready} 段，新入队 ${queued} 段（由节点后台合成）`)
+      },
       onExhausted: async () => {
         const beforeCfi = lastLoc?.start?.cfi || ''
         // 这个版本的 epub.js 没有 atEnd() 方法，currentLocation() 的结果里才有 atEnd 标记
