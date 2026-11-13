@@ -19,20 +19,13 @@ export const news = new Hono<Env>()
 
 // ---------- 列表 ----------
 
-/** 列表与「全部标为已读」共用同一份筛选条件（issue #22）：口径必须一致，别各拼一份 WHERE */
 interface NewsFilter {
   sourceId?: string | null
   category?: string | null
   q?: string | null
-  unread?: boolean
 }
 
-function buildFilter(f: NewsFilter): {
-  whereSql: string
-  bind: (string | number)[]
-  /** 至少有一个收窄条件（空筛选 = 「整个列表」这种大面积动作，批量已读要求显式 all:true） */
-  scoped: boolean
-} {
+function buildFilter(f: NewsFilter): { whereSql: string; bind: (string | number)[] } {
   const where: string[] = []
   const bind: (string | number)[] = []
   if (f.sourceId) {
@@ -50,8 +43,7 @@ function buildFilter(f: NewsFilter): {
     where.push("(title LIKE ? ESCAPE '\\' OR content_html LIKE ? ESCAPE '\\')")
     bind.push(like, like)
   }
-  if (f.unread) where.push('read_flag = 0')
-  return { whereSql: where.length ? `WHERE ${where.join(' AND ')}` : '', bind, scoped: where.length > 0 }
+  return { whereSql: where.length ? `WHERE ${where.join(' AND ')}` : '', bind }
 }
 
 function filterFromQuery(c: Context<Env>): NewsFilter {
@@ -59,7 +51,6 @@ function filterFromQuery(c: Context<Env>): NewsFilter {
     sourceId: c.req.query('sourceId') || null,
     category: c.req.query('category') || null,
     q: c.req.query('q') || null,
-    unread: c.req.query('unread') === '1',
   }
 }
 
@@ -71,7 +62,6 @@ interface NewsListRow {
   author: string | null
   publishedAt: number | null
   fetchedAt: number | null
-  readFlag: number
   preview: string | null
 }
 
@@ -82,7 +72,6 @@ interface NewsDetailRow {
   author: string | null
   publishedAt: number | null
   fetchedAt: number | null
-  readFlag: number
   contentHtml: string | null
   sourceName: string | null
 }
@@ -101,7 +90,6 @@ function normalizeListRow(r: NewsListRow): Omit<NewsListRow, 'fetchedAt'> {
     author: normalizeAuthor(r.author),
     // 真实发布时刻不可能晚于抓取时刻：clamp 掉上游时区错标带来的未来时间
     publishedAt: clampPublishedAt(r.publishedAt, r.fetchedAt ?? Date.now()),
-    readFlag: r.readFlag,
     preview: normalizeHtmlUrls(r.preview, link),
   }
 }
@@ -114,7 +102,6 @@ function normalizeDetailRow(r: NewsDetailRow): Omit<NewsDetailRow, 'fetchedAt'> 
     link,
     author: normalizeAuthor(r.author),
     publishedAt: clampPublishedAt(r.publishedAt, r.fetchedAt ?? Date.now()),
-    readFlag: r.readFlag,
     contentHtml: normalizeHtmlUrls(r.contentHtml, link),
     sourceName: r.sourceName,
   }
@@ -124,11 +111,11 @@ news.get('/items', async (c) => {
   const page = Math.max(1, Number(c.req.query('page') ?? '1') || 1)
   const { whereSql, bind } = buildFilter(filterFromQuery(c))
 
-  const [items, count, unread] = await Promise.all([
+  const [items, count] = await Promise.all([
     c.env.DB
       .prepare(
         `SELECT id, source_id AS sourceId, title, link, author, published_at AS publishedAt,
-                fetched_at AS fetchedAt, read_flag AS readFlag, substr(content_html, 1, 300) AS preview
+                fetched_at AS fetchedAt, substr(content_html, 1, 300) AS preview
          FROM news_item ${whereSql} ORDER BY published_at DESC, id DESC LIMIT ? OFFSET ?`,
       )
       .bind(...bind, PAGE_SIZE, (page - 1) * PAGE_SIZE)
@@ -137,9 +124,6 @@ news.get('/items', async (c) => {
       .prepare(`SELECT count(*) AS total FROM news_item ${whereSql}`)
       .bind(...bind)
       .first<{ total: number }>(),
-    c.env.DB
-      .prepare('SELECT count(*) AS n FROM news_item WHERE read_flag = 0')
-      .first<{ n: number }>(),
   ])
 
   const total = count?.total ?? 0
@@ -147,7 +131,6 @@ news.get('/items', async (c) => {
     items: items.results.map(normalizeListRow),
     total,
     pages: Math.max(1, Math.ceil(total / PAGE_SIZE)),
-    unread: unread?.n ?? 0,
     page,
     pageSize: PAGE_SIZE,
   })
@@ -158,7 +141,7 @@ news.get('/items/:id', async (c) => {
   const item = await c.env.DB
     .prepare(
       `SELECT i.id, i.title, i.link, i.author, i.published_at AS publishedAt,
-              i.fetched_at AS fetchedAt, i.read_flag AS readFlag, i.content_html AS contentHtml,
+              i.fetched_at AS fetchedAt, i.content_html AS contentHtml,
               s.name AS sourceName
        FROM news_item i LEFT JOIN news_source s ON s.id = i.source_id
        WHERE i.id = ?`,
@@ -167,63 +150,6 @@ news.get('/items/:id', async (c) => {
     .first<NewsDetailRow>()
   if (!item) throw new ApiError(404, 404, 'not found')
   return ok({ item: normalizeDetailRow(item) })
-})
-
-// ---------- 已读状态 ----------
-
-/** POST /read | /unread，body { ids: [1,2,3] } */
-async function setReadFlag(c: Context<Env>, read: boolean): Promise<Response> {
-  let body: { ids?: unknown } = {}
-  try {
-    body = await c.req.json<{ ids?: unknown }>()
-  } catch {
-    /* 空 body 按 ids 缺失处理 */
-  }
-  const ids = Array.isArray(body.ids)
-    ? body.ids.map(Number).filter((n) => Number.isInteger(n) && n > 0)
-    : []
-  if (!ids.length) throw new ApiError(400, 400, 'ids required')
-  if (ids.length > 200) throw new ApiError(400, 400, 'too many ids')
-
-  const marks = ids.map(() => '?').join(',')
-  const r = await c.env.DB
-    .prepare(`UPDATE news_item SET read_flag = ? WHERE id IN (${marks})`)
-    .bind(read ? 1 : 0, ...ids)
-    .run()
-  return ok({ changed: r.meta.changes, readFlag: read })
-}
-
-news.post('/read', (c) => setReadFlag(c, true))
-news.post('/unread', (c) => setReadFlag(c, false))
-
-/**
- * POST /read-all：把「当前筛选」的资讯一次性标为已读（issue #22）。
- * body 与列表查询参数同口径：{ sourceId?, category?, q?, unread?, all? }。
- * 空筛选等于「整个列表」，影响面最大：必须显式带 all:true（前端弹确认后才发），
- * 避免某个调用方漏传参数时把 533 条全部清成已读。
- */
-news.post('/read-all', async (c) => {
-  let body: { sourceId?: unknown; category?: unknown; q?: unknown; unread?: unknown; all?: unknown } = {}
-  try {
-    body = await c.req.json<typeof body>()
-  } catch {
-    /* 空 body 按「无筛选」处理，交给下面的 all:true 守卫 */
-  }
-  const filter: NewsFilter = {
-    sourceId: typeof body.sourceId === 'string' ? body.sourceId : null,
-    category: typeof body.category === 'string' ? body.category : null,
-    q: typeof body.q === 'string' ? body.q : null,
-    unread: body.unread === true || body.unread === 1,
-  }
-  const { whereSql, bind, scoped } = buildFilter(filter)
-  if (!scoped && body.all !== true) throw new ApiError(400, 400, 'filters or all=true required')
-
-  // 一条 UPDATE 打完，不按页循环
-  const r = await c.env.DB
-    .prepare(`UPDATE news_item SET read_flag = 1 ${whereSql}`)
-    .bind(...bind)
-    .run()
-  return ok({ changed: r.meta.changes ?? 0 })
 })
 
 

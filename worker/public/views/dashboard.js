@@ -1,6 +1,6 @@
 /** 首页：卡片流（资讯 / 提醒 / 自选股 / 笔记 / 知识星球）+ 底部状态条
  *  参考旧工作台首页（D:\ws\workbench\web\src\pages\index.jsx）：
- *  纯计数换成「能直接读的一屏」，空状态给出下一步入口，资讯点开即读。 */
+ *  纯计数换成「能直接读的一屏」，空状态给出下一步入口。 */
 
 import { api, esc, fmtTime, icon, loadScriptOnce, run, showDialog } from '../lib.js'
 
@@ -98,13 +98,10 @@ export async function render(main) {
 
   const news = d.news ?? {}
   const newsItems = news.latest ?? []
-  const newsUnread = Number(news.unread ?? 0)
   const newsList = newsItems.length
     ? newsItems
         .map((n) => {
-          const unread = !n.readFlag
-          return `<button type="button" class="home-news-item${unread ? '' : ' is-read'}" data-news="${esc(n.id)}" aria-haspopup="dialog">
-            <span class="home-news-dot${unread ? ' is-unread' : ''}"></span>
+          return `<button type="button" class="home-news-item" data-news="${esc(n.id)}" aria-haspopup="dialog">
             <span class="home-news-title" title="${esc(n.title || '')}">${esc(n.title || '(无标题)')}</span>
             <span class="home-news-meta">${esc(n.sourceName || '')}${n.publishedAt ? ` · ${fmtShort(n.publishedAt)}` : ''}</span>
           </button>`
@@ -216,7 +213,7 @@ export async function render(main) {
     ${banner}
     <div class="home-grid">
       <section class="card home-card home-card-wide">
-        ${cardHead('资讯', `<span class="badge ${newsUnread > 0 ? 'warn' : 'muted'}" id="news-unread" data-count="${newsUnread}">未读 ${newsUnread}</span>`, '#/news', '查看全部')}
+        ${cardHead('资讯', '', '#/news', '查看全部')}
         <div class="home-news">${newsList}</div>
       </section>
 
@@ -290,29 +287,6 @@ async function openNews(main, btn) {
      ${body ? `<div class="article-body">${body}</div>` : '<p class="muted">暂无正文，请查看原文。</p>'}`,
     { xl: true, label: '资讯详情' },
   )
-
-  if (!item.readFlag) markNewsRead(main, btn, id)
-}
-
-/** 打开即已读：本地乐观更新圆点与未读徽标；标记失败不影响阅读 */
-async function markNewsRead(main, btn, id) {
-  const dot = btn.querySelector('.home-news-dot')
-  if (!dot?.classList.contains('is-unread')) return
-  try {
-    await api('/api/news/read', { method: 'POST', body: JSON.stringify({ ids: [Number(id)] }) })
-  } catch {
-    return
-  }
-  dot.classList.remove('is-unread')
-  btn.classList.add('is-read')
-
-  const badge = main.querySelector('#news-unread')
-  if (!badge) return
-  const next = Math.max(0, Number(badge.dataset.count || 0) - 1)
-  badge.dataset.count = String(next)
-  badge.textContent = `未读 ${next}`
-  badge.classList.toggle('warn', next > 0)
-  badge.classList.toggle('muted', next === 0)
 }
 
 export function destroy() {}

@@ -1,11 +1,9 @@
-import { api, esc, icon, loadScriptOnce, rerender, rerenderKeepingFocus, run, scrollToTop, showDialog, toast } from '../lib.js'
+import { api, esc, icon, loadScriptOnce, rerender, run, scrollToTop, showDialog, toast } from '../lib.js'
 import { emptyState } from '../ui.js'
 
 const PAGE_SIZE = 30
 let page = 1
 let total = 0
-let onlyUnread = false
-let unreadCount = 0
 let blocks = []
 let sources = []
 let sourceIdx = {}
@@ -47,23 +45,16 @@ function matchBlocks(item) {
 function itemHtml(i) {
   const link = i.link || ''
   return `
-    <div class="news-item${i.readFlag ? ' is-read' : ''}">
+    <div class="news-item">
       <div class="flex between center">
         <div class="flex center flex-grow-1 news-line">
-          <span class="news-dot" aria-hidden="true"></span>
-          <a class="news-title" href="${esc(link || '#')}" target="_blank" rel="noopener"
-             data-open="${esc(i.id)}">${esc(i.title || '(无标题)')}</a>
+          <a class="news-title" href="${esc(link || '#')}" target="_blank" rel="noopener">${esc(i.title || '(无标题)')}</a>
         </div>
         <small class="muted nowrap ms-3">${i.publishedAt ? new Date(i.publishedAt).toLocaleDateString() : ''}</small>
       </div>
       <div class="flex between center mt-1">
         <small class="muted">${esc(sourceName(i.sourceId))}${i.author ? ' · ' + esc(i.author) : ''}</small>
-        <span class="flex center">
-          <span data-origin="${esc(i.id)}"></span>
-          <button class="link-btn" type="button" data-toggle="${esc(i.id)}" data-read="${i.readFlag ? '1' : ''}">
-            ${i.readFlag ? '标为未读' : '标为已读'}
-          </button>
-        </span>
+        <span data-origin="${esc(i.id)}"></span>
       </div>
       <div class="small item-preview mt-1" data-id="${esc(i.id)}"></div>
     </div>`
@@ -146,24 +137,6 @@ function setLoadStatus(main) {
   el.textContent = page * PAGE_SIZE >= total ? `已全部加载（共 ${total} 条）` : '上滑加载更多'
 }
 
-/** 点标题打开原文时顺带标记已读（失败不影响跳转）；手动切换已读/未读 */
-function wireItems(main) {
-  main.querySelectorAll('[data-open]').forEach((a) => {
-    a.onclick = () => {
-      if (a.closest('.news-item')?.classList.contains('is-read')) return
-      setRead(main, a.dataset.open, true)
-    }
-  })
-  main.querySelectorAll('[data-toggle]').forEach((btn) => {
-    btn.onclick = async () => {
-      const read = btn.dataset.read !== '1'
-      if ((await setRead(main, btn.dataset.toggle, read)) && onlyUnread && read) {
-        await rerender(render, main)
-      }
-    }
-  })
-}
-
 /** 哨兵进入视口（含 400px 预取余量）就追加下一页 */
 function setupInfiniteScroll(main) {
   const sentinel = main.querySelector('#sentinel')
@@ -186,7 +159,7 @@ async function loadMore(main) {
   if (status) status.textContent = '加载中…'
   try {
     while (page * PAGE_SIZE < total) {
-      const data = await api(`/api/news/items?page=${page}${onlyUnread ? '&unread=1' : ''}`)
+      const data = await api(`/api/news/items?page=${page}`)
       if (token !== renderToken) return // 视图已重绘 / 已跳页，别把旧页数据写进新列表
       page++
       total = Number(data.total) || total
@@ -196,7 +169,6 @@ async function loadMore(main) {
       list.querySelector('.empty')?.remove()
       list.insertAdjacentHTML('beforeend', visible.map(itemHtml).join(''))
       applyPreviews(main, data.items)
-      wireItems(main)
       if (visible.length) break
     }
   } finally {
@@ -214,7 +186,7 @@ async function goToPage(main, raw) {
   if (!list) return
   const token = ++renderToken // 作废在途的 loadMore 结果
   loading = false
-  const res = await run(null, () => api(`/api/news/items?page=${target}${onlyUnread ? '&unread=1' : ''}`))
+  const res = await run(null, () => api(`/api/news/items?page=${target}`))
   if (token !== renderToken) return
   if (!res.ok) return
   const data = res.data
@@ -223,9 +195,8 @@ async function goToPage(main, raw) {
   const visible = data.items.filter((i) => !matchBlocks(i))
   list.innerHTML =
     visible.map(itemHtml).join('') ||
-    (total ? '' : emptyState(onlyUnread ? '没有未读资讯' : '暂无内容（等待抓取任务执行）'))
+    (total ? '' : emptyState('暂无内容（等待抓取任务执行）'))
   applyPreviews(list, data.items)
-  wireItems(main)
   setLoadStatus(main)
   syncPager(main)
   scrollToTop()
@@ -242,7 +213,7 @@ export async function render(main) {
   const token = ++renderToken
 
   const [itemData, blockData, sourceData] = await Promise.all([
-    api(`/api/news/items?page=${page}${onlyUnread ? '&unread=1' : ''}`),
+    api(`/api/news/items?page=${page}`),
     api('/api/news/blocks'),
     api('/api/news/sources'),
   ])
@@ -250,7 +221,6 @@ export async function render(main) {
   sources = sourceData.sources
   sourceIdx = Object.fromEntries(sources.map((s) => [s.id, s.name]))
   total = Number(itemData.total) || 0
-  unreadCount = Number(itemData.unread ?? 0)
   const visible = itemData.items.filter((i) => !matchBlocks(i))
 
   // 抓取健康度（issue #16）：上次同步时间 + 被熔断暂停 / 连续失败的源，一行可见
@@ -269,11 +239,9 @@ export async function render(main) {
     <div class="page-head">
       <div>
         <h1 class="page-title">资讯</h1>
-        <p class="page-sub">共 ${esc(itemData.total)} 条 · <span id="unread-count">未读 ${unreadCount}</span> · 正文在浏览器端消毒后展示</p>
+        <p class="page-sub">共 ${esc(itemData.total)} 条 · 正文在浏览器端消毒后展示</p>
       </div>
       <div class="page-actions">
-        <button class="btn sm" id="btn-read-all"${total ? '' : ' disabled'}>全部标为已读</button>
-        <button class="btn sm" id="btn-unread" data-focus-key="unread" aria-pressed="${onlyUnread}">${onlyUnread ? '显示全部' : '只看未读'}</button>
         <button class="btn sm" id="btn-sources">${icon('news')}订阅源</button>
         <button class="btn sm" id="btn-blocks">${icon('close')}屏蔽词</button>
       </div>
@@ -285,7 +253,7 @@ export async function render(main) {
     <div class="list" id="items">
       ${
         visible.map(itemHtml).join('') ||
-        (total ? '' : emptyState(onlyUnread ? '没有未读资讯' : '暂无内容（等待抓取任务执行）'))
+        (total ? '' : emptyState('暂无内容（等待抓取任务执行）'))
       }
     </div>
     <p class="small muted text-center mt-2" id="pager">
@@ -300,32 +268,11 @@ export async function render(main) {
 
   // 正文预览：原文已在列表返回，浏览器端 DOMPurify 消毒后注入
   applyPreviews(main, itemData.items)
-  wireItems(main)
   syncPager(main)
   setLoadStatus(main)
 
-  main.querySelector('#btn-unread').onclick = async () => {
-    onlyUnread = !onlyUnread
-    await rerenderKeepingFocus(render, main)
-    scrollToTop()
-  }
   main.querySelector('#btn-sources').onclick = () => showSources(main)
   main.querySelector('#btn-blocks').onclick = () => showBlocks(main)
-
-  // 全部标为已读：作用于「当前筛选」（只看未读 / 整个列表），二次确认后一条 UPDATE 打完
-  const readAllBtn = main.querySelector('#btn-read-all')
-  readAllBtn.onclick = async () => {
-    const scope = onlyUnread ? '当前未读' : '当前列表'
-    if (!confirm(`把${scope}的 ${total} 条资讯全部标为已读？此操作不可撤销。`)) return
-    // 无筛选 = 整个列表：显式 all:true 才允许服务端放行（/api/news/read-all 的守卫）
-    const body = onlyUnread ? { unread: true } : { all: true }
-    const res = await run(readAllBtn, () =>
-      api('/api/news/read-all', { method: 'POST', body: JSON.stringify(body) }),
-    )
-    if (!res.ok) return
-    toast(`已标为已读 ${Number(res.data?.changed ?? 0)} 条`)
-    await rerender(render, main)
-  }
 
   // 页码跳转：Enter 生效，越界由 goToPage clamp 到 1..总页
   const jumpInput = main.querySelector('#page-jump')
@@ -338,28 +285,6 @@ export async function render(main) {
   }
 
   setupInfiniteScroll(main)
-}
-
-/** 写已读状态 + 本地乐观更新（圆点 / 按钮 / 未读数），失败由 run 统一 toast */
-async function setRead(main, id, read) {
-  const res = await run(null, () =>
-    api(`/api/news/${read ? 'read' : 'unread'}`, { method: 'POST', body: JSON.stringify({ ids: [Number(id)] }) }),
-  )
-  if (!res.ok) return false
-
-  unreadCount = Math.max(0, unreadCount + (read ? -1 : 1))
-  const row = main.querySelector(`.news-item [data-toggle="${id}"]`)?.closest('.news-item')
-  if (row) {
-    row.classList.toggle('is-read', read)
-    const btn = row.querySelector('[data-toggle]')
-    if (btn) {
-      btn.dataset.read = read ? '1' : ''
-      btn.textContent = read ? '标为未读' : '标为已读'
-    }
-  }
-  const counter = main.querySelector('#unread-count')
-  if (counter) counter.textContent = `未读 ${unreadCount}`
-  return true
 }
 
 function showSources(main) {

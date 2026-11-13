@@ -120,10 +120,9 @@ admin.get('/summary', async (c) => {
   const todayStart = new Date()
   todayStart.setHours(0, 0, 0, 0)
 
-  const [newsToday, newsUnread, reminderDue, counts, nodes, heldJobs, cfg, newsLatest, upcoming, notes, zsxqLatest, watch] =
+  const [newsToday, reminderDue, counts, nodes, heldJobs, cfg, newsLatest, upcoming, notes, zsxqLatest, watch] =
     await Promise.all([
       db.prepare('SELECT count(*) AS n FROM news_item WHERE fetched_at >= ?').bind(todayStart.getTime()).first<{ n: number }>(),
-      db.prepare('SELECT count(*) AS n FROM news_item WHERE read_flag = 0').first<{ n: number }>(),
       db.prepare('SELECT count(*) AS n FROM reminder WHERE enabled = 1 AND remind_at <= ?').bind(now).first<{ n: number }>(),
       db.batch([
         db.prepare('SELECT count(*) AS n FROM stock_watch WHERE enabled = 1'),
@@ -140,7 +139,7 @@ admin.get('/summary', async (c) => {
       // 首页卡片：只取需要的列与条数，避免把整页列表塞进汇总响应
       db
         .prepare(
-          `SELECT i.id, i.title, i.link, i.published_at AS publishedAt, i.read_flag AS readFlag,
+          `SELECT i.id, i.title, i.link, i.published_at AS publishedAt,
                   i.fetched_at AS fetchedAt, s.name AS sourceName
            FROM news_item i LEFT JOIN news_source s ON s.id = i.source_id
            ORDER BY i.published_at DESC, i.id DESC LIMIT 8`,
@@ -199,7 +198,7 @@ admin.get('/summary', async (c) => {
       book: card(2),
       note: card(3),
     },
-    news: { today: newsToday?.n ?? 0, unread: newsUnread?.n ?? 0, latest: newsLatest.results ?? [] },
+    news: { today: newsToday?.n ?? 0, latest: newsLatest.results ?? [] },
     reminders: { due: reminderDue?.n ?? 0, upcoming: upcomingRows },
     stocks: { watch: watch.results ?? [] },
     notes: { total: card(3), latest: notes.results ?? [] },
