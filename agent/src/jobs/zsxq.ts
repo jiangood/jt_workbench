@@ -316,7 +316,7 @@ export const zsxqCommentsHandler: JobHandler = async (payload, ctx) => {
   for (const target of refresh) {
     if (ctx.signal.aborted) return { items, summary: 'aborted' }
     if (budget <= 0 || outOfTime()) break
-    if (!(await pause(ctx.signal, 500 + Math.random() * 600))) return { items, summary: 'aborted' }
+    if (!(await pause(ctx.signal, 1000 + Math.random() * 800))) return { items, summary: 'aborted' }
     try {
       const got = await collectComments(client, gid, target.topicId, ownerId, ctx.signal, budget, outOfTime)
       if (!got.requests) break
@@ -349,7 +349,7 @@ export const zsxqProbeHandler: JobHandler = async (payload, ctx) => {
   const startedAt = Date.now()
   const outOfTime = () => Date.now() - startedAt > LEASE_BUDGET_MS
   const items: Record<string, unknown>[] = []
-  if (!(await pause(ctx.signal, 400 + Math.random() * 600))) return { items, summary: 'aborted' }
+  if (!(await pause(ctx.signal, 800 + Math.random() * 800))) return { items, summary: 'aborted' }
   let budget = CHECK_REQUEST_BUDGET
   let checked = 0
   let gone = 0
@@ -393,7 +393,7 @@ export const zsxqProbeHandler: JobHandler = async (payload, ctx) => {
         message: describeError(e).slice(0, 200),
       })
     }
-    if (!(await pause(ctx.signal, 600 + Math.random() * 600))) return { items, summary: 'aborted' }
+    if (!(await pause(ctx.signal, 1200 + Math.random() * 1000))) return { items, summary: 'aborted' }
   }
 
   for (const g of goneItems) {
@@ -575,7 +575,7 @@ function logWarn(what: string, e: unknown): void {
   else console.warn(`${what} failed: ${describeError(e)}`)
 }
 
-function pause(signal: AbortSignal, ms = 1000 + Math.random() * 1000): Promise<boolean> {
+function pause(signal: AbortSignal, ms = 1200 + Math.random() * 1200): Promise<boolean> {
   return new Promise((resolve) => {
     if (signal.aborted) return resolve(false)
     const onAbort = () => {

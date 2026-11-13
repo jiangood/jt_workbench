@@ -99,8 +99,19 @@ export function normalizeTargetKey(url: string): string | null {
 }
 
 export function targetKeyOf(type: string, payload: Record<string, unknown>): string | null {
-  if (type !== 'rss_fetch') return null
-  return typeof payload.url === 'string' ? normalizeTargetKey(payload.url) : null
+  if (type === 'rss_fetch') {
+    return typeof payload.url === 'string' ? normalizeTargetKey(payload.url) : null
+  }
+  if (
+    type === 'zsxq_sync' ||
+    type === 'zsxq_backfill' ||
+    type === 'zsxq_comments' ||
+    type === 'zsxq_probe' ||
+    type === 'zsxq_groups'
+  ) {
+    return 'api.zsxq.com'
+  }
+  return null
 }
 
 function parsePayload(raw: string | null): Record<string, unknown> {

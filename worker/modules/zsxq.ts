@@ -449,7 +449,7 @@ zsxq.post('/job', async (c) => {
     if (gid) byKey.set(`${row.type}:${gid}`, { id: row.id, enabled: row.enabled })
   }
 
-  const cron = '*/10 6-23 * * *'
+  const cron = '*/20 6-23 * * *'
   const stageTypes = ['zsxq_backfill', 'zsxq_comments', 'zsxq_probe'] as const
   const ops: D1PreparedStatement[] = []
 
