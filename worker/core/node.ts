@@ -533,9 +533,9 @@ node.post('/jobs/:id/fail', async (c) => {
 
   if (attempts < MAX_ATTEMPTS) {
     const res = await db
-      .prepare(`UPDATE job SET status = 'pending', attempts = ?, next_run_at = ?, lease_until = NULL, result = ?
+      .prepare(`UPDATE job SET status = 'pending', attempts = ?, next_run_at = ?, last_run_at = ?, lease_until = NULL, result = ?
                 WHERE id = ? AND status = 'leased' AND node_id = ?`)
-      .bind(attempts, now + 5 * 60_000 * attempts, lastError, id, nodeId)
+      .bind(attempts, now + 5 * 60_000 * attempts, now, lastError, id, nodeId)
       .run()
     if (res.meta.changes === 0) return nodeErr(409, 'lease lost') // 所有权校验
   } else if (row?.cron) {
@@ -552,20 +552,20 @@ node.post('/jobs/:id/fail', async (c) => {
       .prepare(
         paused
           ? `UPDATE job SET status = 'failed', enabled = 0, attempts = 0, fail_streak = ?,
-             next_run_at = ?, lease_until = NULL, result = ?
+             next_run_at = ?, last_run_at = ?, lease_until = NULL, result = ?
              WHERE id = ? AND status = 'leased' AND node_id = ?`
           : `UPDATE job SET status = 'pending', attempts = 0, fail_streak = ?,
-             next_run_at = ?, lease_until = NULL, result = ?
+             next_run_at = ?, last_run_at = ?, lease_until = NULL, result = ?
              WHERE id = ? AND status = 'leased' AND node_id = ?`,
       )
-      .bind(failStreak, nextCronRun(row.cron, now), result, id, nodeId)
+      .bind(failStreak, nextCronRun(row.cron, now), now, result, id, nodeId)
       .run()
     if (res.meta.changes === 0) return nodeErr(409, 'lease lost') // 所有权校验
   } else {
     const res = await db
-      .prepare(`UPDATE job SET status = 'failed', attempts = ?, result = ?, lease_until = NULL
+      .prepare(`UPDATE job SET status = 'failed', attempts = ?, last_run_at = ?, result = ?, lease_until = NULL
                 WHERE id = ? AND status = 'leased' AND node_id = ?`)
-      .bind(attempts, lastError, id, nodeId)
+      .bind(attempts, now, lastError, id, nodeId)
       .run()
     if (res.meta.changes === 0) return nodeErr(409, 'lease lost') // 所有权校验
   }
