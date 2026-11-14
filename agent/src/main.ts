@@ -215,6 +215,12 @@ async function executeAndReport(state: RunningExecution): Promise<void> {
         scriptId: execution.scriptId,
         scriptVersion: execution.scriptVersion,
         scheduledAt: execution.scheduledAt,
+        heartbeat: async () => {
+          const response = await requestNext({
+            running: { executionId: execution.executionId, leaseToken: execution.leaseToken },
+          })
+          if (response.action !== 'running') throw new Error('execution lease heartbeat was not acknowledged')
+        },
       },
     )
     await sendReport(state, {
