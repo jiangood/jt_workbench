@@ -59,7 +59,7 @@ cd agent && npm ci && npm run dev      # build + node dist/agent.mjs（需 NODE_
 
 ## 部署计算节点（agent）
 
-agent 是局域网里的哑计算节点：poll 领任务 → 执行 → 回传，无状态、无本地队列；升级交给 Watchtower，不手工重建。
+agent 是局域网里的执行节点：通过 `POST /node/agent/next` 同步服务端 JavaScript 脚本并领取任务 → 动态执行本地缓存脚本 → 回传结果。Agent 不维护任务队列；脚本缓存由服务端清单对账。
 
 **部署只有两步：后台点「添加节点」→ 之后在该行点「接入」拿命令 → 在目标机器粘贴执行。** 宿主机不需要 `.env`，节点密钥由安装脚本直接写进 `docker-compose.yml`。
 
