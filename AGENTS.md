@@ -18,7 +18,7 @@
 ## 生产环境（红线）
 
 - **禁止直接操作生产环境**：本地 / 终端不对线上执行任何写操作——`wrangler deploy`、`wrangler d1 execute|migrations apply --remote`、R2 写入、生产 API 的写请求、`wrangler rollback` 一律不做
-- **线上变更唯一入口 = GitHub 发布 Release**（`.github/workflows/release.yml`）；push 不部署，也没有手动触发
+- **线上变更唯一入口 = Git tag 发布工作流**（`.github/workflows/release.yml`）；普通分支 push 不部署，PR 合并后由 `.github/workflows/auto-tag.yml` 自动打版本 tag
 - 本地只允许 `wrangler dev`（local 模式）、`npm run check`、`npm run deploy:dry`（只打包预检）；`npm run deploy` 由 `worker/scripts/guard-deploy.mjs` 拦截（要求 `CI=true`），不要绕过
 - 只读排查可以做，但不触发写；需要动生产数据时，把动作写进迁移或让用户走发布流程
 - **线上调试凭据放 `online-token.txt`**（项目根目录，已被 .gitignore，禁止提交/外传）：管理员 `wb_token` cookie + 用法示例；用户让看线上页面时用它；token 过期或被撤销后让用户重新提供并更新该文件
