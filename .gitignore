@@ -8,3 +8,4 @@ online-token.txt
 .playwright-mcp/
 .idea/
 .opencode/
+worker/public/agent-scripts/
