@@ -288,6 +288,17 @@ async function bumpScore(
  * 领取管线（v4.9）：回收 + 领 1；幂等不加锁，可挂到任何交互末尾。
  * v5.2（#4）：带 target_key 的任务先看「目标 × 节点」评分，低分节点礼让给高分节点。
  */
+const REMOTE_JOB_TYPE_ALIASES: Record<string, string[]> = {
+  // One remote Zsxq reconciliation script now owns the former split legacy handlers.
+  zsxq_sync: ['zsxq_backfill', 'zsxq_comments', 'zsxq_probe', 'zsxq_groups'],
+}
+
+function expandRemoteJobTypes(ids: string[]): string[] {
+  const expanded = new Set(ids)
+  for (const id of ids) for (const alias of REMOTE_JOB_TYPE_ALIASES[id] ?? []) expanded.add(alias)
+  return [...expanded]
+}
+
 async function claimPipeline(env: Bindings, nodeId: string, now: number): Promise<Job[]> {
   const db = env.DB
   const staleBefore = now - 15 * 60_000
@@ -303,7 +314,7 @@ async function claimPipeline(env: Bindings, nodeId: string, now: number): Promis
         if (!Array.isArray(versions) || versions.some((entry) =>
           !entry || typeof entry !== 'object' || typeof (entry as { id?: unknown }).id !== 'string'
         )) throw new Error('invalid remote script manifest')
-        remoteScriptIds = [...new Set(versions.map((entry) => (entry as { id: string }).id))]
+        remoteScriptIds = expandRemoteJobTypes([...new Set(versions.map((entry) => (entry as { id: string }).id))])
         const encoded = JSON.stringify(remoteScriptIds)
         if (encoded !== runtimeOwner.remote_script_ids_json) {
           await db.prepare('UPDATE agent_runtime_owner SET remote_script_ids_json = ? WHERE id = 1')
@@ -312,7 +323,7 @@ async function claimPipeline(env: Bindings, nodeId: string, now: number): Promis
       } else {
         const parsed: unknown = JSON.parse(runtimeOwner.remote_script_ids_json)
         if (!Array.isArray(parsed) || parsed.some((id) => typeof id !== 'string')) return []
-        remoteScriptIds = [...new Set(parsed)]
+        remoteScriptIds = expandRemoteJobTypes([...new Set(parsed)])
       }
     } catch {
       try {
