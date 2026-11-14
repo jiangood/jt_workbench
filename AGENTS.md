@@ -56,6 +56,7 @@
 - **可靠性由脚本声明**：`best_effort` 适用于新闻 RSS 等可丢失任务，错过触发丢弃、失败不强制重试；`reliable` 适用于知识星球等重要同步，支持失败重试、启动补偿、业务游标和断点续跑。第一版不实现 strict。
 - **调度约定**：Agent 本地执行 6 字段 Cron，固定 `Asia/Shanghai`，最小间隔 60 秒。`schedule_revision` 只由 schedule/enabled 决定，不由脚本版本/hash 决定。reliable 启动补偿把所有错过的槽合并为一次 reconcile；Worker 持久化调度检查点。同一脚本不并发；普通 Cron 触发遇到正在执行的同脚本时跳过，不排队。
 - **执行语义**：脚本必须幂等；系统按至少一次语义设计，不承诺 exactly-once。重试沿用同一个 `execution_id` 和创建时固定的脚本版本。Agent 崩溃后无法确认副作用结果时记录为 interrupted/unknown，再按业务幂等策略恢复。
+- **业务脚本迁移状态**：`rss_fetch` 与 `zsxq_sync` 已有远程脚本；`zsxq_sync` 同时取代 legacy `zsxq_backfill/zsxq_comments/zsxq_probe/zsxq_groups` 队列。`stock_eod`、`tts_synthesize` 等尚未迁移类型继续由同一 owner Agent 的 legacy runner 执行。
 - **职责边界**：Agent 负责脚本同步、Cron 触发、执行和结果回传；Worker/D1 是脚本发布清单、执行许可、执行记录、租约、schedule checkpoint 和结果状态的权威。Worker 不负责业务脚本 Cron 计算；Worker 内部清理、邮件扫描等基础设施 tick 仍可保留。D1 execution 以 script_id + schedule_revision + scheduled_at 唯一；Worker 一次只发放一个 lease。
 - **统一 context**：远程模块导出 `async run(ctx, payload)`，返回 `{items, summary}`；context 提供 logger/config/受控 fetch/signal/executionId/scriptId/scriptVersion/scheduledAt。timeout 是 AbortSignal 协作式超时，不是硬 CPU 隔离；同进程脚本仍可绕过 context 访问宿主权限，不能把 context 误认为安全沙箱。
 - **节点身份与凭据**：节点密钥仍由后台生成，通过 compose 的 `NODE_KEY` 注入；第三方 token / API Key 存 D1 参数中心，按任务/脚本需要注入。节点密钥不能写入脚本缓存、脚本 metadata、日志或结果。
