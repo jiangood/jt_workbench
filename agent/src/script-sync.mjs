@@ -48,7 +48,7 @@ function validateDescriptor(value) {
     schedule: value.schedule, enabled: value.enabled, timeout: value.timeout, reliability: value.reliability,
   }
   const serialized = Object.entries(meta).map(([key, field]) => JSON.stringify(key) + ':' + JSON.stringify(field)).join(',')
-  const parsed = parseScriptMetadata('/** @script\\n * {' + serialized + '}\\n */')
+  const parsed = parseScriptMetadata('/** @script\n * {' + serialized + '}\n */')
   if (typeof value.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.sha256)) throw new Error('invalid script sha256')
   if (value.contentPath !== '/agent-scripts/' + parsed.id + '/' + parsed.version + '.mjs') {
     throw new Error('invalid script content path')
