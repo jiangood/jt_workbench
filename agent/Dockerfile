@@ -1,4 +1,10 @@
-# 生产零运行时依赖：只装 esbuild 产物（决策 #15）
+# Agent 主程序保持单文件 bundle；远程脚本需要从 /app/node_modules 解析预装依赖。
+FROM node:22-bookworm-slim AS runtime-deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+
+FROM node:22-bookworm-slim AS build
 FROM node:22-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -24,6 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
  && curl -fsSL -o /opt/piper/voices/zh_CN-huayan-medium.onnx.json "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/zh/zh_CN/huayan/medium/zh_CN-huayan-medium.onnx.json"
 WORKDIR /app
 COPY --from=build /app/dist/agent.mjs ./agent.mjs
+COPY --from=runtime-deps /app/node_modules ./node_modules
 ENV PIPER_BIN=/opt/piper/piper
 ENV PIPER_VOICE_DIR=/opt/piper/voices
 ENV LD_LIBRARY_PATH=/opt/piper
