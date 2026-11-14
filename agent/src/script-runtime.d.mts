@@ -14,6 +14,7 @@ export interface ScriptRuntimeContext {
   scriptId: string
   scriptVersion: string
   scheduledAt: number | null
+  heartbeat: () => Promise<void>
 }
 export type ScriptFetch = (url: string, init?: RequestInit) => Promise<Response>
 export interface ScriptResult {
