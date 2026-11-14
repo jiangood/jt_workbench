@@ -127,6 +127,7 @@ export function clampPublishedAt(publishedAt?: number | null, now?: number | nul
 }
 
 interface RssItem {
+  sourceId?: string
   externalId: string
   title?: string
   link?: string
@@ -140,6 +141,7 @@ function asRssItem(item: unknown): RssItem | null {
   const it = item as Record<string, unknown>
   if (typeof it.externalId !== 'string' || !it.externalId) return null
   return {
+    sourceId: typeof it.sourceId === 'string' && it.sourceId ? it.sourceId : undefined,
     externalId: it.externalId,
     title: typeof it.title === 'string' ? it.title : undefined,
     link: typeof it.link === 'string' ? it.link : undefined,
@@ -446,13 +448,14 @@ export async function ingest(
   now: number,
 ): Promise<number | null> {
   if (type === 'rss_fetch') {
-    const sourceId = typeof payload.sourceId === 'string' ? payload.sourceId : null
-    if (!sourceId) return null
+    const fallbackSourceId = typeof payload.sourceId === 'string'' ? payload.sourceId : null
     const rows = items
       .map(asRssItem)
       .filter((r): r is RssItem => r !== null)
       .map((r) => normalizeRssItem(r, now))
-    if (!rows.length) return 0
+      .map((r) => ({ ...r, sourceId: r.sourceId ?? fallbackSourceId }))
+      .filter((r): r is RssItem & { sourceId: string } => typeof r.sourceId === 'string' && r.sourceId.length > 0)
+    if (!rows.length) return items.length === 0 ? 0 : null
     const results = await db.batch(
       rows.map((r) =>
         db
@@ -460,7 +463,7 @@ export async function ingest(
             `INSERT INTO news_item (source_id, external_id, title, link, author, published_at, content_html, fetched_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (source_id, external_id) DO NOTHING`,
           )
-          .bind(sourceId, r.externalId, r.title ?? null, r.link ?? null, r.author ?? null, r.publishedAt ?? null, r.contentHtml ?? null, now),
+          .bind(r.sourceId, r.externalId, r.title ?? null, r.link ?? null, r.author ?? null, r.publishedAt ?? null, r.contentHtml ?? null, now),
       ),
     )
     return results.reduce((n, r) => n + (r.meta.changes ?? 0), 0)
