@@ -13,6 +13,9 @@
 import { zsxqHandler } from '../../dist/remote-libs/zsxq-jobs-v1.mjs'
 
 export async function run(ctx, payload) {
+  if (!Array.isArray(payload?.groupIds) || payload.groupIds.length === 0) {
+    return { items: [], summary: '没有启用的知识星球' }
+  }
   return zsxqHandler(payload, {
     signal: ctx.signal,
     heartbeat: typeof ctx.heartbeat === 'function' ? ctx.heartbeat : async () => {},
