@@ -295,11 +295,32 @@ async function claimPipeline(env: Bindings, nodeId: string, now: number): Promis
   let remoteScriptIds: string[] = []
   if (runtimeOwner) {
     try {
-      const parsed: unknown = JSON.parse(runtimeOwner.remote_script_ids_json)
-      if (!Array.isArray(parsed) || parsed.some((id) => typeof id !== 'string')) return []
-      remoteScriptIds = [...new Set(parsed)]
+      const manifestResponse = await env.ASSETS.fetch(new Request(new URL('/agent-scripts/manifest.json', 'https://worker.internal')))
+      if (manifestResponse.ok) {
+        const manifest = await manifestResponse.json() as { versions?: unknown; scripts?: unknown }
+        const versions = Array.isArray(manifest.versions) ? manifest.versions : manifest.scripts
+        if (!Array.isArray(versions) || versions.some((entry) =>
+          !entry || typeof entry !== 'object' || typeof (entry as { id?: unknown }).id !== 'string'
+        )) throw new Error('invalid remote script manifest')
+        remoteScriptIds = [...new Set(versions.map((entry) => (entry as { id: string }).id))]
+        const encoded = JSON.stringify(remoteScriptIds)
+        if (encoded !== runtimeOwner.remote_script_ids_json) {
+          await db.prepare('UPDATE agent_runtime_owner SET remote_script_ids_json = ? WHERE id = 1')
+            .bind(encoded).run()
+        }
+      } else {
+        const parsed: unknown = JSON.parse(runtimeOwner.remote_script_ids_json)
+        if (!Array.isArray(parsed) || parsed.some((id) => typeof id !== 'string')) return []
+        remoteScriptIds = [...new Set(parsed)]
+      }
     } catch {
-      return [] // fail closed: never hand a remotely managed job to the legacy runner
+      try {
+        const parsed: unknown = JSON.parse(runtimeOwner.remote_script_ids_json)
+        if (!Array.isArray(parsed) || parsed.some((id) => typeof id !== 'string')) return []
+        remoteScriptIds = [...new Set(parsed)]
+      } catch {
+        return [] // fail closed: never hand a remotely managed job to the legacy runner
+      }
     }
   }
   await db
