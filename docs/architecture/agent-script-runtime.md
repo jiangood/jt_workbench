@@ -94,6 +94,8 @@ Agent 请求至少包含 Agent 版本、本地脚本清单（`id/version/sha256`
 3. Agent 下载脚本到临时文件，校验 SHA-256、metadata 和目标路径；校验成功后原子 rename 替换。删除清单只删除受控缓存目录中的脚本。
 4. Agent 再次请求同一接口并上报新清单。
 5. Worker 二次对账确认完全一致后，才可处理触发申请/发放执行许可。
+
+Agent 缓存目录默认为工作目录下的 `.agent-scripts/<id>/<version>.mjs`。Agent 先验证源码 SHA-256、metadata 与 Worker 返回的描述符一致，再写同目录临时文件并原子 rename；撤销操作只接受经过 id/version 白名单校验的缓存路径。Agent 在每轮旧任务 poll 之前先完成同步，Worker 不可用或同步未收敛时不会进入旧任务领取流程。
 6. 若再次不一致则继续同步；下载失败、hash 不匹配或 metadata 无效时不覆盖现有可用版本、不执行任务，并按退避策略重试。
 
 脚本缓存路径必须防止路径穿越；禁止由 metadata 的路径字段决定任意文件位置。任务 payload 永远是数据，不得携带 JavaScript、动态 import 地址、表达式或其他可执行内容。节点认证、结果回传和现有 API envelope 尽量复用。
