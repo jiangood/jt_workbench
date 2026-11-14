@@ -38,19 +38,17 @@ Worker 不负责计算业务脚本 Cron。Worker 内部用于邮件扫描、过�
 脚本源码头部使用 JSON 注释声明元数据，例如：
 
 ```javascript
-/**
- * @script
- * {
- *   "id": "rss",
- *   "name": "RSS 新闻抓取",
- *   "version": "1.0.0",
- *   "description": "定期抓取启用的 RSS 订阅源",
- *   "schedule": "0 */30 * * * *",
- *   "enabled": true,
- *   "timeout": 300,
- *   "reliability": "best_effort"
- * }
- */
+// @script
+// {
+//   "id": "rss",
+//   "name": "RSS 新闻抓取",
+//   "version": "1.0.0",
+//   "description": "定期抓取启用的 RSS 订阅源",
+//   "schedule": "0 */30 * * * *",
+//   "enabled": true,
+//   "timeout": 300,
+//   "reliability": "best_effort"
+// }
 ```
 
 第一版字段：
