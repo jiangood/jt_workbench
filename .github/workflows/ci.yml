@@ -34,6 +34,9 @@ jobs:
       - name: Agent bundle
         working-directory: agent
         run: npm run build
+      - name: Verify remote helper module resolves preinstalled dependencies
+        working-directory: agent
+        run: node --input-type=module -e "const mod = await import('./dist/remote-libs/zsxq-jobs.mjs'); if (typeof mod.zsxqHandler !== 'function') throw new Error('missing zsxqHandler export')"
 
   worker:
     runs-on: ubuntu-latest
