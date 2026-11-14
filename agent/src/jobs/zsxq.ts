@@ -249,6 +249,12 @@ export const zsxqBackfillHandler: JobHandler = async (payload, ctx) => {
           }
           logWarn(`topics.comments ${topicId}`, e)
           commentFailures++
+          items.push({
+            kind: 'comment_failure',
+            topicId,
+            groupId: gid,
+            message: describeError(e).slice(0, 200),
+          })
           if (commentFailures <= 3) remarks.push(`评论抓取失败 ${topicId}`)
         }
       }
@@ -330,6 +336,12 @@ export const zsxqCommentsHandler: JobHandler = async (payload, ctx) => {
       if (ctx.signal.aborted) return { items, summary: 'aborted' }
       logWarn(`refresh.comments ${target.topicId}`, e)
       failures++
+      items.push({
+        kind: 'comment_failure',
+        topicId: target.topicId,
+        groupId: gid,
+        message: describeError(e).slice(0, 200),
+      })
     }
   }
 

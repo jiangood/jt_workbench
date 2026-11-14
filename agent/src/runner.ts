@@ -10,16 +10,19 @@ const BATCH_SIZE = 100         // items 分块回传（Worker 侧 JSON.parse + D
 const BATCH_RETRY = 3
 
 /** 单批回传，重试 3 次；3 次仍失败 → 抛出走 fail（Worker 按退避重试，已入库批被唯一约束吸收） */
-async function postResults(jobId: number, items: unknown[]): Promise<void> {
+async function postResults(jobId: number, items: unknown[], signal: AbortSignal): Promise<void> {
   for (let i = 0; i < items.length; i += BATCH_SIZE) {
+    if (signal.aborted) throw new Error('job aborted before posting results')
     const batch = items.slice(i, i + BATCH_SIZE)
     let lastErr: unknown = null
     for (let attempt = 0; attempt < BATCH_RETRY; attempt++) {
+      if (signal.aborted) throw new Error('job aborted before posting results')
       try {
         await client.results(jobId, batch)
         lastErr = null
         break
       } catch (e) {
+        if (signal.aborted) throw e
         lastErr = e
         await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)))
       }
@@ -66,8 +69,13 @@ export async function run(job: Job): Promise<Envelope> {
   }
   try {
     const { items, summary } = await handler(job.payload, ctx)
+    // 被回收/易主或 handler 主动中止时，丢弃本轮未提交结果；让租约回收机制重新派发任务。
+    if (ac.signal.aborted || summary.trim().toLowerCase() === 'aborted') {
+      return { now: Date.now(), jobs: [] }
+    }
     // items 按 100 条/批 POST /results，幂等靠业务表唯一约束（天然断点续传）
-    if (items.length) await postResults(job.id, items)
+    if (items.length) await postResults(job.id, items, ac.signal)
+    if (ac.signal.aborted) return { now: Date.now(), jobs: [] }
     return await client.complete(job.id, summary)
   } catch (e) {
     if (ac.signal.aborted) return { now: Date.now(), jobs: [] } // 被回收：沉默放弃
