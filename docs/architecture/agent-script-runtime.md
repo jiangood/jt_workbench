@@ -73,6 +73,14 @@ metadata 必须严格解析和校验：未知等级、无效 Cron、重复 ID、
 
 `POST /node/agent/next`
 
+第一版脚本发布采用 Worker 静态 Assets，不单独引入 R2 脚本桶或运行时数据库脚本编辑器：
+
+- 可信脚本源码放在 `worker/agent-scripts/*.mjs`，每个文件头部声明 JSON metadata。
+- `worker/scripts/build-agent-scripts.mjs` 在 Worker dev、CI 和 release 前校验 metadata/Cron，计算源码 SHA-256，并生成 `worker/public/agent-scripts/manifest.json` 与不可变的 `<id>/<version>.mjs` 静态资源。
+- Worker 通过 `ASSETS` binding 读取 manifest 和脚本内容；`POST /node/agent/next` 在节点鉴权后对账本地清单，最多返回 5 个更新脚本和 20 个撤销版本。响应中的源码 hash 会在 Worker 侧再次核对。
+- 静态脚本资源本身可被公开读取，因此脚本中严禁包含凭据；可信边界是 PR 审查和 release 权限，而不是 URL 隐藏。节点动作 API 仍要求节点密钥。
+- D1 不保存发布脚本源码；后续 D1 迁移只保存执行实例、租约和恢复状态。版本化静态资源保留旧版本，以支持执行实例固定版本。
+
 Agent 请求至少包含 Agent 版本、本地脚本清单（`id/version/sha256`），以及可选的待申请触发信息。Worker 响应动作状态：
 
 - `scripts_update`：返回需要下载/更新的脚本清单及撤销删除清单。
