@@ -290,6 +290,18 @@ async function bumpScore(
 async function claimPipeline(env: Bindings, nodeId: string, now: number): Promise<Job[]> {
   const db = env.DB
   const staleBefore = now - 15 * 60_000
+  const runtimeOwner = await db.prepare('SELECT remote_script_ids_json FROM agent_runtime_owner WHERE id = 1')
+    .first<{ remote_script_ids_json: string }>()
+  let remoteScriptIds: string[] = []
+  if (runtimeOwner) {
+    try {
+      const parsed: unknown = JSON.parse(runtimeOwner.remote_script_ids_json)
+      if (!Array.isArray(parsed) || parsed.some((id) => typeof id !== 'string')) return []
+      remoteScriptIds = [...new Set(parsed)]
+    } catch {
+      return [] // fail closed: never hand a remotely managed job to the legacy runner
+    }
+  }
   await db
     .prepare(
       `UPDATE job SET status = 'pending', lease_until = NULL, node_id = NULL, started_at = NULL
@@ -312,13 +324,16 @@ async function claimPipeline(env: Bindings, nodeId: string, now: number): Promis
   const nodeVersion = nodeState?.agentVersion ?? null
 
   // 取一批到期候选而不是只取一条：最早那条可能要礼让给更高分的节点
+  const remoteTypeFilter = remoteScriptIds.length
+    ? ' AND type NOT IN (' + remoteScriptIds.map(() => '?').join(', ') + ')'
+    : ''
   const candidates = await db
     .prepare(
       `SELECT id, type, payload, target_key AS targetKey, next_run_at AS nextRunAt
-       FROM job WHERE status = 'pending' AND next_run_at <= ? AND enabled = 1
+       FROM job WHERE status = 'pending' AND next_run_at <= ? AND enabled = 1${remoteTypeFilter}
        ORDER BY next_run_at LIMIT ?`,
     )
-    .bind(now, CLAIM_CANDIDATES)
+    .bind(now, ...remoteScriptIds, CLAIM_CANDIDATES)
     .all<{
       id: number
       type: string
@@ -561,7 +576,9 @@ node.post('/poll', async (c) => {
   const nodeId = c.get('node')
   const runtimeOwner = await db.prepare('SELECT node_id FROM agent_runtime_owner WHERE id = 1')
     .first<{ node_id: string }>()
-  if (runtimeOwner) return nodeErr(426, 'legacy job polling disabled; permanent Agent runtime is active')
+  if (runtimeOwner && runtimeOwner.node_id !== nodeId) {
+    return nodeErr(426, 'legacy polling is restricted to the permanent Agent owner')
+  }
 
   await registerNode(db, nodeId, body.agentVersion ?? '?', now)
 
