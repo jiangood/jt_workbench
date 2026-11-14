@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import pino from 'pino'
-import { client, ConflictError, RetryableError, UnauthorizedError } from './client.js'
+import { client, ConflictError, UnauthorizedError } from './client.js'
 import { getConfig } from './config.js'
 import { describeError } from './describe-error.js'
 import { runRemoteScript } from './remote-runner.js'
