@@ -3,7 +3,8 @@
   "main": "index.ts",
   "compatibility_date": "2026-11-01",
   "assets": {
-    "directory": "./public"
+    "directory": "./public",
+    "binding": "ASSETS"
   },
   "routes": [
     { "pattern": "jt.410518072.xyz", "custom_domain": true }
