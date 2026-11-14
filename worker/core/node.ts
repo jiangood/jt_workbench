@@ -574,11 +574,12 @@ node.post('/jobs/:id/complete', async (c) => {
   // 无 cron = 一次性任务：完成后置 done（next_run_at 不推进，回 pending 会被立刻重复领取）
   let nextStatus = job.cron ? 'pending' : 'done'
 
-  // zsxq_backfill：历史回溯未完成时立即排下一片（时间窗口切片，快速追赶）；完成后按 cron 做增量
+  // zsxq_backfill：未完成时仍按 cron 节奏续跑，避免成功回调立即链式领取下一片。
+  // 无 cron 的兼容任务使用 20 分钟兜底间隔；有 cron 时保留原定时节奏。
   if (job.type === 'zsxq_backfill') {
     const groupIds = payloadGroupIds(parsePayload(job.payload))
     if (await zsxqBackfillHasPending(db, groupIds)) {
-      nextRunAt = now
+      nextRunAt = job.cron ? nextCronRun(job.cron, now) : now + 20 * 60_000
       nextStatus = 'pending'
     }
   }
