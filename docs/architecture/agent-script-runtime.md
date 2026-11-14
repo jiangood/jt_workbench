@@ -157,6 +157,14 @@ Agent 不理解知识星球业务语义；通用运行时只提供 execution lif
 
 ## 脚本执行 context 与安全边界
 
+远程模块必须导出 `async function run(ctx, payload)`，返回 `{ items: unknown[], summary: string }`。Agent 通过缓存文件的 `file:` URL 动态 import，模块可按正常 Node ESM 规则解析镜像内预装依赖。第一版结果限制为最多 10000 条 item、summary 最多 2000 字符；后续 Worker 结果回传负责分批。
+
+context 字段：`logger`、`config`、`fetch`、`signal`、`executionId`、`scriptId`、`scriptVersion`、`scheduledAt`。其中 `fetch` 由 Agent 注入 SSRF 守卫和 30 秒网络超时；脚本必须将 `signal` 传给长请求并在循环中检查取消。
+
+**超时边界**：第一版在同一个 Node.js 进程内运行，不使用 Worker Thread/子进程沙箱。metadata 的 timeout 会触发 AbortSignal，Agent 等待脚本响应取消后将执行判为超时；这是协作式超时，不是硬 CPU 隔离。脚本若忽略 signal 或陷入同步死循环，Node 事件循环无法及时中断它。不要把 timeout 描述成能强制终止任意脚本。
+
+第一版 context 不传入 NODE_KEY，但同进程脚本仍可访问 `process.env`、文件系统、网络和子进程；因此唯一安全边界仍是可信 PR + release 发布链路。
+
 运行时提供稳定的 context，建议包含：
 
 - `logger`：结构化日志。
