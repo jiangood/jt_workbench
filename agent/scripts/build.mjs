@@ -32,3 +32,14 @@ await build({
   outfile: 'dist/remote-libs/zsxq-jobs-v1.mjs',
   logLevel: 'info',
 })
+
+await build({
+  entryPoints: ['src/remote-libs/stock-jobs-v1.ts'],
+  bundle: true,
+  platform: 'node',
+  target: 'node22',
+  format: 'esm',
+  packages: 'external',
+  outfile: 'dist/remote-libs/stock-jobs-v1.mjs',
+  logLevel: 'info',
+})
