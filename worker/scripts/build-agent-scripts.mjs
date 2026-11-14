@@ -12,11 +12,12 @@ const allowedKeys = new Set([
 ])
 
 function parseMetadata(source, filename) {
-  const match = source.match(/\/\*\*[\s\S]*?@script\s*([\s\S]*?)\*\//)
-  if (!match) throw new Error(filename + ': missing @script metadata block')
+  const normalized = source.replace(/^\uFEFF/, '')
+  const match = normalized.match(/^\s*\/\/\s*@script\s*\r?\n((?:\s*\/\/.*(?:\r?\n|$))+)/)
+  if (!match) throw new Error(filename + ': missing // @script metadata header')
   const json = match[1]
     .split(/\r?\n/)
-    .map((line) => line.replace(/^\s*\*\s?/, ''))
+    .map((line) => line.replace(/^\s*\/\/\s?/, ''))
     .join('\n')
     .trim()
   let meta
