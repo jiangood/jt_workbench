@@ -1,147 +1,231 @@
-# ADR: Agent Script Runtime（编译期业务脚本架构）
+# ADR: Agent Remote JavaScript Runtime and Reliability-aware Scheduler
 
-- 状态：Accepted（架构方向已确认；分阶段实施）
+- 状态：Accepted（架构决策已确认；按阶段实施）
 - 日期：2026-11-14
-- 范围：`agent/` 为主；涉及 `worker/core/node.ts`、`worker/core/ingest.ts` 的兼容边界
-- 决策：业务脚本在 GitHub 中独立组织和维护，构建时静态编译进 Agent 镜像，随现有发布流程部署
+- 关联：Issue #30
+- 范围：Agent 运行时、Worker 节点协议、脚本发布与执行记录；涉及 `worker/core/node.ts`、`worker/core/ingest.ts` 和 D1 schema 的迁移边界
 
 ## 背景
 
-当前 Agent 已具备 handler 注册表和统一 runner：任务通过 `type` 查找本地 handler，执行结果通过现有节点协议回传 Worker。但业务 handler 仍由 Agent 入口静态导入，业务代码与执行框架在目录和职责上尚未形成清晰边界。
+现有 Agent 将业务 handler 编译进镜像，Worker 侧维护任务调度和领取流程。目标架构改为：业务任务以独立原生 JavaScript 脚本发布，脚本自己声明名称、元数据和 Cron；永久单 Agent 在本地调度并执行。不同业务的漏执行成本不同，新闻 RSS 可以尽力执行，而知识星球同步需要失败恢复、游标和数据完整性保障。
 
-仓库约定明确 Agent 是“哑执行器”：任务是数据不是代码；`type` 只是查表键；不执行网络下发代码、不动态安装依赖。该约定继续有效。
+本 ADR 取代此前“编译期静态 manifest/业务脚本随 Agent 镜像发布”的方案。脚本从服务端下载并动态执行，不再把业务脚本编译进 Agent 镜像。
 
-## 决策
+## 决策摘要
 
-采用 **Build-time Script Plugin Architecture（编译期脚本插件架构）**：
+1. **永久单 Agent**：正式环境只有一个 Agent。第一版不实现多 Agent 竞争、节点分组、备用节点接管或调度选举；Agent 故障由人工恢复。
+2. **远程原生 JavaScript**：Worker 管理已发布脚本清单和内容；Agent 下载、校验、缓存并动态执行 JavaScript。
+3. **不做沙箱**：第一版在 Agent 的 Node.js 进程内执行脚本，脚本拥有宿主进程权限。只接受可信发布链路中的代码，禁止任务 payload 携带代码。
+4. **Agent 本地 Cron**：脚本头部 JSON metadata 声明 schedule；Agent 使用固定 `Asia/Shanghai` 时区和 6 字段 Cron。
+5. **可靠性分级**：第一版只实现 `best_effort` 和 `reliable` 两档。调度器负责触发和执行生命周期，业务脚本负责幂等、游标、断点续跑和数据完整性。
+6. **Worker/D1 是执行权威**：Worker 授予执行许可并持久化 execution、租约、重试状态和结果；Agent 内存不作为恢复依据。
+7. **至少一次而非 exactly-once**：同一逻辑执行重试沿用 execution ID 和固定脚本版本；业务脚本必须幂等。
 
-1. Agent Core 只负责任务接收、handler 路由、执行生命周期、心跳/租约协作、取消/超时、结果回传和通用日志。
-2. 具体业务逻辑放在独立的业务脚本包中，例如 RSS、股票、知识星球、TTS。
-3. 每个脚本包可导出一个或多个 task handler；脚本包与任务 `type` 不要求一对一。
-4. 脚本源码只在 GitHub 仓库管理，通过 PR、CI 和现有 tag/release 流程发布。
-5. 构建时生成或维护静态 manifest，并由 esbuild 编译进现有 Agent 单文件镜像。Agent 启动时注册 manifest 中的 handler。
-6. 不引入运行时脚本下载、`eval`、动态代码执行、R2 脚本仓库、Dynamic Workers、运行时 npm 安装或独立脚本服务。
-7. 保持现有 Worker-Agent 任务协议和结果回传协议兼容；本 ADR 不要求同时重写 Worker 的 ingest 数据映射。
+## 目标职责边界
 
-## 目标目录（建议态）
+| 组件 | 职责 |
+|---|---|
+| 脚本 | 声明 metadata；执行业务抓取/解析/同步；实现幂等、业务游标和数据完整性检查 |
+| Agent | 脚本对账与下载、hash 校验、原子缓存、metadata 解析、Cron、单脚本互斥、超时、执行和结果回传 |
+| Worker | 脚本发布清单/内容访问控制、节点认证、执行许可、execution 唯一性、租约、重试/恢复状态和结果接收 |
+| D1 | 脚本发布元数据、执行记录、租约/重试信息，以及由业务 ingest 管理的同步游标 |
+| R2 或受控静态内容存储 | 保存版本化脚本内容；具体存储 key 与访问方式由实现阶段确定 |
 
-```text
-agent/src/
-  core/
-    runner.ts
-    client.ts
-    context.ts
-    logger.ts
-  scripts/
-    manifest.ts             # 编译期静态注册表（后续可由构建工具生成）
-    rss/
-      index.ts
-      ...
-    stock/
-      index.ts
-      ...
-    zsxq/
-      index.ts
-      ...
-    tts/
-      index.ts
-      ...
-  shared/
-    types.ts
-    ...
-  main.ts                   # 创建 runtime 并加载 manifest，不包含业务分支
+Worker 不负责计算业务脚本 Cron。Worker 内部用于邮件扫描、过期数据清理等基础设施 tick 不属于业务脚本调度，不因本 ADR 自动移除。
+
+## 脚本 metadata
+
+脚本源码头部使用 JSON 注释声明元数据，例如：
+
+```javascript
+/**
+ * @script
+ * {
+ *   "id": "rss",
+ *   "name": "RSS 新闻抓取",
+ *   "version": "1.0.0",
+ *   "description": "定期抓取启用的 RSS 订阅源",
+ *   "schedule": "0 */30 * * * *",
+ *   "enabled": true,
+ *   "timeout": 300,
+ *   "reliability": "best_effort"
+ * }
+ */
 ```
 
-迁移期间允许保留现有文件路径或通过薄适配器过渡；目录重排不是一次性目标。不得为了追求目录整齐而扩大 PR 的行为变更范围。
+第一版字段：
 
-## 脚本契约
+- `id`：稳定、唯一的脚本 ID。
+- `name`、`description`：展示和维护信息。
+- `version`：脚本发布版本。
+- `schedule`：6 字段 Cron（秒、分、时、日、月、星期）。
+- `enabled`：是否参与调度。
+- `timeout`：单次执行超时秒数。
+- `reliability`：`best_effort` 或 `reliable`。
 
-概念接口如下，实施时应优先适配现有 `JobHandler` / runner 类型，避免无必要地引入第二套并行抽象：
+时区固定为 `Asia/Shanghai`，不在每个脚本重复声明。并发限制、基础重试策略和节点选择不做逐脚本配置。第一版不支持秒级高频任务，必须定义并验证最小调度间隔。业务参数放在 Worker 配置/context，不放进 metadata。
 
-```ts
-type ScriptHandler = {
-  // 一个 task type 对应一个 handler；脚本包可导出多个 handler
-  type: string
-  execute(job: Job, ctx: ScriptContext): Promise<ScriptResult>
-}
+metadata 必须严格解析和校验：未知等级、无效 Cron、重复 ID、非法 timeout、缺失必需字段均不得注册执行。脚本内容与 manifest 中的 SHA-256 必须绑定。
 
-type ScriptPackage = {
-  id: string
-  version: string
-  handlers: ScriptHandler[]
-}
-```
+## 脚本同步与节点接口
 
-约束：
+只使用一个节点动作接口：
 
-- handler 只接收任务数据和受控 context，不接收 Worker 下发的可执行代码。
-- context 只暴露经过审计的公共能力；不得直接暴露 Agent 内部状态、节点密钥或任意文件系统访问。
-- HTTP 出站继续遵守现有 30 秒超时和 SSRF 防护约定。
-- 结果仍走现有通用 `items` 回传协议；业务数据清洗和持久化继续由 Worker 侧对应 ingest 负责。
-- 共享代码只有在确实跨业务复用时才进入 `shared/`；业务包之间禁止互相依赖。
+`POST /node/agent/next`
 
-## 运行与发布
+Agent 请求至少包含 Agent 版本、本地脚本清单（`id/version/sha256`），以及可选的待申请触发信息。Worker 响应动作状态：
 
-- 新脚本随 Agent 源码一起编译；无需脚本运行时注册或远程拉取。
-- PR 合并后沿用 `.github/workflows/auto-tag.yml` 和 `.github/workflows/release.yml`。
-- 只有 `agent/` 有 diff 时才构建并推送 Agent 镜像；节点继续通过现有 Watchtower 更新。
-- 任务执行应记录 Agent 版本；后续可补充 script package / handler 版本字段，便于定位问题。版本字段的存储改动不属于第一阶段。
-- 发布期间必须考虑新旧 Agent 节点并存：Worker 不应向不支持新 task type 的旧节点派发新任务。能力协商应作为独立兼容性改进评估，不在第一阶段偷偷改变协议。
+- `scripts_update`：返回需要下载/更新的脚本清单及撤销删除清单。
+- `task` / 执行许可：脚本对账通过后，授权一个执行实例及其固定脚本版本。
+- `idle`：当前没有同步或执行动作。
 
-## Worker 边界
+协议流程：
 
-- `worker/core/ingest.ts` 负责把通用 items 映射到业务表，保留字段校验、归一化、幂等入库等职责；它不是 Agent 业务脚本的替代品。
-- `worker/core/node.ts` 中针对特定 task type 的调度/续跑分支属于待治理的业务耦合。尤其 `zsxq_backfill` 的续跑规则，应在后续单独设计通用续跑契约后再移除。
-- 不在本 ADR 中将业务数据写入迁移到 Agent，也不让 Agent 直接访问 D1。
+1. Agent 上报本地脚本清单。
+2. Worker 对比权威发布清单；若有差异，只返回同步动作，不授予执行许可。
+3. Agent 下载脚本到临时文件，校验 SHA-256、metadata 和目标路径；校验成功后原子 rename 替换。删除清单只删除受控缓存目录中的脚本。
+4. Agent 再次请求同一接口并上报新清单。
+5. Worker 二次对账确认完全一致后，才可处理触发申请/发放执行许可。
+6. 若再次不一致则继续同步；下载失败、hash 不匹配或 metadata 无效时不覆盖现有可用版本、不执行任务，并按退避策略重试。
 
-## 非目标
+脚本缓存路径必须防止路径穿越；禁止由 metadata 的路径字段决定任意文件位置。任务 payload 永远是数据，不得携带 JavaScript、动态 import 地址、表达式或其他可执行内容。节点认证、结果回传和现有 API envelope 尽量复用。
 
-- 不做通用插件市场或第三方插件生态。
-- 不做运行时热更新；修改脚本必须经过 GitHub PR、构建和发布。
-- 不在本次引入沙箱或多租户不可信代码执行。
-- 不重写任务调度、租约、重试、断点续传和 Worker 数据模型。
-- 不把所有业务数据映射从 Worker 移到 Agent。
+升级兼容必须在实现前设计：Worker 新接口发布不能让旧 Agent 失联。应通过兼容窗口/版本门控/双协议过渡完成滚动升级；不可假设 Agent 镜像与 Worker 同时更新。
+
+## 执行与调度语义
+
+- Agent 启动后先完成脚本同步和校验，再解析 metadata 并注册 Cron。
+- 时间基准固定 `Asia/Shanghai`；Agent 重启后不回放 `best_effort` 停机期间错过的时间槽，只计算未来触发。
+- Cron 触发是一次执行申请，不等于执行许可。只有 Worker 授权后 Agent 才能运行脚本。
+- Worker 不可用时 Agent 不绕过 Worker 离线执行。
+- 同一脚本最多一个并发执行。普通 Cron 触发时若该脚本仍在执行，跳过本次触发，不排队。
+- 每个 Cron 时间槽最多一个逻辑 execution，建议唯一键为 `script_id + schedule_revision + scheduled_at`。
+- `schedule_revision` 只在调度定义（schedule/enabled 或其语义）改变时变化，不使用整个脚本 hash；仅修改业务代码不应改变时间槽身份。
+- 重试沿用原 `execution_id`、原脚本版本和原始计划时间；新时间槽才创建新 execution。
+- 迟到触发需有明确宽限期，超过宽限期的普通触发丢弃；宽限期在实现阶段定值并测试，不能因事件循环阻塞而无限执行陈旧任务。
+- 执行记录至少区分 pending/running/succeeded/failed/interrupted(or unknown)/expired。Agent 在副作用发生后、成功回传前崩溃时，结果属于未知，不能伪装成确定失败或成功。
+- 对取消/超时，Agent 尽力传递 AbortSignal；但不能假定脚本或外部服务一定能及时停止。
+
+## 可靠性等级
+
+### best_effort
+
+用于新闻 RSS 等允许漏采、后续正常轮次可覆盖的任务。
+
+- 错过 Cron 时间槽直接丢弃；Agent 重启不补跑。
+- 单次执行失败记录错误，不要求通用持续重试；下一次正常 Cron 再执行。
+- Worker 不可用或未授予许可时，本次触发丢弃，不离线执行、不排队。
+- 不保证历史数据完整覆盖；业务写入仍应使用稳定 ID 去重，避免重复数据。
+
+### reliable
+
+用于知识星球内容同步等漏数据成本较高的任务。
+
+- 不逐个回放错过的 Cron 时间槽。Agent 启动时为 reliable 脚本提交一次合并的 reconcile/catch-up 申请；同脚本已有未完成 execution 时恢复该实例，避免创建并行同步。
+- Cron 负责定期启动同步检查；业务游标决定数据从哪里继续。多个错过时间槽合并为一次补偿同步，而不是连续执行 N 次历史 Cron。
+- Worker/D1 持久化未完成 execution 和恢复状态；Agent 重启后可以重新取得许可并恢复，不能依赖内存队列。
+- 失败按退避策略自动重试；重试沿用同一 execution ID 和脚本版本。达到阈值后保留待人工处理状态并告警，不能静默丢弃。
+- Worker 不可用时不执行脚本；reliable 恢复意图必须由持久化状态表达，Worker 恢复后继续协调。
+- 脚本必须实现幂等、稳定业务 ID 去重、分页/分批处理和断点续跑。
+- 同步游标只在对应数据已可靠持久化后推进；游标语义由业务脚本和 Worker ingest/存储契约共同定义。
+- 可靠性不等于 exactly-once。外部副作用与执行记录无法跨系统原子提交时，仍可能重试，必须由业务幂等保护。
+
+第一版不实现 `strict` 等级，也不构建通用工作流引擎。
+
+## 知识星球类 reliable 脚本要求
+
+知识星球脚本需要以业务游标而非 Cron 时间槽作为恢复依据，例如上次成功持久化的帖子 ID/时间戳。至少保证：
+
+1. 从持久化游标开始分页读取。
+2. 使用帖子/评论等稳定业务 ID 幂等写入。
+3. 每页数据持久化成功后再推进对应游标。
+4. 中断后从已确认的游标继续；允许重复拉取，但不能跳过未持久化数据。
+5. 能处理分页边界、排序变化、删除/编辑等源端行为；必要时提供周期性历史完整性扫描。
+6. 对无法自动恢复的连续失败、游标异常和数据缺口保留可观测状态并告警。
+
+Agent 不理解知识星球业务语义；通用运行时只提供 execution lifecycle 和 context，具体游标/回填逻辑留在业务脚本及其 ingest 契约。
+
+## 脚本执行 context 与安全边界
+
+运行时提供稳定的 context，建议包含：
+
+- `logger`：结构化日志。
+- `config`：当前脚本所需业务配置。
+- `fetch`：带超时、取消和 SSRF 防护的 HTTP 能力。
+- `signal`：本次执行的 AbortSignal。
+- `executionId`、`scriptId`、`scriptVersion`、`scheduledAt`：执行身份和追踪元数据。
+
+第一版脚本与 Agent 在同一 Node.js 进程中执行，因此脚本仍可能直接访问 `process`、文件系统、网络、子进程和环境变量。context 限制只是 API 约定，不是安全隔离。必须限制脚本发布权限、经 PR 审查并由受信任流水线发布。SHA-256 仅用于内容一致性校验，不证明来源可信。严禁记录或输出 NODE_KEY、第三方密钥和敏感配置。
+
+## 版本、依赖与发布
+
+- 脚本内容按不可变版本发布；清单的 hash 与实际字节绑定。
+- 已创建 execution 固定引用脚本版本/hash；脚本升级只影响之后创建的 execution。
+- Agent 镜像包含 Node 运行时及预装依赖，不包含业务脚本的静态副本。
+- 禁止运行时 npm install。必须用技术验证确认远程 ES Module 能解析镜像预装依赖；必要时设计受控的 module resolution/import strategy。
+- 脚本源码发布仍走 GitHub PR、CI 和受信任发布链路；服务端脚本内容存储的具体实现（R2 对象 key、版本索引和访问 URL）在实现阶段确定。
+- Worker 与 Agent 的升级需有兼容窗口；不能依赖 Watchtower 与 Worker 同时更新。
+- D1 迁移遵循 expand/contract；新旧 Agent/Worker 协议过渡必须可回滚。
 
 ## 分阶段实施
 
-### PR 1：建立脚本包边界（低风险、无业务行为变化）
+### PR 1：架构与协议文档
+- [ ] 用本 ADR 替换旧静态 manifest ADR。
+- [ ] 同步 AGENTS.md 与 README.md，明确目标架构、可信代码风险和分级可靠性。
+- [ ] 定义接口协议、metadata schema、执行状态机和兼容升级策略。
 
-- [ ] 审计现有 `JobHandler`、`register()`、runner 输入输出和所有 handler 的实际签名。
-- [ ] 新建 `agent/src/scripts/` 和脚本包目录；先允许薄适配器，避免大规模移动文件。
-- [ ] 定义脚本包/handler 的最小类型，优先复用现有类型。
-- [ ] 建立静态 manifest；入口只遍历 manifest 注册，不再逐个写业务注册语句。
-- [ ] 首批将现有 handler 纳入 manifest，执行行为、task type、payload、结果格式保持不变。
-- [ ] 增加 manifest 完整性检查：task type 不重复、handler 非空、导出结构合法。
-- [ ] 补充脚本开发说明和新增脚本模板。
-- [ ] 验证 `cd agent && npm ci && npm run check && npm run build`（以仓库实际 scripts 为准），并运行现有测试。
-- [ ] 确认 Docker 单文件构建产物仍可运行；不改 Worker 协议和 D1 schema。
+### PR 2：运行时技术验证
+- [ ] 验证 Node 22 动态加载远程/缓存 ES Module。
+- [ ] 验证模块如何解析镜像预装依赖，不引入运行时 npm install。
+- [ ] 验证原子缓存替换、删除、hash 校验、超时/取消和失败回滚。
 
-### PR 2：迁移低耦合脚本
+### PR 3：脚本发布与同步协议
+- [ ] Worker 侧版本化脚本 manifest/content 管理。
+- [ ] 实现 POST /node/agent/next 的脚本对账、更新、二次校验和兼容迁移。
+- [ ] Agent 实现本地清单、下载、hash 校验、原子更新和删除。
 
-- [ ] 选择 RSS、股票、TTS 等相对独立的业务逐个迁入脚本包。
-- [ ] 每次迁移保持 handler 的 task type、payload schema、网络行为和返回 items 结构不变。
-- [ ] 为关键 parser / mapper 补充单元测试或 fixture。
-- [ ] 确认业务包不互相 import；真正通用的工具才抽入 shared。
+### PR 4：动态执行运行时
+- [ ] metadata parser/validator、统一 context、动态加载和执行结果回传。
+- [ ] 单脚本互斥、超时、取消、执行版本固定和日志追踪。
+- [ ] 脚本内容不可变，执行实例引用确定 hash。
 
-### PR 3：迁移知识星球脚本
+### PR 5：调度和 Worker 执行状态
+- [ ] Agent 本地 Asia/Shanghai Cron，触发宽限期和 best_effort 语义。
+- [ ] reliable 启动 reconcile、持久化恢复和失败重试。
+- [ ] D1 execution 状态、唯一性、租约、interrupted/unknown 处理。
+- [ ] 结果回传幂等与同一 execution ID 重试。
 
-- [ ] 梳理 sync、backfill、comments、probe、groups 等 handler 及共享客户端。
-- [ ] 保留分页、游标、断点续传、重试和批量结果语义。
-- [ ] 通过回归测试对比迁移前后的 items schema。
-- [ ] 不同时修改 Worker ingest 或任务调度语义。
+### PR 6：业务脚本迁移
+- [ ] RSS 迁移为 best_effort，验证失败不阻塞后续正常调度。
+- [ ] 知识星球迁移为 reliable，实现业务游标、分页续跑、幂等写入和完整性检查。
+- [ ] 对中断、超时、重复执行、Worker 不可用、Agent 重启进行故障注入测试。
 
-### PR 4：治理跨层业务耦合（单独评审）
+### PR 7：清理与收尾
+- [ ] 移除迁移完成后不再需要的业务 Cron 调度分支。
+- [ ] 保留 Worker 基础设施 tick。
+- [ ] 更新运维、脚本开发和故障恢复文档。
 
-- [ ] 设计通用续跑/任务延续契约，再处理 `node.ts` 中的 `zsxq_backfill` 特殊分支。
-- [ ] 评估 Agent 能力协商，保证新旧节点混跑时不会派发不支持的 task type。
-- [ ] 评估是否记录 script package / handler 版本。
-- [ ] 仅在有明确收益和兼容方案时调整 Worker 协议或 D1 schema。
+各阶段独立 PR，限制每个 PR 的行为变更范围。任何 D1 schema 变更先扩展兼容，再切换代码，最后才考虑清理旧结构。
 
 ## 验收标准
 
-- Agent Core 不包含 RSS、股票、知识星球、TTS 等业务判断。
-- 新增一个 handler 时，不需要修改 Agent 主循环或 runner；只需新增脚本包并更新/生成 manifest。
-- 所有脚本都在编译期静态纳入镜像，不存在运行时下载或执行远程代码的路径。
-- 现有任务 type、payload、items 回传和 Worker ingest 兼容。
-- Agent 的类型检查、构建和测试通过。
-- PR 合并后按仓库约定检查 CI 和发布工作流；不得直接操作生产环境。
+- Agent 每次请求下一步动作前上报脚本清单；脚本更新后完成二次对账；校验通过前不执行。
+- 下载/hash/metadata 失败不覆盖当前可用脚本、不授予执行许可。
+- Worker 与 Agent 升级存在兼容窗口，旧 Agent 不会因 Worker 先发布新接口而失联。
+- Agent 重启不补跑 best_effort 错过的时间槽；reliable 只进行合并恢复，不机械回放所有 Cron。
+- 同一脚本不并发；每个时间槽至多一个逻辑 execution；重试沿用 execution ID 和脚本版本。
+- Worker 不可用时 Agent 不离线执行；reliable 恢复意图可持久化等待恢复。
+- RSS 采用 best_effort；知识星球采用 reliable，并通过故障注入证明游标推进安全、分页可续跑、重复写入幂等。
+- 动态脚本能使用镜像预装依赖，不需要运行时 npm install。
+- 脚本权限和 SHA-256 的安全边界有明确文档；没有把同进程 context 误称为沙箱。
+- Agent 类型检查、构建、测试通过；Worker 迁移测试通过。
+- PR 合并后检查 CI 和发布工作流；禁止直接操作生产环境。
+
+## 非目标（第一版）
+
+- 多 Agent 竞争、备用 Agent 自动接管和调度选举。
+- 不可信第三方脚本沙箱、多租户代码隔离。
+- 运行时 npm install。
+- 每个错过 Cron 时间槽逐个补跑的工作流引擎。
+- strict 可靠性等级。
+- 通用插件市场或复杂脚本路由系统。
