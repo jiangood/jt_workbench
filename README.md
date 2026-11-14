@@ -130,7 +130,7 @@ cd workbench-agent && docker compose logs -f workbench-agent
 
 ### 5. 升级、回滚、重装
 
-- **日常升级**：发布 release（见「发布到线上」）→ 推 `:latest` + 回写 D1 `agent_latest_version`；Watchtower 按 `WATCHTOWER_POLL_INTERVAL`（默认 15 分钟）轮询拉取新镜像并重建容器。重建时原样复制 env / 挂载 / 网络 / 重启策略。
+- **日常升级**：合并 PR 后自动打版本 tag 并触发发布（见「发布到线上」）；若仅 agent 有变更，流水线会推送 `:latest` 并回写 D1 `agent_latest_version`。Watchtower 按 `WATCHTOWER_POLL_INTERVAL`（默认 15 分钟）轮询拉取新镜像并重建容器。重建时原样复制 env / 挂载 / 网络 / 重启策略。
 - **配置变更**（换镜像、改 Worker 地址等）Watchtower 不负责，手动改 `workbench-agent/docker-compose.yml` 后 `docker compose up -d`。
 - **回滚**：把 `image:` 钉到 `ghcr.io/jiangood/workbench-agent:v<short-sha>`（对应提交的短 sha，也可用发布 tag）再 `up -d`；钉住后 Watchtower 不会把它拉回 `latest`，确认稳定后再改回 `:latest`。
 - **重装 / 换机**：在节点行点「接入」取回长期有效的命令（命令自带 `WORKBENCH_AGENT_FORCE=1`，已登记节点不设过期）。
