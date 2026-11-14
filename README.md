@@ -108,7 +108,7 @@ curl -fsSL 'https://jt.410518072.xyz/install/<key>.sh' | WORKBENCH_AGENT_FORCE=1
 
 脚本默认非 root 执行；报「无法访问 Docker」时先确认 Docker 服务已启动，权限问题按提示 `sudo usermod -aG docker $USER` 后重新登录。
 
-目录固定为 `workbench-agent`，默认**一台机器一个节点**。正式运行全局只允许一个 Agent owner；不要同时启动多个节点。（点该节点「重置密钥」后用新接入命令在第二个目录部署）；watchtower 建议只保留一个。
+目录固定为 `workbench-agent`，默认**一台机器一个节点**。正式运行全局只允许一个 Agent owner；不要同时启动多个节点。Watchtower 建议只保留一个。
 
 接入命令统一带 `WORKBENCH_AGENT_FORCE=1`，重装/换机会直接覆盖已有 compose；手工执行时写成：
 
