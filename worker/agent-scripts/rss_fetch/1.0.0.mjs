@@ -19,6 +19,7 @@ const parser = new Parser({
 })
 const MAX_FEED_BYTES = 5 * 1024 * 1024
 const MAX_ITEMS_PER_SOURCE = 100
+const MAX_ITEMS_TOTAL = 10_000
 
 async function readTextBounded(response, maxBytes) {
   if (!response.body) return ''
@@ -61,7 +62,7 @@ function toTimestamp(value) {
 }
 
 export async function run(ctx, payload) {
-  const sources = Array.isArray(payload?.sources) ? payload.sources : []
+  const sources = Array.isArray(payload?.sources) ? payload.sources.slice(0, 100) : []
   if (sources.length === 0) return { items: [], summary: '没有启用的 RSS 数据源' }
 
   const items = []
@@ -69,6 +70,7 @@ export async function run(ctx, payload) {
   let succeeded = 0
 
   for (const source of sources) {
+    if (items.length >= MAX_ITEMS_TOTAL) break
     if (ctx.signal.aborted) throw new Error('RSS execution aborted')
     if (!source || typeof source.sourceId !== 'string' || typeof source.url !== 'string') continue
     try {
@@ -81,7 +83,8 @@ export async function run(ctx, payload) {
       if (contentLength > MAX_FEED_BYTES) throw new Error('feed exceeds 5 MiB')
       const xml = await readTextBounded(response, MAX_FEED_BYTES)
       const feed = await parser.parseString(xml)
-      const feedItems = Array.isArray(feed.items) ? feed.items.slice(0, MAX_ITEMS_PER_SOURCE) : []
+      const remaining = MAX_ITEMS_TOTAL - items.length
+      const feedItems = Array.isArray(feed.items) ? feed.items.slice(0, Math.min(MAX_ITEMS_PER_SOURCE, remaining)) : []
       for (const item of feedItems) {
         const title = typeof item.title === 'string' ? item.title : ''
         const link = typeof item.link === 'string' ? item.link : ''
