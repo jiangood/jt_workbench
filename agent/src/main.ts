@@ -13,6 +13,7 @@ import {
   zsxqProbeHandler,
 } from './jobs/zsxq.js'
 import { ttsHandler } from './jobs/tts.js'
+import { synchronizeScripts } from './script-sync.mjs'
 
 const log = pino()
 
@@ -41,6 +42,9 @@ async function main(): Promise<void> {
 
   while (true) {
     try {
+      // New Agents must reconcile the trusted script manifest before the legacy job path can run.
+      const scripts = await synchronizeScripts(client.next)
+      log.info({ scripts: scripts.length }, 'script manifest reconciled')
       const poll = await client.poll()
       let jobs = poll.jobs
       while (jobs.length) {
