@@ -43,10 +43,15 @@ let requestQueue: Promise<void> = Promise.resolve()
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
 function queueExecution(execution: AgentExecution): void {
-  if (running || pendingExecution) {
-    if (pendingExecution?.executionId !== execution.executionId) {
-      log.error({ current: running?.execution.executionId, pending: pendingExecution?.executionId, received: execution.executionId }, 'Worker returned an overlapping execution')
+  if (running) {
+    if (!pendingExecution) pendingExecution = execution
+    else if (pendingExecution.executionId !== execution.executionId) {
+      log.error({ current: running.execution.executionId, pending: pendingExecution.executionId, received: execution.executionId }, 'Worker returned multiple queued executions')
     }
+    return
+  }
+  if (pendingExecution && pendingExecution.executionId !== execution.executionId) {
+    log.error({ pending: pendingExecution.executionId, received: execution.executionId }, 'Worker returned an overlapping execution')
     return
   }
   pendingExecution = execution
@@ -65,6 +70,30 @@ function startPendingExecution(): void {
 
 async function requestNext(request: AgentNextRequest = {}): Promise<AgentNextResponse> {
   const task = requestQueue.then(async () => {
+    if (request.running && (!running || running.execution.executionId !== request.running.executionId)) {
+      return {
+        now: Date.now(), schemaVersion: 1, action: 'running',
+        scripts: [], deletes: [], activeScripts: [], checkpoints: [],
+        reportAccepted: false, inserted: 0,
+      } as AgentNextResponse
+    }
+    if (running && !request.running && !request.report) {
+      if (request.triggers?.length) {
+        return {
+          now: Date.now(), schemaVersion: 1, action: 'running',
+          scripts: [], deletes: [], activeScripts: [], checkpoints: [],
+          reportAccepted: false, inserted: 0,
+          triggerResults: request.triggers.map((trigger) => ({
+            scriptId: trigger.scriptId, scheduledAt: trigger.scheduledAt,
+            accepted: false, reason: 'agent_busy',
+          })),
+        } as AgentNextResponse
+      }
+      request = {
+        ...request,
+        running: { executionId: running.execution.executionId, leaseToken: running.execution.leaseToken },
+      }
+    }
     const scripts = request.running ? [] : request.scripts ?? await getScriptInventory()
     const response = await client.next({
       ...request,
