@@ -73,16 +73,17 @@ async function readManifest(env: Bindings, requestUrl: string): Promise<ScriptMa
   if (raw.schemaVersion !== 1 || !Array.isArray(raw.scripts) || raw.scripts.length > 100) {
     throw new ApiError(503, 503, 'Agent script manifest is invalid')
   }
-  const active = raw.scripts.map(validatePublishedScript)
+  const current = raw.scripts.map(validatePublishedScript)
   const versionValues = Array.isArray(raw.versions) ? raw.versions : raw.scripts
   if (versionValues.length > 1000) throw new ApiError(503, 503, 'Agent script version manifest is too large')
   const versions = versionValues.map(validatePublishedScript)
-  const activeIds = new Set<string>()
+  const currentIds = new Set<string>()
   const versionKeys = new Set<string>()
-  for (const script of active) {
-    if (!script.enabled || activeIds.has(script.id)) throw new ApiError(503, 503, 'Active Agent script manifest is invalid')
-    activeIds.add(script.id)
+  for (const script of current) {
+    if (currentIds.has(script.id)) throw new ApiError(503, 503, 'Current Agent script manifest contains duplicate ids')
+    currentIds.add(script.id)
   }
+  const active = current.filter((script) => script.enabled)
   for (const script of versions) {
     const key = scriptKey(script.id, script.version)
     if (versionKeys.has(key)) throw new ApiError(503, 503, 'Duplicate Agent script version')
