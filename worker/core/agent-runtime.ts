@@ -358,6 +358,13 @@ async function buildExecutionPayload(
     return { sources: sources.results ?? [] }
   }
 
+  if (scriptId === 'stock_eod') {
+    const watch = await db.prepare(
+      'SELECT code FROM stock_watch WHERE enabled = 1 ORDER BY sort, code',
+    ).all<{ code: string }>()
+    return { codes: (watch.results ?? []).map((row) => row.code) }
+  }
+
   if (scriptId === 'zsxq_sync') {
     const configuredJob = await db.prepare(
       "SELECT payload FROM job WHERE type = 'zsxq_sync' AND enabled = 1 ORDER BY id LIMIT 1",
