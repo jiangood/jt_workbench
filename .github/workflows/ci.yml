@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  pull_request:
+    branches:
+      - main
+      - feat/agent-reliability-aware-runtime
+    paths:
+      - 'agent/**'
+      - 'worker/**'
+      - '.github/workflows/ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: agent/package-lock.json
+      - name: Install Agent dependencies
+        working-directory: agent
+        run: npm ci
+      - name: Agent typecheck
+        working-directory: agent
+        run: npm run check
+      - name: Agent tests
+        working-directory: agent
+        run: npm test
+      - name: Agent bundle
+        working-directory: agent
+        run: npm run build
+
+  worker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - name: Install Worker dependencies
+        working-directory: worker
+        run: npm ci
+      - name: Worker typecheck
+        working-directory: worker
+        run: npm run check
