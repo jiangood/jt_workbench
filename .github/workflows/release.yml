@@ -105,6 +105,11 @@ jobs:
         working-directory: worker
         run: npm ci
 
+      - name: Worker — build Agent script manifest
+        if: steps.diff.outputs.worker == 'true'
+        working-directory: worker
+        run: npm run scripts:build
+
       - name: Worker — typecheck
         if: steps.diff.outputs.worker == 'true'
         working-directory: worker
