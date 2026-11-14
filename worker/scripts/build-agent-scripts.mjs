@@ -6,7 +6,7 @@ import { Cron } from 'croner'
 const sourceRoot = resolve('agent-scripts')
 const outputRoot = resolve('public/agent-scripts')
 const idPattern = /^[a-z][a-z0-9_-]{0,63}$/
-const versionPattern = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
+const versionPattern = /^\d+\.\d+\.\d+$/
 const allowedKeys = new Set([
   'id', 'name', 'version', 'description', 'schedule', 'enabled', 'timeout', 'reliability',
 ])
