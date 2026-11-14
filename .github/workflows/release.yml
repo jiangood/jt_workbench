@@ -50,7 +50,7 @@ jobs:
           INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
           TAG="${INPUT_TAG:-$GITHUB_REF_NAME}"
-          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+[.][0-9]+[.][0-9]+
+          if [[ ! "$TAG" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
 
       # release 的 tag 必须打在 main 的提交上：防止把实验分支发上线
       - name: Ensure ref is on main
