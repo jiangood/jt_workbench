@@ -52,7 +52,7 @@
 - **远程脚本运行时**：业务脚本以原生 JavaScript 远程发布，由 Agent 同步后动态执行；脚本不是编译进 Agent 镜像的静态 handler。源码按不可变版本位于 `worker/agent-scripts/<id>/<version>.mjs`，经 PR 审查后由 Worker release 生成静态 Assets manifest/版本化内容；脚本头部 JSON metadata 声明 `id/name/version/description/schedule/enabled/timeout/reliability`。发布脚本是公开静态资源，不得包含任何凭据。
 - **脚本是可信代码**：第一版不做沙箱，脚本在 Agent Node.js 进程内执行，拥有宿主进程权限。只能执行经过仓库 PR 审查和可信发布链路发布的脚本；SHA-256 只校验内容一致性，不证明发布者身份。任务 payload 只能包含数据，绝不能携带代码、表达式或可执行模块。
 - **脚本同步先于执行**：Agent 请求 `POST /node/agent/next` 时上报本地脚本清单（id/version/SHA-256）；Worker 返回更新/删除清单。Agent 验证 SHA-256/metadata 后写临时文件并原子 rename，再请求同一接口二次对账；每轮旧任务领取前先同步，未通过对账不得领取或执行任务。
-- **不动态安装依赖**：Agent 镜像预装脚本所需第三方依赖；远程脚本不得运行时 npm install。远程 ES Module 对镜像内依赖的解析方式必须有自动化验证。
+- **不动态安装依赖**：Agent 镜像预装脚本所需第三方依赖；远程脚本不得运行时 npm install。远程 ES Module 对镜像内依赖的解析方式必须有自动化验证。远程脚本引用的 Agent helper 必须使用版本化 bundle 路径（例如 zsxq-jobs-v1.mjs）；禁止原地改变已发布 helper 版本的语义，新版本需新增 helper bundle 并更新远程脚本版本。
 - **可靠性由脚本声明**：`best_effort` 适用于新闻 RSS 等可丢失任务，错过触发丢弃、失败不强制重试；`reliable` 适用于知识星球等重要同步，支持失败重试、启动补偿、业务游标和断点续跑。第一版不实现 strict。
 - **调度约定**：Agent 本地执行 6 字段 Cron，固定 `Asia/Shanghai`，最小间隔 60 秒。`schedule_revision` 只由 schedule/enabled 决定，不由脚本版本/hash 决定。reliable 启动补偿把所有错过的槽合并为一次 reconcile；Worker 持久化调度检查点。同一脚本不并发；普通 Cron 触发遇到正在执行的同脚本时跳过，不排队。
 - **执行语义**：脚本必须幂等；系统按至少一次语义设计，不承诺 exactly-once。重试沿用同一个 `execution_id` 和创建时固定的脚本版本。Agent 崩溃后无法确认副作用结果时记录为 interrupted/unknown，再按业务幂等策略恢复。
