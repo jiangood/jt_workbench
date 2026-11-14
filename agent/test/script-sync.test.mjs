@@ -23,10 +23,10 @@ const meta = {
   reliability: 'best_effort',
 }
 const source = [
-  '/**',
-  ' * @script',
-  ' * ' + JSON.stringify(meta),
-  ' */',
+  '// @script',
+  '// @script',
+  '// ' + JSON.stringify(meta),
+  '' ,
   'export async function run() { return "ok" }',
 ].join('\n')
 const descriptor = {
