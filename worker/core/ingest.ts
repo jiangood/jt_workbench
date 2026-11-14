@@ -656,7 +656,7 @@ export async function ingest(
           .prepare(
             `UPDATE zsxq_topic SET
                comments_fail_count = comments_fail_count + 1,
-               comments_retry_at = ? + MIN(21600000, 300000 * (1 << MIN(comments_fail_count, 6))),
+               comments_retry_at = ? + MIN(21600000, 300000 * (1 << MIN(comments_fail_count, 7))),
                comments_last_error = ?
              WHERE id = ? AND group_id = ?`,
           )
