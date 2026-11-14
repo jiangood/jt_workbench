@@ -220,6 +220,7 @@ async function refreshScripts(): Promise<void> {
   }
 
   const sync = await synchronizeScripts((scripts) => client.next({ scripts }))
+  const activeScripts = sync.scripts
   const checkpoints = new Map<string, ScheduleCheckpoint>(
     sync.checkpoints.map((checkpoint) => [checkpoint.scriptId, checkpoint]),
   )
