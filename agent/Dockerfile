@@ -30,6 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
  && curl -fsSL -o /opt/piper/voices/zh_CN-huayan-medium.onnx.json "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/zh/zh_CN/huayan/medium/zh_CN-huayan-medium.onnx.json"
 WORKDIR /app
 COPY --from=build /app/dist/agent.mjs ./agent.mjs
+COPY --from=build /app/dist/remote-libs ./dist/remote-libs
 COPY --from=runtime-deps /app/node_modules ./node_modules
 ENV PIPER_BIN=/opt/piper/piper
 ENV PIPER_VOICE_DIR=/opt/piper/voices
