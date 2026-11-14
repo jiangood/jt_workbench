@@ -140,6 +140,7 @@ const scoreKey = (target: string, nodeId: string) => `${target}\u0000${nodeId}`
 
 // 新任务类型需要对应能力的 agent，避免旧节点领取后 unknown type 失败/卡住
 const MIN_AGENT_VERSION_BY_TYPE: Record<string, string> = {
+  zsxq_sync: '0.13.30',
   zsxq_backfill: '0.13.19',
   zsxq_comments: '0.13.19',
   zsxq_probe: '0.13.19',
