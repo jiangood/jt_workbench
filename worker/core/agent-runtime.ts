@@ -1,5 +1,7 @@
 import { ApiError, type Bindings } from './envelope'
 import { ingest } from './ingest'
+import { getConfig } from './config'
+import { payloadGroupIds, zsxqCursors, zsxqReconcileTargets } from './zsxq-payload'
 
 const EXECUTION_LEASE_MS = 5 * 60_000
 const MAX_RETRY_DELAY_MS = 6 * 60 * 60_000
@@ -336,7 +338,58 @@ async function recoverOrphanedExecutions(db: D1Database, nodeId: string, now: nu
   }
 }
 
-async function claimNextExecution(db: D1Database, nodeId: string, now: number) {
+async function buildExecutionPayload(
+  db: D1Database,
+  env: Bindings,
+  scriptId: string,
+  storedPayload: string,
+  now: number,
+): Promise<unknown> {
+  let payload: Record<string, unknown> = {}
+  try {
+    const parsed: unknown = JSON.parse(storedPayload)
+    if (isRecord(parsed)) payload = parsed
+  } catch { /* use script-specific defaults */ }
+
+  if (scriptId === 'rss_fetch') {
+    const sources = await db.prepare(
+      'SELECT id AS sourceId, url, name FROM news_source WHERE enabled = 1 ORDER BY sort, id',
+    ).all<{ sourceId: string; url: string; name: string }>()
+    return { sources: sources.results ?? [] }
+  }
+
+  if (scriptId === 'zsxq_sync') {
+    const configuredJob = await db.prepare(
+      "SELECT payload FROM job WHERE type = 'zsxq_sync' ORDER BY id LIMIT 1",
+    ).first<{ payload: string | null }>()
+    if (configuredJob?.payload) {
+      try {
+        const configured: unknown = JSON.parse(configuredJob.payload)
+        if (isRecord(configured)) payload = { ...payload, ...configured }
+      } catch { /* preserve fallback payload */ }
+    }
+    let groupIds = payloadGroupIds(payload)
+    if (!groupIds.length) {
+      const groups = await db.prepare('SELECT id FROM zsxq_group WHERE enabled = 1 ORDER BY id')
+        .all<{ id: string }>()
+      groupIds = (groups.results ?? []).map((group) => group.id)
+    }
+    const token = await getConfig(env, 'zsxq_token')
+    return {
+      ...payload,
+      groupIds,
+      count: typeof payload.count === 'number' && Number.isInteger(payload.count) ? payload.count : 20,
+      token: token ?? '',
+      cursors: await zsxqCursors(db, groupIds),
+      refresh: await zsxqReconcileTargets(db, groupIds, 'comments_checked_at', now),
+      check: await zsxqReconcileTargets(db, groupIds, 'checked_at', now),
+    }
+  }
+
+  return payload
+}
+
+async function claimNextExecution(db: D1Database, env: Bindings, nodeId: string, now: number) {
   const running = await db.prepare(
     "SELECT execution_id FROM agent_execution WHERE status = 'running' AND lease_until > ? LIMIT 1",
   ).bind(now).first<{ execution_id: string }>()
@@ -351,14 +404,13 @@ async function claimNextExecution(db: D1Database, nodeId: string, now: number) {
     reliability: 'best_effort' | 'reliable'; attempt: number; max_attempts: number; payload_json: string
   }>()
   if (!row) return null
+  const payload = await buildExecutionPayload(db, env, row.script_id, row.payload_json, now)
   const leaseToken = crypto.randomUUID()
   const updated = await db.prepare(
     "UPDATE agent_execution SET status = 'running', attempt = attempt + 1, lease_token = ?, lease_until = ?, node_id = ?, started_at = COALESCE(started_at, ?), updated_at = ? " +
     "WHERE execution_id = ? AND status IN ('pending', 'interrupted') AND next_attempt_at <= ?",
   ).bind(leaseToken, now + EXECUTION_LEASE_MS, nodeId, now, now, row.execution_id, now).run()
   if (updated.meta.changes === 0) return null
-  let payload: unknown = {}
-  try { payload = JSON.parse(row.payload_json) } catch { /* use empty data */ }
   return {
     executionId: row.execution_id,
     scriptId: row.script_id,
@@ -432,6 +484,6 @@ export async function handleAgentNext(
     if (!Array.isArray(body.triggers)) throw new ApiError(400, 400, 'triggers must be an array')
     triggerResults = await processTriggers(db, nodeId, body.triggers, sync.activeScripts, now)
   }
-  const execution = await claimNextExecution(db, nodeId, now)
+  const execution = await claimNextExecution(db, env, nodeId, now)
   return { ...common, triggerResults, action: execution ? 'execute' as const : 'idle' as const, execution }
 }
