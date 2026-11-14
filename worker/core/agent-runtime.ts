@@ -375,10 +375,13 @@ async function buildExecutionPayload(
       groupIds = (groups.results ?? []).map((group) => group.id)
     }
     const token = await getConfig(env, 'zsxq_token')
+    groupIds = [...new Set(groupIds)].slice(0, 50)
     return {
       ...payload,
       groupIds,
-      count: typeof payload.count === 'number' && Number.isInteger(payload.count) ? payload.count : 20,
+      count: typeof payload.count === 'number' && Number.isInteger(payload.count)
+        ? Math.max(1, Math.min(30, payload.count))
+        : 20,
       token: token ?? '',
       cursors: await zsxqCursors(db, groupIds),
       refresh: await zsxqReconcileTargets(db, groupIds, 'comments_checked_at', now),
