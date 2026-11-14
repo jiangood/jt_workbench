@@ -3,28 +3,13 @@ import { client, UnauthorizedError } from './client.js'
 import { getConfig } from './config.js'
 import { describeError } from './describe-error.js'
 import { run, register } from './runner.js'
-import { rssHandler } from './jobs/rss.js'
-import { stockHandler } from './jobs/stock.js'
-import {
-  zsxqBackfillHandler,
-  zsxqCommentsHandler,
-  zsxqGroupsHandler,
-  zsxqHandler,
-  zsxqProbeHandler,
-} from './jobs/zsxq.js'
-import { ttsHandler } from './jobs/tts.js'
+import { scriptManifest, validateScriptManifest } from './scripts/manifest.js'
 
 const log = pino()
 
-// handler 注册表：查表分发，主循环永不因新功能而改（决策 #15）
-register('rss_fetch', rssHandler)
-register('stock_eod', stockHandler)
-register('zsxq_sync', zsxqHandler)
-register('zsxq_backfill', zsxqBackfillHandler)
-register('zsxq_comments', zsxqCommentsHandler)
-register('zsxq_probe', zsxqProbeHandler)
-register('zsxq_groups', zsxqGroupsHandler)
-register('tts_synthesize', ttsHandler)
+// 静态 manifest 在构建时打入单文件；校验后注册，避免重复 task type 静默覆盖。
+validateScriptManifest()
+for (const script of scriptManifest) register(script.type, script.handler)
 
 /** poll 抖动（v4.8）：±60~90s，多节点部署时各节点 poll 时点自然错峰 */
 const jitterMs = () => {
