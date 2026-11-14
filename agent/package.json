@@ -17,7 +17,8 @@
     "music-metadata": "^11.0.0",
     "pino": "^9.5.0",
     "rss-parser": "^3.13.0",
-    "zod": "^4.0.0"
+    "zod": "^4.0.0",
+    "croner": "^8.1.2"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
