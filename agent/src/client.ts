@@ -1,7 +1,7 @@
 import { getConfig } from './config.js'
 import type { Envelope } from './types.js'
 import { AGENT_VERSION } from './version.js'
-import type { AgentNextResponse, ScriptInventoryEntry } from './script-sync.mjs'
+import type { AgentNextRequest, AgentNextResponse } from './script-sync.mjs'
 
 export class RetryableError extends Error {}
 /** 401/403：密钥未登记 / 已被注销 —— 不是配置错误，等待后台登记后自动恢复 */
@@ -29,9 +29,9 @@ async function call(path: string, body: Record<string, unknown> = {}): Promise<E
 
 export const client = {
   poll: () => call('/node/poll'),
-  /** Authenticated script reconciliation; no execution is granted until a later protocol stage. */
-  next: (scripts: ScriptInventoryEntry[]) =>
-    call('/node/agent/next', { scripts }) as unknown as Promise<AgentNextResponse>,
+  /** Unified sync / trigger / lease / result protocol. */
+  next: (request: AgentNextRequest) =>
+    call('/node/agent/next', request as unknown as Record<string, unknown>) as unknown as Promise<AgentNextResponse>,
   heartbeat: (id: number) => call(`/node/jobs/${id}/heartbeat`),
   results: (id: number, items: unknown[]) => call(`/node/jobs/${id}/results`, { items }),
   complete: (id: number, summary: string) => call(`/node/jobs/${id}/complete`, { summary }),
