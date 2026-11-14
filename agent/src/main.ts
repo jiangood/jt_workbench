@@ -216,6 +216,10 @@ async function refreshScripts(): Promise<void> {
   scheduler?.stop()
   scheduler = null
   await requestQueue
+  if (running || pendingExecution) {
+    needsResync = true
+    return
+  }
 
   const sync = await synchronizeScripts((scripts) => client.next({ scripts }))
   activeScripts = sync.scripts
