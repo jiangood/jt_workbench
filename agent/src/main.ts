@@ -3,6 +3,17 @@ import pino from 'pino'
 import { client, ConflictError, UnauthorizedError } from './client.js'
 import { getConfig } from './config.js'
 import { describeError } from './describe-error.js'
+import { run, register } from './runner.js'
+import { rssHandler } from './jobs/rss.js'
+import { stockHandler } from './jobs/stock.js'
+import {
+  zsxqBackfillHandler,
+  zsxqCommentsHandler,
+  zsxqGroupsHandler,
+  zsxqHandler,
+  zsxqProbeHandler,
+} from './jobs/zsxq.js'
+import { ttsHandler } from './jobs/tts.js'
 import { runRemoteScript } from './remote-runner.js'
 import { buildStartupCatchup, scheduleRevision, startLocalScheduler } from './scheduler.mjs'
 import {
@@ -11,6 +22,7 @@ import {
   synchronizeScripts,
 } from './script-sync.mjs'
 import type {
+  ActiveScript,
   AgentExecution,
   AgentNextRequest,
   AgentNextResponse,
@@ -19,6 +31,16 @@ import type {
 } from './script-sync.mjs'
 
 const log = pino()
+
+// Keep unmigrated job types on the legacy runner during the staged script migration.
+register('rss_fetch', rssHandler)
+register('stock_eod', stockHandler)
+register('zsxq_sync', zsxqHandler)
+register('zsxq_backfill', zsxqBackfillHandler)
+register('zsxq_comments', zsxqCommentsHandler)
+register('zsxq_probe', zsxqProbeHandler)
+register('zsxq_groups', zsxqGroupsHandler)
+register('tts_synthesize', ttsHandler)
 const IDLE_POLL_MS = 30_000
 const HEARTBEAT_MS = 60_000
 const SCRIPT_SYNC_MS = 5 * 60_000
@@ -30,6 +52,9 @@ interface RunningExecution {
 }
 
 let running: RunningExecution | null = null
+let legacyRunning = false
+let legacyPolling = false
+let activeScripts: ActiveScript[] = []
 let pendingExecution: AgentExecution | null = null
 let scheduler: ReturnType<typeof startLocalScheduler> | null = null
 let activeRevisions = new Map<string, string>()
@@ -68,6 +93,26 @@ function startPendingExecution(): void {
 
 async function requestNext(request: AgentNextRequest = {}): Promise<AgentNextResponse> {
   const task = requestQueue.then(async () => {
+    if ((legacyRunning || legacyPolling) && !request.running && !request.report) {
+      if (request.triggers?.length) {
+        const scriptReliability = activeScripts.find((script) => script.id === request.triggers?.[0]?.scriptId)?.reliability
+        if (scriptReliability === 'reliable') throw new Error('Agent busy with a legacy job; reliable trigger will retry')
+        return {
+          now: Date.now(), schemaVersion: 1, action: 'running',
+          scripts: [], deletes: [], activeScripts: [], checkpoints: [],
+          reportAccepted: false, inserted: 0,
+          triggerResults: request.triggers.map((trigger) => ({
+            scriptId: trigger.scriptId, scheduledAt: trigger.scheduledAt,
+            accepted: false, reason: 'agent_busy',
+          })),
+        } as AgentNextResponse
+      }
+      return {
+        now: Date.now(), schemaVersion: 1, action: 'running',
+        scripts: [], deletes: [], activeScripts: [], checkpoints: [],
+        reportAccepted: false, inserted: 0,
+      } as AgentNextResponse
+    }
     if (request.running && (!running || running.execution.executionId !== request.running.executionId)) {
       return {
         now: Date.now(), schemaVersion: 1, action: 'running',
@@ -203,6 +248,11 @@ async function executeAndReport(state: RunningExecution): Promise<void> {
 
 async function handleScheduledTrigger(trigger: ScheduleTrigger): Promise<boolean> {
   if (stopping || needsResync || running || pendingExecution) return false
+  if (legacyRunning || legacyPolling) {
+    const script = activeScripts.find((item) => item.id === trigger.scriptId)
+    if (script?.reliability === 'reliable') throw new Error('Agent busy with a legacy job; reliable trigger will retry')
+    return false
+  }
   const response = await requestNext({ triggers: [trigger] })
   if (response.action === 'sync') throw new Error('script manifest changed; sync before accepting Cron trigger')
   return response.triggerResults?.find(
@@ -214,13 +264,13 @@ async function refreshScripts(): Promise<void> {
   scheduler?.stop()
   scheduler = null
   await requestQueue
-  if (running || pendingExecution) {
+  if (running || pendingExecution || legacyRunning || legacyPolling) {
     needsResync = true
     return
   }
 
   const sync = await synchronizeScripts((scripts) => client.next({ scripts }))
-  const activeScripts = sync.scripts
+  activeScripts = sync.scripts
   const checkpoints = new Map<string, ScheduleCheckpoint>(
     sync.checkpoints.map((checkpoint) => [checkpoint.scriptId, checkpoint]),
   )
@@ -263,6 +313,19 @@ async function refreshScripts(): Promise<void> {
   }, 'remote script runtime ready')
 }
 
+async function runLegacyJobs(initialJobs: Array<{ id: number; type: string; payload: unknown }>): Promise<void> {
+  legacyRunning = true
+  try {
+    let jobs = initialJobs
+    while (jobs.length && !stopping) {
+      const next = await run(jobs[0])
+      jobs = next.jobs
+    }
+  } finally {
+    legacyRunning = false
+  }
+}
+
 function handleLoopError(error: unknown, action: string): number {
   if (error instanceof ConflictError) {
     log.fatal({ err: describeError(error), action }, 'Agent runtime ownership or execution conflict; stopping')
@@ -290,7 +353,7 @@ async function main(): Promise<void> {
   }
 
   while (!stopping) {
-    if (needsResync && !running) {
+    if (needsResync && !running && !legacyRunning && !legacyPolling) {
       try {
         await refreshScripts()
       } catch (error) {
@@ -299,14 +362,22 @@ async function main(): Promise<void> {
       }
     }
 
-    if (!running && !pendingExecution) {
+    if (!running && !pendingExecution && !legacyRunning && !legacyPolling) {
       if (Date.now() >= nextSyncAt) {
         needsResync = true
         continue
       }
       try {
+        // Prefer Worker-authorized remote executions, then claim only remaining legacy job types.
         await requestNext()
+        if (!needsResync && !running && !pendingExecution) {
+          legacyPolling = true
+          const poll = await client.poll()
+          legacyPolling = false
+          if (poll.jobs?.length) await runLegacyJobs(poll.jobs)
+        }
       } catch (error) {
+        legacyPolling = false
         await sleep(handleLoopError(error, 'idle poll'))
         continue
       }
