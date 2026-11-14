@@ -1,7 +1,7 @@
 import type { ActiveScript } from './script-sync.mjs'
 
 export interface ScriptLogger {
-  debug(...args: unknown[]): void
+  debug(...args: any[]): void
   info(...args: unknown[]): void
   warn(...args: unknown[]): void
   error(...args: unknown[]): void
