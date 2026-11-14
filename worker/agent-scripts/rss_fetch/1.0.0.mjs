@@ -20,6 +20,34 @@ const parser = new Parser({
 const MAX_FEED_BYTES = 5 * 1024 * 1024
 const MAX_ITEMS_PER_SOURCE = 100
 
+async function readTextBounded(response, maxBytes) {
+  if (!response.body) return ''
+  const reader = response.body.getReader()
+  const chunks = []
+  let total = 0
+  try {
+    while (true) {
+      const part = await reader.read()
+      if (part.done) break
+      total += part.value.byteLength
+      if (total > maxBytes) {
+        await reader.cancel()
+        throw new Error('feed exceeds 5 MiB')
+      }
+      chunks.push(part.value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  const bytes = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return new TextDecoder('utf-8').decode(bytes)
+}
+
 function stableId(item, sourceId) {
   const raw = item.guid || item.id || item.link || String(item.title ?? '') + '|' + String(item.isoDate ?? item.pubDate ?? '')
   if (raw) return String(raw).slice(0, 1000)
@@ -51,8 +79,7 @@ export async function run(ctx, payload) {
       if (!response.ok) throw new Error('HTTP ' + response.status)
       const contentLength = Number(response.headers.get('content-length') ?? 0)
       if (contentLength > MAX_FEED_BYTES) throw new Error('feed exceeds 5 MiB')
-      const xml = await response.text()
-      if (new TextEncoder().encode(xml).byteLength > MAX_FEED_BYTES) throw new Error('feed exceeds 5 MiB')
+      const xml = await readTextBounded(response, MAX_FEED_BYTES)
       const feed = await parser.parseString(xml)
       const feedItems = Array.isArray(feed.items) ? feed.items.slice(0, MAX_ITEMS_PER_SOURCE) : []
       for (const item of feedItems) {
