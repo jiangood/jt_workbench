@@ -15,6 +15,7 @@ async function call(path: string, body: Record<string, unknown> = {}): Promise<E
   const res = await fetch(`${serverUrl}${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-node-key': nodeKey },
+    signal: AbortSignal.timeout(30_000),
     body: JSON.stringify({ agentVersion: AGENT_VERSION, ...body }),
   })
   if (res.status === 401 || res.status === 403) {
