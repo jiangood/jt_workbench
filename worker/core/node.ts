@@ -572,7 +572,7 @@ node.post('/agent/next', async (c) => {
   const body = await c.req.json<{
     agentVersion?: string
     scripts?: unknown[]
-  }>().catch(() => ({}))
+  }>().catch(() => ({} as { agentVersion?: string; scripts?: unknown[] }))
   if (typeof body.agentVersion !== 'string' || !Array.isArray(body.scripts) || body.scripts.length > 200) {
     return nodeErr(400, 'invalid Agent runtime request')
   }
