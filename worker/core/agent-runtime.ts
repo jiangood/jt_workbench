@@ -366,10 +366,10 @@ export async function handleAgentNext(
   now: number,
 ) {
   const runtimeReady = body.runtimeReady === true
-  if (runtimeReady) await claimRuntimeOwner(db, nodeId, now)
-  else {
-    const owner = await readRuntimeOwner(db)
-    if (owner && owner !== nodeId) throw new ApiError(409, 409, 'Agent runtime is owned by another node')
+  const owner = await readRuntimeOwner(db)
+  if (owner && owner !== nodeId) throw new ApiError(409, 409, 'Agent runtime is owned by another node')
+  if ((body.report || body.running) && owner !== nodeId) {
+    throw new ApiError(409, 409, 'execution reporting requires the permanent runtime owner')
   }
 
   let reportResult: { accepted: boolean; inserted: number } | null = null
@@ -387,7 +387,6 @@ export async function handleAgentNext(
       inserted: 0,
     }
   }
-  if (!body.running && !body.report && runtimeReady) await recoverOrphanedExecutions(db, nodeId, now)
 
   const local = validateLocalScripts(body.scripts ?? [])
   const manifest = await readManifest(env, requestUrl)
@@ -405,13 +404,16 @@ export async function handleAgentNext(
   if (needsSync) return { ...common, action: 'sync' as const }
   if (!runtimeReady) return { ...common, action: 'idle' as const }
 
+  // Claim the permanent owner only after the script set is fully reconciled.
+  // A failed first sync must not permanently lock out the legacy Agent.
+  await claimRuntimeOwner(db, nodeId, now)
+  if (!body.report) await recoverOrphanedExecutions(db, nodeId, now)
+
   let triggerResults: Array<{ scriptId: string; scheduledAt: number; accepted: boolean; reason?: string }> = []
   if (body.triggers !== undefined) {
     if (!Array.isArray(body.triggers)) throw new ApiError(400, 400, 'triggers must be an array')
     triggerResults = await processTriggers(db, nodeId, body.triggers, sync.activeScripts, now)
   }
-  if (body.running && !body.report) return { ...common, triggerResults, action: 'running' as const }
-
   const execution = await claimNextExecution(db, nodeId, now)
   return { ...common, triggerResults, action: execution ? 'execute' as const : 'idle' as const, execution }
 }
