@@ -360,7 +360,7 @@ async function buildExecutionPayload(
 
   if (scriptId === 'zsxq_sync') {
     const configuredJob = await db.prepare(
-      "SELECT payload FROM job WHERE type = 'zsxq_sync' ORDER BY id LIMIT 1",
+      "SELECT payload FROM job WHERE type = 'zsxq_sync' AND enabled = 1 ORDER BY id LIMIT 1",
     ).first<{ payload: string | null }>()
     if (configuredJob?.payload) {
       try {
