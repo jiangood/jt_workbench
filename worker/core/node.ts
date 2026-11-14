@@ -465,10 +465,11 @@ async function zsxqReconcileTargets(
       .prepare(
         `SELECT id AS topicId, group_id AS groupId FROM zsxq_topic
          WHERE group_id IN (${placeholders}) AND deleted = 0
+           ${column === 'comments_checked_at' ? 'AND (comments_retry_at IS NULL OR comments_retry_at <= ?)' : ''}
          ORDER BY COALESCE(${column}, 0) ASC, create_time DESC
          LIMIT ?`,
       )
-      .bind(...ids, ZSXQ_RECONCILE_LIMIT)
+      .bind(...ids, ...(column === 'comments_checked_at' ? [Date.now()] : []), ZSXQ_RECONCILE_LIMIT)
       .all<{ topicId: string; groupId: string }>()
     return (res.results ?? []).filter((r) => r.topicId && r.groupId)
   } catch {
