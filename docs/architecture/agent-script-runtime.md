@@ -29,7 +29,7 @@
 | Agent | 脚本对账与下载、hash 校验、原子缓存、metadata 解析、Cron、单脚本互斥、超时、执行和结果回传 |
 | Worker | 脚本发布清单/内容访问控制、节点认证、执行许可、execution 唯一性、租约、重试/恢复状态和结果接收 |
 | D1 | 脚本发布元数据、执行记录、租约/重试信息，以及由业务 ingest 管理的同步游标 |
-| R2 或受控静态内容存储 | 保存版本化脚本内容；具体存储 key 与访问方式由实现阶段确定 |
+| Worker Static Assets | 保存版本化脚本内容和生成的 manifest；源码由 PR 审查后随 Worker release 发布 |
 
 Worker 不负责计算业务脚本 Cron。Worker 内部用于邮件扫描、过期数据清理等基础设施 tick 不属于业务脚本调度，不因本 ADR 自动移除。
 
@@ -81,7 +81,7 @@ metadata 必须严格解析和校验：未知等级、无效 Cron、重复 ID、
 
 Agent 请求至少包含 Agent 版本、本地脚本清单（`id/version/sha256`），以及可选的待申请触发信息。Worker 响应动作状态：
 
-- `scripts_update`：返回需要下载/更新的脚本清单及撤销删除清单。
+- `sync`：返回需要下载/更新的脚本清单及撤销删除清单。
 - `task` / 执行许可：脚本对账通过后，授权一个执行实例及其固定脚本版本。
 - `idle`：当前没有同步或执行动作。
 
@@ -93,7 +93,7 @@ Agent 请求至少包含 Agent 版本、本地脚本清单（`id/version/sha256`
 4. Agent 再次请求同一接口并上报新清单。
 5. Worker 二次对账确认完全一致后，才可处理触发申请/发放执行许可。
 
-Agent 缓存目录默认为工作目录下的 `.agent-scripts/<id>/<version>.mjs`。Agent 先验证源码 SHA-256、metadata 与 Worker 返回的描述符一致，再写同目录临时文件并原子 rename；撤销操作只接受经过 id/version 白名单校验的缓存路径。Agent 在每轮旧任务 poll 之前先完成同步，Worker 不可用或同步未收敛时不会进入旧任务领取流程。
+Agent 缓存目录默认为工作目录下的 `.agent-scripts/<id>/<version>.mjs`（容器中为 `/app/.agent-scripts/`）。Agent 先验证源码 SHA-256、metadata 与 Worker 返回的描述符一致，再写同目录临时文件并原子 rename；撤销操作只接受经过 id/version 白名单校验的缓存路径。Agent 在每轮旧任务 poll 之前先完成同步，Worker 不可用或同步未收敛时不会进入旧任务领取流程。
 6. 若再次不一致则继续同步；下载失败、hash 不匹配或 metadata 无效时不覆盖现有可用版本、不执行任务，并按退避策略重试。
 
 脚本缓存路径必须防止路径穿越；禁止由 metadata 的路径字段决定任意文件位置。任务 payload 永远是数据，不得携带 JavaScript、动态 import 地址、表达式或其他可执行内容。节点认证、结果回传和现有 API envelope 尽量复用。
@@ -186,43 +186,31 @@ context 字段：`logger`、`config`、`fetch`、`signal`、`executionId`、`scr
 ## 分阶段实施
 
 ### PR 1：架构与协议文档
-- [ ] 用本 ADR 替换旧静态 manifest ADR。
-- [ ] 同步 AGENTS.md 与 README.md，明确目标架构、可信代码风险和分级可靠性。
-- [ ] 定义接口协议、metadata schema、执行状态机和兼容升级策略。
+- [x] 用本 ADR 替换旧静态 manifest ADR。
+- [x] 同步 AGENTS.md 与 README.md，明确目标架构、可信代码风险和分级可靠性。
+- [x] 定义接口协议、metadata schema、执行状态机和兼容升级策略。
 
 ### PR 2：运行时技术验证
-- [x] 验证 Node 22 动态加载远程/缓存 ES Module：缓存为 .mjs 文件后通过 file: URL 动态 import。
-- [x] 验证模块如何解析镜像预装依赖，不引入运行时 npm install：脚本缓存放在 /app/scripts/，依赖放在 /app/node_modules/，Node ESM 按父目录查找依赖；镜像单独复制 npm ci --omit=dev 的生产依赖。
-- [ ] 验证原子缓存替换、删除、hash 校验、超时/取消和失败回滚（属于同步器实现阶段，不在本次实验中伪称完成）。
-- [ ] 在 Node 22 CI 中运行动态导入依赖测试；CI 结果以 PR 检查为准。
+- [x] 验证 Node 22 动态加载远程/缓存 ES Module：缓存为 `.mjs` 文件后通过 `file:` URL 动态 import。
+- [x] 验证模块如何解析镜像预装依赖，不引入运行时 npm install：脚本缓存放在 `/app/.agent-scripts/`，依赖放在 `/app/node_modules/`，Node ESM 按父目录查找依赖；镜像单独复制 `npm ci --omit=dev` 的生产依赖。
+- [x] 验证本地缓存原子替换、撤销、SHA-256/metadata 校验和失败不覆盖；动态运行时支持 AbortSignal 协作式超时。
+- [x] 在 Node 22 CI 中运行动态导入依赖和缓存同步测试。
 
 ### PR 3：脚本发布与同步协议
-- [ ] Worker 侧版本化脚本 manifest/content 管理。
-- [ ] 实现 POST /node/agent/next 的脚本对账、更新、二次校验和兼容迁移。
-- [ ] Agent 实现本地清单、下载、hash 校验、原子更新和删除。
+- [x] Worker 侧版本化脚本 manifest/content 管理（静态 Assets，保留历史版本）。
+- [x] 实现 `POST /node/agent/next` 的脚本对账、更新和二次校验响应。
+- [x] Agent 实现本地清单、SHA-256 校验、原子更新和安全撤销。
 
 ### PR 4：动态执行运行时
-- [ ] metadata parser/validator、统一 context、动态加载和执行结果回传。
-- [ ] 单脚本互斥、超时、取消、执行版本固定和日志追踪。
-- [ ] 脚本内容不可变，执行实例引用确定 hash。
+- [x] metadata parser/validator、统一 context、动态加载和执行结果结构校验。
+- [ ] 单脚本互斥、Worker 授权执行、结果回传、执行版本固定和日志追踪（等待 execution coordinator）。
+- [x] 缓存脚本按版本路径保存，执行前再次校验确定 hash。
 
 ### PR 5：调度和 Worker 执行状态
-- [ ] Agent 本地 Asia/Shanghai Cron，触发宽限期和 best_effort 语义。
-- [ ] reliable 启动 reconcile、持久化恢复和失败重试。
-- [ ] D1 execution 状态、唯一性、租约、interrupted/unknown 处理。
+- [x] Agent 本地 `Asia/Shanghai` Cron 计算器、60 秒最小间隔、触发宽限期和 best_effort 迟到丢弃（scheduler 模块已实现，待接入 Worker）。
+- [x] reliable 启动 catch-up 只生成一个合并 reconcile 触发请求（Worker 持久化检查点和重试待实现）。
+- [ ] D1 execution 状态、唯一性、单 Agent 所有权、租约、interrupted/unknown 处理。
 - [ ] 结果回传幂等与同一 execution ID 重试。
-
-### PR 6：业务脚本迁移
-- [ ] RSS 迁移为 best_effort，验证失败不阻塞后续正常调度。
-- [ ] 知识星球迁移为 reliable，实现业务游标、分页续跑、幂等写入和完整性检查。
-- [ ] 对中断、超时、重复执行、Worker 不可用、Agent 重启进行故障注入测试。
-
-### PR 7：清理与收尾
-- [ ] 移除迁移完成后不再需要的业务 Cron 调度分支。
-- [ ] 保留 Worker 基础设施 tick。
-- [ ] 更新运维、脚本开发和故障恢复文档。
-
-各阶段独立 PR，限制每个 PR 的行为变更范围。任何 D1 schema 变更先扩展兼容，再切换代码，最后才考虑清理旧结构。
 
 ## 验收标准
 
