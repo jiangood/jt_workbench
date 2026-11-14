@@ -48,7 +48,7 @@
 
 ## agent 约定
 
-- **永久单 Agent**：正式环境只运行一个 Agent；不实现多 Agent 竞争、备用节点自动接管或调度选举。D1 的 agent_runtime_owner 由首个 runtimeReady Agent 在脚本同步成功后 claim；owner 存在后旧 /node/poll 返回 426。故障由人工恢复，禁止自动清理 owner 或自动接管。
+- **永久单 Agent**：正式环境只运行一个 Agent；不实现多 Agent 竞争、备用节点自动接管或调度选举。D1 的 agent_runtime_owner 由首个 runtimeReady Agent 在脚本同步成功后 claim；owner 存在后只有该 node_id 可调用 /node/poll，且 Worker 会从 legacy 队列排除已由远程脚本管理的 job type。故障由人工恢复，禁止自动清理 owner 或自动接管。
 - **远程脚本运行时**：业务脚本以原生 JavaScript 远程发布，由 Agent 同步后动态执行；脚本不是编译进 Agent 镜像的静态 handler。源码按不可变版本位于 `worker/agent-scripts/<id>/<version>.mjs`，经 PR 审查后由 Worker release 生成静态 Assets manifest/版本化内容；脚本头部 JSON metadata 声明 `id/name/version/description/schedule/enabled/timeout/reliability`。发布脚本是公开静态资源，不得包含任何凭据。
 - **脚本是可信代码**：第一版不做沙箱，脚本在 Agent Node.js 进程内执行，拥有宿主进程权限。只能执行经过仓库 PR 审查和可信发布链路发布的脚本；SHA-256 只校验内容一致性，不证明发布者身份。任务 payload 只能包含数据，绝不能携带代码、表达式或可执行模块。
 - **脚本同步先于执行**：Agent 请求 `POST /node/agent/next` 时上报本地脚本清单（id/version/SHA-256）；Worker 返回更新/删除清单。Agent 验证 SHA-256/metadata 后写临时文件并原子 rename，再请求同一接口二次对账；每轮旧任务领取前先同步，未通过对账不得领取或执行任务。
