@@ -113,7 +113,7 @@ Agent 缓存目录默认为工作目录下的 .agent-scripts/<id>/<version>.mjs�
 - execution 状态：pending/running/succeeded/failed/interrupted/expired/needs_attention。副作用发生后、成功回传前崩溃时，结果视为未知；依靠可靠任务幂等和同一 execution 重试恢复。
 - Worker 不可用时 Agent 不离线执行；best_effort 本次触发丢弃，reliable 触发在 Agent 存活期间退避重试，重启后由 D1 checkpoint 重建 catch-up。
 - Worker 内部 tick（提醒扫描/清理）独立于业务脚本 Cron，切换 Agent 协议后仍必须运行。
-- runtimeReady=true 的 Agent 在脚本同步成功后原子 claim 永久 owner；D1 只允许一个 owner，之后旧 /node/poll 返回 426。没有自动接管或选举；人工恢复需先停止旧 Agent，再显式清理 owner 记录。
+- runtimeReady=true 的 Agent 在脚本同步成功后原子 claim 永久 owner；D1 只允许一个 owner。owner 节点仍可通过 /node/poll 领取尚未迁移的 legacy job，Worker 会从 legacy 队列排除 manifest 中已由远程脚本管理的 job type；其他 node_id 调用 /node/poll 返回 426。没有自动接管或选举；人工恢复需先停止旧 Agent，再显式清理 owner 记录。
 - Worker owner claim 之前旧 Agent 协议仍可用；新 Agent 完成同步后才 claim，避免首次同步失败时永久锁定旧协议。
 
 ## 可靠性等级
