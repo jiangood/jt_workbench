@@ -66,7 +66,7 @@ cd agent && npm ci && npm run dev      # build + node dist/agent.mjs（需 NODE_
 - 新闻 RSS 使用 `best_effort`：错过触发丢弃，失败不强制重试。
 - 知识星球使用 `reliable`：失败重试、启动补偿、业务游标和断点续跑；多个错过的 Cron 合并成一次同步恢复，而不是逐个回放。
 - 第一版是永久单 Agent；Worker/D1 持久化 execution、schedule checkpoint、租约和可靠重试。首个 runtimeReady Agent 在脚本同步成功后 claim 永久 owner；只有该 owner 可继续领取尚未迁移的 legacy job，已发布远程脚本对应的 job type 会从 legacy 队列排除。没有自动故障接管。脚本在 Agent 进程内执行且没有沙箱，只允许可信发布代码。不要把 SHA-256 校验理解为安全隔离。
-- 当前第一批远程业务脚本为 `rss_fetch`（best_effort）和 `zsxq_sync`（reliable）；`stock_eod`、`tts_synthesize` 等未迁移类型继续由同一 owner Agent 的 legacy runner 执行，逐步迁移时不会停掉剩余任务。
+- 当前远程业务脚本包括 `rss_fetch`（best_effort）、`zsxq_sync`（reliable）和 `stock_eod`（best_effort）；`tts_synthesize` 等未迁移类型继续由同一 owner Agent 的 legacy runner 执行，逐步迁移时不会停掉剩余任务。
 - 详见 [Agent Script Runtime ADR](docs/architecture/agent-script-runtime.md)。
 
 ## 部署计算节点（agent）
