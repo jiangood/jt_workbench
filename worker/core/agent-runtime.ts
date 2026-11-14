@@ -19,13 +19,6 @@ export interface PublishedAgentScript {
 }
 
 interface LocalAgentScript { id: string; version: string; sha256: string }
-interface AgentTrigger {
-  scriptId: string
-  scheduleRevision: string
-  scheduledAt: number
-  through: number
-  kind: 'cron' | 'catchup' | 'startup'
-}
 interface AgentReport {
   executionId: string
   leaseToken: string
@@ -290,10 +283,11 @@ async function processReport(db: D1Database, nodeId: string, report: AgentReport
   const retry = row.reliability === 'reliable' && row.attempt < row.max_attempts
   const status = retry ? 'pending' : row.reliability === 'reliable' ? 'needs_attention' : 'failed'
   const delay = Math.min(5 * 60_000 * 2 ** Math.max(0, row.attempt - 1), MAX_RETRY_DELAY_MS)
-  await db.prepare(
+  const failed = await db.prepare(
     'UPDATE agent_execution SET status = ?, next_attempt_at = ?, lease_until = NULL, lease_token = NULL, last_error = ?, last_report_id = ?, finished_at = ?, updated_at = ? ' +
     "WHERE execution_id = ? AND status = 'running' AND lease_token = ?",
   ).bind(status, retry ? now + delay : now, error, report.reportId, retry ? null : now, now, report.executionId, report.leaseToken).run()
+  if (failed.meta.changes === 0) throw new ApiError(409, 409, 'execution lease lost')
   return { accepted: true, inserted: 0 }
 }
 
