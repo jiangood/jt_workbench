@@ -624,6 +624,7 @@ node.post('/agent/next', async (c) => {
     schemaVersion: 1,
     scripts: updates,
     deletes,
+    activeScripts: enabled,
   })
 })
 
