@@ -180,7 +180,7 @@ context 字段：`logger`、`config`、`fetch`、`signal`、`executionId`、`scr
 - 脚本内容按不可变版本发布；清单的 hash 与实际字节绑定。
 - 已创建 execution 固定引用脚本版本/hash；脚本升级只影响之后创建的 execution。
 - Agent 镜像包含 Node 运行时及预装依赖，不包含业务脚本的静态副本。
-- 禁止运行时 npm install。必须用技术验证确认远程 ES Module 能解析镜像预装依赖；必要时设计受控的 module resolution/import strategy。
+- 禁止运行时 npm install。远程 ESM 从 /app/.agent-scripts 加载时可向上解析 /app/node_modules，CI 会验证该行为。远程脚本引用的共享 helper 必须通过版本化 bundle 路径引用，避免旧 execution 在 Agent 镜像更新后意外加载不兼容 helper。
 - 脚本源码发布走 GitHub PR、CI 和受信任发布链路；Worker Static Assets 提供 manifest 和版本化脚本内容，D1 只保存执行状态、检查点和租约。
 - Worker 与 Agent 的升级需有兼容窗口；不能依赖 Watchtower 与 Worker 同时更新。
 - D1 迁移遵循 expand/contract；新旧 Agent/Worker 协议过渡必须可回滚。
