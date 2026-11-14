@@ -16,6 +16,7 @@ import {
 import { ttsHandler } from './jobs/tts.js'
 import { runRemoteScript } from './remote-runner.js'
 import { buildStartupCatchup, scheduleRevision, startLocalScheduler } from './scheduler.mjs'
+import type { ScheduleTrigger } from './scheduler.mjs'
 import {
   getScriptInventory,
   loadCachedScript,
@@ -27,7 +28,6 @@ import type {
   AgentNextRequest,
   AgentNextResponse,
   ScheduleCheckpoint,
-  ScheduleTrigger,
 } from './script-sync.mjs'
 
 const log = pino()
