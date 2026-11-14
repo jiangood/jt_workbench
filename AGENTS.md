@@ -13,7 +13,8 @@
 
 ## Git
 
-- 一切在 `main` 分支直接开发，不新建分支
+- 所有功能性修改和文档修改均通过独立分支 + Pull Request 进入 `main`；禁止直接在 `main` 开发或推送。
+- PR 合并后由仓库自动打 tag 并触发发布；合并后必须检查 GitHub Actions 的 CI/发布工作流结果。未经用户明确授权，不合并 PR。
 
 ## 生产环境（红线）
 
@@ -47,13 +48,18 @@
 
 ## agent 约定
 
-- 哑执行器：**任务 = 数据不是代码**（type 只是查表键，不执行任何来自网络的代码）
-- 不动态安装依赖；工具箱（cheerio / music-metadata / jszip 等）编译期预装进镜像
-- **节点身份不靠 ID，密钥由后台生成**：Server 地址 / 密钥都走环境变量（安装脚本写进 compose 的 `SERVER_URL` / `NODE_KEY`）；后台「添加节点」直接把记录写进 `node_registry`（接入前显示离线）并生成 `curl | sh` 接入命令（`GET /install/<key>.sh`，长期有效；现场不能马上接入也没关系），脚本在当前目录创建 `workbench-agent/docker-compose.yml` 并写好这两个变量；`POLL_INTERVAL=600` 仅调试可选
-- **密钥不在页面展示**：`/api/admin/nodes` 不返回 `node_key`，取密钥只能从该行「接入」弹窗的 compose 里拿；换密钥点「重置密钥」（`POST /api/admin/nodes/:name/rotate-key`）——旧密钥立即失效、心跳行删除（立刻显示离线），随后用新接入命令重装（命令自带 `WORKBENCH_AGENT_FORCE=1`）
-- **密钥一律不进 agent 环境变量**（例外只有节点自身的 `NODE_KEY`，由安装脚本写进 compose）：与 Worker 同一条红线——第三方 token / API Key 存 D1（`app_config` + `CONFIG_FIELDS`），Worker 下发任务时注入 payload，agent 只读 `payload` 里的值（例：`zsxq_sync` 的 token）
-- 出站 fetch 一律挂 `AbortSignal.timeout(30s)`；SSRF 守卫默认拒绝内网/环回地址
-- 一次只持一个任务（领 1 + 捎带下发）；本地队列已删除
+- **永久单 Agent**：正式环境只运行一个 Agent；不实现多 Agent 竞争、备用节点自动接管或调度选举。故障由人工恢复。
+- **远程脚本运行时**：业务脚本以原生 JavaScript 远程发布，由 Agent 同步后动态执行；脚本不是编译进 Agent 镜像的静态 handler。脚本头部 JSON metadata 声明 `id/name/version/description/schedule/enabled/timeout/reliability`。
+- **脚本是可信代码**：第一版不做沙箱，脚本在 Agent Node.js 进程内执行，拥有宿主进程权限。只能执行经过仓库 PR 审查和可信发布链路发布的脚本；SHA-256 只校验内容一致性，不证明发布者身份。任务 payload 只能包含数据，绝不能携带代码、表达式或可执行模块。
+- **脚本同步先于执行**：Agent 请求 `POST /node/agent/next` 时上报本地脚本清单（id/version/SHA-256）；Worker 返回更新/删除清单。Agent 下载后校验 SHA-256 并原子替换，再请求同一接口二次对账；未通过对账不得领取或执行任务。
+- **不动态安装依赖**：Agent 镜像预装脚本所需第三方依赖；远程脚本不得运行时 npm install。远程 ES Module 对镜像内依赖的解析方式必须有自动化验证。
+- **可靠性由脚本声明**：`best_effort` 适用于新闻 RSS 等可丢失任务，错过触发丢弃、失败不强制重试；`reliable` 适用于知识星球等重要同步，支持失败重试、启动补偿、业务游标和断点续跑。第一版不实现 strict。
+- **调度约定**：Agent 本地执行 6 字段 Cron，固定 `Asia/Shanghai`。同一脚本不并发；普通 Cron 触发遇到正在执行的同脚本时跳过，不排队。reliable 的恢复/补偿是已有逻辑执行的恢复，不机械回放每个错过的 Cron 时间槽。
+- **执行语义**：脚本必须幂等；系统按至少一次语义设计，不承诺 exactly-once。重试沿用同一个 `execution_id` 和创建时固定的脚本版本。Agent 崩溃后无法确认副作用结果时记录为 interrupted/unknown，再按业务幂等策略恢复。
+- **职责边界**：Agent 负责脚本同步、Cron 触发、执行和结果回传；Worker/D1 是脚本发布清单、执行许可、执行记录、租约和结果状态的权威。Worker 不负责业务脚本 Cron 计算；Worker 内部清理、邮件扫描等基础设施 tick 仍可保留。
+- **统一 context**：脚本通过明确的运行时 context 获取 logger、配置、受控 fetch、AbortSignal、executionId 等能力。不要把节点密钥或 Agent 内部状态作为普通 context 字段暴露；但同进程执行意味着脚本仍可绕过 context 直接访问宿主权限，不能把 context 误认为安全沙箱。
+- **节点身份与凭据**：节点密钥仍由后台生成，通过 compose 的 `NODE_KEY` 注入；第三方 token / API Key 存 D1 参数中心，按任务/脚本需要注入。节点密钥不能写入脚本缓存、脚本 metadata、日志或结果。
+- 出站 fetch 一律挂取消/超时信号并遵守 SSRF 守卫；默认拒绝内网/环回地址。
 
 ## 发布（CI）
 
