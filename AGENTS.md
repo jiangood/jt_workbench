@@ -57,10 +57,13 @@
 
 ## 发布（CI）
 
-- **push 不部署**：`main` 上直接开发，push 只进版本库；线上只由 `release.yml` 在 GitHub Release 发布时变更
-- `release.yml` 流程：校验 release tag 在 `main` 上 → `check` + `deploy:dry` → `wrangler d1 migrations apply --remote` → `wrangler deploy` → 仅 `agent/` 有 diff 时构建镜像
-- agent 镜像打三个标签：发布 tag（可追溯）+ `v<sha>`（不可变回滚锚点）+ `:latest`（Watchtower 轮询目标）；agent 有变更时把发布 tag（去前缀 `v`）烧进镜像并回写 D1 `agent_latest_version`，Watchtower 按配置轮询（默认 15 分钟）拉取 `:latest` 完成升级
-- 纯 Worker 发布不重推 `latest`，避免所有节点无意义重启
-- 迁移必须向后兼容（expand/contract）：D1 只能向前，Worker 回滚不会回滚 schema
-- 首次初始化（订阅源 / 抓取任务 / 屏蔽词）在 `0013_seed_news.sql` 迁移里，不手工执行
-- 具体步骤、token 配置与回滚见 `README.md`「发布到线上」
+- **普通 push 不部署**：线上发布由 Git tag 驱动（`.github/workflows/release.yml`）
+- PR 合并到 `main` 后，`.github/workflows/auto-tag.yml` 自动对最新稳定 `vX.Y.Z` 递增 patch，将 tag 指向 PR merge commit，再通过 `workflow_dispatch` 显式触发 release workflow
+- 手动 push `vX.Y.Z` tag 也直接触发 release workflow；tag 必须指向 `main` 上的提交
+- release workflow 执行：类型检查 + `deploy:dry` → D1 `migrations apply --remote` → `wrangler deploy` → 仅 `agent/` 有 diff 时构建镜像
+- 发布成功后自动创建 GitHub Release（生成 release notes）；已有 release 时幂等跳过
+- 默认 `GITHUB_TOKEN` 创建的 tag 不会触发另一个 push workflow，因此 auto-tag workflow 显式调用 release workflow 的 `workflow_dispatch`
+- auto-tag workflow 需要 `contents: write`、`actions: write`；release workflow 需要 `contents: write`、`packages: write`
+- agent 镜像标签：发布 tag + `v<sha>` + `:latest`；仅 agent 有变化时推镜像并回写 D1 `agent_latest_version`
+- 纯 Worker 发布不重推 `:latest`；D1 迁移必须向后兼容（expand/contract）
+- 具体发布与回滚见 `README.md`「发布到线上」
