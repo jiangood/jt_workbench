@@ -489,6 +489,144 @@ async function registerNode(db: D1Database, nodeId: string, agentVersion: string
     .run()
 }
 
+interface PublishedAgentScript {
+  id: string
+  name: string
+  version: string
+  description: string
+  schedule: string
+  enabled: boolean
+  timeout: number
+  reliability: 'best_effort' | 'reliable'
+  sha256: string
+  contentPath: string
+}
+
+interface LocalAgentScript {
+  id: string
+  version: string
+  sha256: string
+}
+
+async function readAgentScriptManifest(env: Bindings, requestUrl: string): Promise<PublishedAgentScript[]> {
+  const url = new URL('/agent-scripts/manifest.json', requestUrl)
+  const response = await env.ASSETS.fetch(new Request(url))
+  if (!response.ok) throw new ApiError(503, 503, 'Agent script manifest unavailable')
+  const raw = await response.json() as { schemaVersion?: unknown; scripts?: unknown }
+  if (raw.schemaVersion !== 1 || !Array.isArray(raw.scripts) || raw.scripts.length > 100) {
+    throw new ApiError(503, 503, 'Agent script manifest is invalid')
+  }
+
+  const ids = new Set<string>()
+  const scripts: PublishedAgentScript[] = []
+  for (const value of raw.scripts) {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      throw new ApiError(503, 503, 'Agent script manifest entry is invalid')
+    }
+    const script = value as Record<string, unknown>
+    const id = script.id
+    const version = script.version
+    const sha256 = script.sha256
+    const contentPath = script.contentPath
+    if (
+      typeof id !== 'string' || !/^[a-z][a-z0-9_-]{0,63}$/.test(id) ||
+      typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version) ||
+      typeof sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(sha256) ||
+      contentPath !== '/agent-scripts/' + id + '/' + version + '.mjs' ||
+      typeof script.name !== 'string' || typeof script.description !== 'string' ||
+      typeof script.schedule !== 'string' || typeof script.enabled !== 'boolean' ||
+      typeof script.timeout !== 'number' ||
+      (script.reliability !== 'best_effort' && script.reliability !== 'reliable')
+    ) {
+      throw new ApiError(503, 503, 'Agent script manifest entry is invalid')
+    }
+    if (ids.has(id)) throw new ApiError(503, 503, 'Agent script manifest contains duplicate ids')
+    ids.add(id)
+    scripts.push({
+      id, name: script.name, version, description: script.description,
+      schedule: script.schedule, enabled: script.enabled, timeout: script.timeout,
+      reliability: script.reliability, sha256, contentPath,
+    })
+  }
+  return scripts
+}
+
+async function readPublishedScript(
+  env: Bindings,
+  requestUrl: string,
+  script: PublishedAgentScript,
+): Promise<string> {
+  const response = await env.ASSETS.fetch(new Request(new URL(script.contentPath, requestUrl)))
+  if (!response.ok) throw new ApiError(503, 503, 'Agent script asset unavailable: ' + script.id)
+  const source = await response.text()
+  if (new TextEncoder().encode(source).byteLength > 512 * 1024) {
+    throw new ApiError(503, 503, 'Agent script asset exceeds size limit: ' + script.id)
+  }
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(source))
+  const actual = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+  if (actual !== script.sha256) throw new ApiError(503, 503, 'Agent script asset hash mismatch: ' + script.id)
+  return source
+}
+
+node.post('/agent/next', async (c) => {
+  const body = await c.req.json<{
+    agentVersion?: string
+    scripts?: unknown[]
+  }>().catch(() => ({}))
+  if (typeof body.agentVersion !== 'string' || !Array.isArray(body.scripts) || body.scripts.length > 200) {
+    return nodeErr(400, 'invalid Agent runtime request')
+  }
+  const local: LocalAgentScript[] = []
+  for (const value of body.scripts) {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      return nodeErr(400, 'invalid local script inventory')
+    }
+    const script = value as Record<string, unknown>
+    if (
+      typeof script.id !== 'string' || !/^[a-z][a-z0-9_-]{0,63}$/.test(script.id) ||
+      typeof script.version !== 'string' ||
+      typeof script.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(script.sha256)
+    ) {
+      return nodeErr(400, 'invalid local script inventory entry')
+    }
+    local.push({ id: script.id, version: script.version, sha256: script.sha256 })
+  }
+
+  const now = Date.now()
+  await registerNode(c.env.DB, c.get('node'), body.agentVersion, now)
+  const published = await readAgentScriptManifest(c.env, c.req.url)
+  const enabled = published.filter((script) => script.enabled)
+  const enabledIds = new Set(enabled.map((script) => script.id))
+  const localByVersion = new Map(local.map((script) => [
+    script.id + '\u0000' + script.version,
+    script,
+  ]))
+
+  const updates: Array<PublishedAgentScript & { source: string }> = []
+  for (const script of enabled) {
+    const installed = localByVersion.get(script.id + '\u0000' + script.version)
+    if (installed?.sha256 === script.sha256) continue
+    if (updates.length >= 5) break
+    updates.push({ ...script, source: await readPublishedScript(c.env, c.req.url, script) })
+  }
+
+  // Disabled or revoked script ids are removed from the local active cache.
+  // Old versions of still-published ids are retained for execution-version pinning.
+  const deletes = [...new Map(
+    local
+      .filter((script) => !enabledIds.has(script.id))
+      .map((script) => [script.id + '\u0000' + script.version, { id: script.id, version: script.version }]),
+  ).values()].slice(0, 20)
+
+  const needsSync = updates.length > 0 || deletes.length > 0
+  return nodeOk({
+    action: needsSync ? 'sync' : 'idle',
+    schemaVersion: 1,
+    scripts: updates,
+    deletes,
+  })
+})
+
 node.post('/poll', async (c) => {
   const now = Date.now()
   const db = c.env.DB
