@@ -48,7 +48,7 @@
 
 ## agent 约定
 
-- **永久单 Agent**：正式环境只运行一个 Agent；不实现多 Agent 竞争、备用节点自动接管或调度选举。故障由人工恢复。
+- **永久单 Agent**：正式环境只运行一个 Agent；不实现多 Agent 竞争、备用节点自动接管或调度选举。D1 的 agent_runtime_owner 由首个 runtimeReady Agent 在脚本同步成功后 claim；owner 存在后旧 /node/poll 返回 426。故障由人工恢复，禁止自动清理 owner 或自动接管。
 - **远程脚本运行时**：业务脚本以原生 JavaScript 远程发布，由 Agent 同步后动态执行；脚本不是编译进 Agent 镜像的静态 handler。源码按不可变版本位于 `worker/agent-scripts/<id>/<version>.mjs`，经 PR 审查后由 Worker release 生成静态 Assets manifest/版本化内容；脚本头部 JSON metadata 声明 `id/name/version/description/schedule/enabled/timeout/reliability`。发布脚本是公开静态资源，不得包含任何凭据。
 - **脚本是可信代码**：第一版不做沙箱，脚本在 Agent Node.js 进程内执行，拥有宿主进程权限。只能执行经过仓库 PR 审查和可信发布链路发布的脚本；SHA-256 只校验内容一致性，不证明发布者身份。任务 payload 只能包含数据，绝不能携带代码、表达式或可执行模块。
 - **脚本同步先于执行**：Agent 请求 `POST /node/agent/next` 时上报本地脚本清单（id/version/SHA-256）；Worker 返回更新/删除清单。Agent 验证 SHA-256/metadata 后写临时文件并原子 rename，再请求同一接口二次对账；每轮旧任务领取前先同步，未通过对账不得领取或执行任务。
@@ -56,7 +56,7 @@
 - **可靠性由脚本声明**：`best_effort` 适用于新闻 RSS 等可丢失任务，错过触发丢弃、失败不强制重试；`reliable` 适用于知识星球等重要同步，支持失败重试、启动补偿、业务游标和断点续跑。第一版不实现 strict。
 - **调度约定**：Agent 本地执行 6 字段 Cron，固定 `Asia/Shanghai`，最小间隔 60 秒。`schedule_revision` 只由 schedule/enabled 决定，不由脚本版本/hash 决定。reliable 启动补偿把所有错过的槽合并为一次 reconcile；Worker 持久化调度检查点。同一脚本不并发；普通 Cron 触发遇到正在执行的同脚本时跳过，不排队。
 - **执行语义**：脚本必须幂等；系统按至少一次语义设计，不承诺 exactly-once。重试沿用同一个 `execution_id` 和创建时固定的脚本版本。Agent 崩溃后无法确认副作用结果时记录为 interrupted/unknown，再按业务幂等策略恢复。
-- **职责边界**：Agent 负责脚本同步、Cron 触发、执行和结果回传；Worker/D1 是脚本发布清单、执行许可、执行记录、租约和结果状态的权威。Worker 不负责业务脚本 Cron 计算；Worker 内部清理、邮件扫描等基础设施 tick 仍可保留。
+- **职责边界**：Agent 负责脚本同步、Cron 触发、执行和结果回传；Worker/D1 是脚本发布清单、执行许可、执行记录、租约、schedule checkpoint 和结果状态的权威。Worker 不负责业务脚本 Cron 计算；Worker 内部清理、邮件扫描等基础设施 tick 仍可保留。D1 execution 以 script_id + schedule_revision + scheduled_at 唯一；Worker 一次只发放一个 lease。
 - **统一 context**：远程模块导出 `async run(ctx, payload)`，返回 `{items, summary}`；context 提供 logger/config/受控 fetch/signal/executionId/scriptId/scriptVersion/scheduledAt。timeout 是 AbortSignal 协作式超时，不是硬 CPU 隔离；同进程脚本仍可绕过 context 访问宿主权限，不能把 context 误认为安全沙箱。
 - **节点身份与凭据**：节点密钥仍由后台生成，通过 compose 的 `NODE_KEY` 注入；第三方 token / API Key 存 D1 参数中心，按任务/脚本需要注入。节点密钥不能写入脚本缓存、脚本 metadata、日志或结果。
 - 出站 fetch 一律挂取消/超时信号并遵守 SSRF 守卫；默认拒绝内网/环回地址。
