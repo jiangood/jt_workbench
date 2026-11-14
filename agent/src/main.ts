@@ -11,7 +11,6 @@ import {
   synchronizeScripts,
 } from './script-sync.mjs'
 import type {
-  ActiveScript,
   AgentExecution,
   AgentNextRequest,
   AgentNextResponse,
