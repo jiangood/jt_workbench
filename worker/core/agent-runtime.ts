@@ -202,7 +202,7 @@ async function processTriggers(
     if (!isRecord(value) ||
       typeof value.scriptId !== 'string' ||
       typeof value.scheduleRevision !== 'string' || !/^[a-f0-9]{32}$/.test(value.scheduleRevision) ||
-      typeof value.scheduledAt !== 'number' || !Number.isSafeInteger(value.scheduledAt) ||
+      typeof value.scheduledAt !== 'number' || !Number.isSafeInteger(value.scheduledAt) || value.scheduledAt < 0 ||
       typeof value.through !== 'number' || !Number.isSafeInteger(value.through) || value.through < value.scheduledAt ||
       (value.kind !== 'cron' && value.kind !== 'catchup' && value.kind !== 'startup')) {
       throw new ApiError(400, 400, 'invalid Agent trigger')
@@ -243,7 +243,9 @@ async function processReport(db: D1Database, nodeId: string, report: AgentReport
     !report || typeof report.executionId !== 'string' || !report.executionId ||
     typeof report.leaseToken !== 'string' || !report.leaseToken ||
     typeof report.reportId !== 'string' || !report.reportId || report.reportId.length > 128 ||
-    (report.status !== 'succeeded' && report.status !== 'failed')
+    (report.status !== 'succeeded' && report.status !== 'failed') ||
+    (report.summary !== undefined && typeof report.summary !== 'string') ||
+    (report.error !== undefined && typeof report.error !== 'string')
   ) throw new ApiError(400, 400, 'invalid execution report')
 
   const row = await db.prepare(
