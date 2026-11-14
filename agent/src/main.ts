@@ -1,79 +1,296 @@
+import { randomUUID } from 'node:crypto'
 import pino from 'pino'
-import { client, UnauthorizedError } from './client.js'
+import { client, ConflictError, RetryableError, UnauthorizedError } from './client.js'
 import { getConfig } from './config.js'
 import { describeError } from './describe-error.js'
-import { run, register } from './runner.js'
-import { rssHandler } from './jobs/rss.js'
-import { stockHandler } from './jobs/stock.js'
+import { runRemoteScript } from './remote-runner.js'
+import { buildStartupCatchup, scheduleRevision, startLocalScheduler } from './scheduler.mjs'
 import {
-  zsxqBackfillHandler,
-  zsxqCommentsHandler,
-  zsxqGroupsHandler,
-  zsxqHandler,
-  zsxqProbeHandler,
-} from './jobs/zsxq.js'
-import { ttsHandler } from './jobs/tts.js'
-import { synchronizeScripts } from './script-sync.mjs'
+  getScriptInventory,
+  loadCachedScript,
+  synchronizeScripts,
+} from './script-sync.mjs'
+import type {
+  ActiveScript,
+  AgentExecution,
+  AgentNextRequest,
+  AgentNextResponse,
+  ScheduleCheckpoint,
+  ScheduleTrigger,
+} from './script-sync.mjs'
 
 const log = pino()
+const IDLE_POLL_MS = 30_000
+const HEARTBEAT_MS = 60_000
+const SCRIPT_SYNC_MS = 5 * 60_000
+const RETRY_MS = 30_000
 
-// handler 注册表：查表分发，主循环永不因新功能而改（决策 #15）
-register('rss_fetch', rssHandler)
-register('stock_eod', stockHandler)
-register('zsxq_sync', zsxqHandler)
-register('zsxq_backfill', zsxqBackfillHandler)
-register('zsxq_comments', zsxqCommentsHandler)
-register('zsxq_probe', zsxqProbeHandler)
-register('zsxq_groups', zsxqGroupsHandler)
-register('tts_synthesize', ttsHandler)
-
-/** poll 抖动（v4.8）：±60~90s，多节点部署时各节点 poll 时点自然错峰 */
-const jitterMs = () => {
-  const delay = 60_000 + Math.random() * 30_000
-  return Math.random() < 0.5 ? -delay : delay
+interface RunningExecution {
+  execution: AgentExecution
+  controller: AbortController
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+let running: RunningExecution | null = null
+let pendingExecution: AgentExecution | null = null
+let scheduler: ReturnType<typeof startLocalScheduler> | null = null
+let activeScripts: ActiveScript[] = []
+let activeRevisions = new Map<string, string>()
+let needsResync = true
+let nextSyncAt = 0
+let stopping = false
+let requestQueue: Promise<void> = Promise.resolve()
 
-async function main(): Promise<void> {
-  const cfg = getConfig()
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
-  log.info({ serverUrl: cfg.serverUrl, pollIntervalMs: cfg.pollIntervalMs }, 'agent starting')
-
-  while (true) {
-    try {
-      // New Agents must reconcile the trusted script manifest before the legacy job path can run.
-      const scripts = await synchronizeScripts(client.next)
-      log.info({ scripts: scripts.length }, 'script manifest reconciled')
-      const poll = await client.poll()
-      let jobs = poll.jobs
-      while (jobs.length) {
-        // 一次只干一个活（v4.9）；响应捎带下一个任务则链式连续，无活 → sleep 至下个 poll
-        const next = await run(jobs[0])
-        jobs = next.jobs
-      }
-    } catch (e) {
-      if (e instanceof UnauthorizedError) {
-        // 密钥被重置 / 节点被注销：后台用「安装命令」重新部署后自动恢复
-        log.warn(
-          '节点未登记或密钥已失效：后台 /#/admin →「计算节点」→「安装命令」重装（60s 后重试，无需重启）',
-        )
-        await sleep(60_000)
-        continue
-      }
-      // 可重试错误：退避 30s，任务状态不动（lease 兜底）
-      log.error({ err: describeError(e) }, 'poll failed')
-      await sleep(30_000)
-      continue
+function queueExecution(execution: AgentExecution): void {
+  if (running || pendingExecution) {
+    if (pendingExecution?.executionId !== execution.executionId) {
+      log.error({ current: running?.execution.executionId, pending: pendingExecution?.executionId, received: execution.executionId }, 'Worker returned an overlapping execution')
     }
-    await sleep(cfg.pollIntervalMs + jitterMs())
+    return
+  }
+  pendingExecution = execution
+  startPendingExecution()
+}
+
+function startPendingExecution(): void {
+  if (running || !pendingExecution || stopping) return
+  const execution = pendingExecution
+  pendingExecution = null
+  const state: RunningExecution = { execution, controller: new AbortController() }
+  // Set running synchronously before any async work so the next poll cannot orphan this lease.
+  running = state
+  void executeAndReport(state)
+}
+
+async function requestNext(request: AgentNextRequest = {}): Promise<AgentNextResponse> {
+  const task = requestQueue.then(async () => {
+    const scripts = request.running ? [] : request.scripts ?? await getScriptInventory()
+    const response = await client.next({
+      ...request,
+      runtimeReady: true,
+      scripts,
+    })
+    if (response.action === 'sync') needsResync = true
+    if (response.execution) queueExecution(response.execution)
+    return response
+  })
+  requestQueue = task.then(() => undefined, () => undefined)
+  return task
+}
+
+async function sendReport(
+  state: RunningExecution,
+  report: NonNullable<AgentNextRequest['report']>,
+): Promise<void> {
+  while (!stopping) {
+    try {
+      const response = await requestNext({ report })
+      if (response.reportAccepted) return
+      throw new Error('Worker did not acknowledge execution report')
+    } catch (error) {
+      if (error instanceof ConflictError) {
+        state.controller.abort(error)
+        throw error
+      }
+      if (stopping) throw error
+      if (error instanceof UnauthorizedError) {
+        log.warn({ err: describeError(error), executionId: state.execution.executionId }, 'report waiting for valid node credentials')
+        await sleep(60_000)
+      } else {
+        log.warn({ err: describeError(error), executionId: state.execution.executionId }, 'execution report will be retried')
+        await sleep(RETRY_MS)
+      }
+    }
+  }
+  throw new Error('Agent is shutting down before report acknowledgement')
+}
+
+async function executeAndReport(state: RunningExecution): Promise<void> {
+  const { execution, controller } = state
+  const executionLog = log.child({
+    executionId: execution.executionId,
+    scriptId: execution.scriptId,
+    scriptVersion: execution.scriptVersion,
+    attempt: execution.attempt,
+  })
+  let heartbeat: ReturnType<typeof setInterval> | undefined
+
+  try {
+    const script = await loadCachedScript(undefined, execution.scriptId, execution.scriptVersion, execution.scriptSha256)
+    heartbeat = setInterval(() => {
+      if (running !== state || stopping) return
+      void requestNext({
+        running: { executionId: execution.executionId, leaseToken: execution.leaseToken },
+      }).catch((error) => {
+        executionLog.warn({ err: describeError(error) }, 'execution heartbeat failed')
+        if (error instanceof ConflictError) controller.abort(error)
+      })
+    }, HEARTBEAT_MS)
+    heartbeat.unref?.()
+
+    executionLog.info({ scheduledAt: execution.scheduledAt }, 'remote script started')
+    const result = await runRemoteScript(
+      script,
+      execution.payload,
+      {
+        logger: executionLog,
+        config: {},
+        signal: controller.signal,
+        executionId: execution.executionId,
+        scriptId: execution.scriptId,
+        scriptVersion: execution.scriptVersion,
+        scheduledAt: execution.scheduledAt,
+      },
+    )
+    await sendReport(state, {
+      executionId: execution.executionId,
+      leaseToken: execution.leaseToken,
+      reportId: randomUUID(),
+      status: 'succeeded',
+      summary: result.summary,
+      items: result.items,
+    })
+    executionLog.info({ itemCount: result.items.length, summary: result.summary }, 'remote script completed')
+  } catch (error) {
+    executionLog.error({ err: describeError(error) }, 'remote script failed')
+    if (!stopping && !(error instanceof ConflictError)) {
+      try {
+        await sendReport(state, {
+          executionId: execution.executionId,
+          leaseToken: execution.leaseToken,
+          reportId: randomUUID(),
+          status: 'failed',
+          error: describeError(error),
+        })
+      } catch (reportError) {
+        executionLog.error({ err: describeError(reportError) }, 'failed to report execution failure')
+      }
+    }
+  } finally {
+    if (heartbeat) clearInterval(heartbeat)
+    if (running === state) running = null
+    startPendingExecution()
   }
 }
 
-// 优雅退出：SIGTERM → 当前任务收尾（M3 完善：runner 感知信号后再退出）
-process.on('SIGTERM', () => process.exit(0))
+async function handleScheduledTrigger(trigger: ScheduleTrigger): Promise<boolean> {
+  if (stopping || needsResync || running || pendingExecution) return false
+  const response = await requestNext({ triggers: [trigger] })
+  if (response.action === 'sync') throw new Error('script manifest changed; sync before accepting Cron trigger')
+  return response.triggerResults?.find(
+    (item) => item.scriptId === trigger.scriptId && item.scheduledAt === trigger.scheduledAt,
+  )?.accepted ?? false
+}
 
-main().catch((e: unknown) => {
-  log.fatal(e)
+async function refreshScripts(): Promise<void> {
+  scheduler?.stop()
+  scheduler = null
+  await requestQueue
+
+  const sync = await synchronizeScripts((scripts) => client.next({ scripts }))
+  activeScripts = sync.scripts
+  const checkpoints = new Map<string, ScheduleCheckpoint>(
+    sync.checkpoints.map((checkpoint) => [checkpoint.scriptId, checkpoint]),
+  )
+  const nextRevisions = new Map<string, string>()
+  const startupTriggers: ScheduleTrigger[] = []
+  const now = Date.now()
+
+  for (const script of activeScripts) {
+    const revision = scheduleRevision(script)
+    nextRevisions.set(script.id, revision)
+    if (activeRevisions.get(script.id) !== revision) {
+      const checkpoint = checkpoints.get(script.id)
+      const trigger = buildStartupCatchup(script, checkpoint?.lastScheduledAt ?? null, now)
+      if (trigger) startupTriggers.push(trigger)
+    }
+  }
+  activeRevisions = nextRevisions
+
+  const response = await requestNext({ triggers: startupTriggers })
+  if (response.action === 'sync') {
+    needsResync = true
+    return
+  }
+
+  scheduler = startLocalScheduler(activeScripts, handleScheduledTrigger, {
+    onError: (error, script) => log.warn({ err: describeError(error), scriptId: script.id }, 'Cron trigger delivery failed'),
+  })
+  nextSyncAt = Date.now() + SCRIPT_SYNC_MS
+  needsResync = false
+  log.info({
+    scripts: activeScripts.map(({ id, version, reliability, schedule }) => ({ id, version, reliability, schedule })),
+    startupCatchups: startupTriggers.length,
+  }, 'remote script runtime ready')
+}
+
+function handleLoopError(error: unknown, action: string): number {
+  if (error instanceof ConflictError) {
+    log.fatal({ err: describeError(error), action }, 'Agent runtime ownership or execution conflict; stopping')
+    process.exit(1)
+  }
+  if (error instanceof UnauthorizedError) {
+    log.warn({ action }, 'node credentials invalid or node unregistered; retrying after 60 seconds')
+    return 60_000
+  }
+  log.error({ err: describeError(error), action }, 'Agent runtime request failed')
+  return RETRY_MS
+}
+
+async function main(): Promise<void> {
+  const cfg = getConfig()
+  log.info({ serverUrl: cfg.serverUrl, idlePollMs: IDLE_POLL_MS }, 'single-Agent remote runtime starting')
+
+  while (!stopping) {
+    try {
+      await refreshScripts()
+      break
+    } catch (error) {
+      await sleep(handleLoopError(error, 'initial script sync'))
+    }
+  }
+
+  while (!stopping) {
+    if (needsResync && !running) {
+      try {
+        await refreshScripts()
+      } catch (error) {
+        await sleep(handleLoopError(error, 'script resync'))
+        continue
+      }
+    }
+
+    if (!running && !pendingExecution) {
+      if (Date.now() >= nextSyncAt) {
+        needsResync = true
+        continue
+      }
+      try {
+        await requestNext()
+      } catch (error) {
+        await sleep(handleLoopError(error, 'idle poll'))
+        continue
+      }
+    }
+    await sleep(IDLE_POLL_MS)
+  }
+}
+
+function shutdown(signal: string): void {
+  if (stopping) return
+  stopping = true
+  log.warn({ signal }, 'Agent shutting down')
+  scheduler?.stop()
+  running?.controller.abort(new Error('Agent shutdown'))
+  const forceExit = setTimeout(() => process.exit(0), 10_000)
+  forceExit.unref?.()
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGINT', () => shutdown('SIGINT'))
+
+main().catch((error: unknown) => {
+  log.fatal({ err: describeError(error) }, 'Agent runtime crashed')
   process.exit(1)
 })
