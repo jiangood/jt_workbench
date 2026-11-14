@@ -34,9 +34,14 @@ jobs:
       - name: Agent bundle
         working-directory: agent
         run: npm run build
-      - name: Verify remote helper module resolves preinstalled dependencies
+      - name: Verify remote scripts resolve image dependencies and helper bundles
         working-directory: agent
-        run: node --input-type=module -e "const mod = await import('./dist/remote-libs/zsxq-jobs-v1.mjs'); if (typeof mod.zsxqHandler !== 'function') throw new Error('missing zsxqHandler export')"
+        run: |
+          mkdir -p .agent-scripts/zsxq_sync .agent-scripts/rss_fetch
+          cp ../worker/agent-scripts/zsxq_sync/1.0.0.mjs .agent-scripts/zsxq_sync/1.0.0.mjs
+          cp ../worker/agent-scripts/rss_fetch/1.0.0.mjs .agent-scripts/rss_fetch/1.0.0.mjs
+          node --input-type=module -e "const zsxq = await import('./.agent-scripts/zsxq_sync/1.0.0.mjs'); const rss = await import('./.agent-scripts/rss_fetch/1.0.0.mjs'); if (typeof zsxq.run !== 'function' || typeof rss.run !== 'function') throw new Error('remote script entrypoint missing')"
+          rm -rf .agent-scripts
 
   worker:
     runs-on: ubuntu-latest
