@@ -62,10 +62,10 @@ cd agent && npm ci && npm run dev      # build + node dist/agent.mjs（需 NODE_
 > 下述为 Issue #30 确定的目标架构，按独立 PR 分阶段落地。迁移完成前，线上 Agent 仍以当前已发布版本的实际行为为准；不要仅凭本文推断线上已支持远程脚本。
 
 - 业务脚本源码维护在 `worker/agent-scripts/<id>/<version>.mjs`，随 Worker release 生成版本化静态 Assets 和 SHA-256 manifest；Agent 每次申请下一步动作时上报脚本清单并按需同步，更新后必须二次校验；本地缓存使用受控目录、SHA-256 校验和原子 rename。脚本内容是公开静态资源，不能包含凭据。
-- 脚本 metadata 在源码头部声明 Cron、启用状态、超时和可靠性等级；模块导出 `async run(ctx, payload)`，时区固定 Asia/Shanghai。当前已实现动态加载/运行时模块和本地 Cron 计算器；Worker 持久化检查点、执行许可与重试协调仍在后续阶段。
+- 脚本 metadata 在源码头部声明 Cron、启用状态、超时和可靠性等级；模块导出 `async run(ctx, payload)`，时区固定 Asia/Shanghai。当前代码分阶段实现了动态加载、缓存同步、本地 Cron 和 Worker/D1 执行协调；这些功能须等对应 PR 按顺序合并发布后才会在线上生效。
 - 新闻 RSS 使用 `best_effort`：错过触发丢弃，失败不强制重试。
 - 知识星球使用 `reliable`：失败重试、启动补偿、业务游标和断点续跑；多个错过的 Cron 合并成一次同步恢复，而不是逐个回放。
-- 第一版是永久单 Agent；脚本在 Agent 进程内执行且没有沙箱，只允许可信发布代码。不要把 SHA-256 校验理解为安全隔离。
+- 第一版是永久单 Agent；Worker/D1 持久化 execution、schedule checkpoint、租约和可靠重试。首个 runtimeReady Agent 在脚本同步成功后 claim 永久 owner，owner 存在时旧 /node/poll 被禁用；没有自动故障接管。脚本在 Agent 进程内执行且没有沙箱，只允许可信发布代码。不要把 SHA-256 校验理解为安全隔离。
 - 详见 [Agent Script Runtime ADR](docs/architecture/agent-script-runtime.md)。
 
 ## 部署计算节点（agent）
@@ -108,7 +108,7 @@ curl -fsSL 'https://jt.410518072.xyz/install/<key>.sh' | WORKBENCH_AGENT_FORCE=1
 
 脚本默认非 root 执行；报「无法访问 Docker」时先确认 Docker 服务已启动，权限问题按提示 `sudo usermod -aG docker $USER` 后重新登录。
 
-目录固定为 `workbench-agent`，默认**一台机器一个节点**。同一台机器要跑多个节点时，复制目录并改名（compose 项目名取自目录名），再手动换 compose 里的 `NODE_KEY`（点该节点「重置密钥」后用新接入命令在第二个目录部署）；watchtower 建议只保留一个。
+目录固定为 `workbench-agent`，默认**一台机器一个节点**。正式运行全局只允许一个 Agent owner；不要同时启动多个节点。（点该节点「重置密钥」后用新接入命令在第二个目录部署）；watchtower 建议只保留一个。
 
 接入命令统一带 `WORKBENCH_AGENT_FORCE=1`，重装/换机会直接覆盖已有 compose；手工执行时写成：
 
