@@ -187,7 +187,7 @@ context 字段：`logger`、`config`、`fetch`、`signal`、`executionId`、`scr
 
 ## 当前业务迁移状态
 
-第一批远程业务脚本为 `rss_fetch`（best_effort）和 `zsxq_sync`（reliable）。`zsxq_sync` 统一承接原 backfill/comments/probe/groups 子任务。未迁移的 `stock_eod`、`tts_synthesize` 等继续由永久 owner Agent 的 legacy runner 执行；Worker 按 manifest 实时过滤已迁移 job type，避免双重领取。
+当前远程业务脚本包括 `rss_fetch`（best_effort）、`zsxq_sync`（reliable）和 `stock_eod`（best_effort）。`zsxq_sync` 统一承接原 backfill/comments/probe/groups 子任务。未迁移的 `tts_synthesize` 等继续由永久 owner Agent 的 legacy runner 执行；Worker 按 manifest 实时过滤已迁移 job type，避免双重领取。
 
 ## 分阶段实施
 
