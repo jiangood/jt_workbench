@@ -23,18 +23,19 @@ cd agent && npm ci && npm run dev      # build + node dist/agent.mjs（需 NODE_
 
 ## 发布到线上
 
-线上只通过 **GitHub Release** 变更，push 不部署：
+线上由 **Git tag** 驱动，普通分支 push 不部署：
 
-1. 在 `main` 上开发完，本地 `npm run check` 全绿；
-2. GitHub → Releases → **Draft a new release** → 新建 tag（如 `v0.6.0`）→ **Publish release**；
-3. `release.yml` 自动执行：校验 tag 在 `main` 上 → worker / agent 类型检查 + worker dry-run → D1 迁移 → 部署 Worker → 仅当 `agent/` 有改动时构建镜像（发布 tag + `v<sha>` + `latest`，版本号烧进镜像）并回写 D1 `agent_latest_version`（发布 tag 去掉前缀 `v`），节点据此即时升级。
+- **PR 合并到 main**：`.github/workflows/auto-tag.yml` 自动按最新正式版本递增 patch（如 `v0.13.28 → v0.13.29`），tag 指向 PR 合并提交，并显式触发发布工作流。
+- **手动发布**：在 main 上创建并 push `vX.Y.Z` tag（如 `git tag -a v0.13.30 -m "Release v0.13.30" && git push origin v0.13.30`），自动执行发布。
+- `release.yml` 校验 tag 位于 `main` → 类型检查 + Worker dry-run → D1 迁移 → Worker 部署 → 仅当 `agent/` 有改动时构建镜像并回写版本。
+- 发布成功后自动创建 GitHub Release 并生成说明，不再需要手动点击 Publish release。
 
-只发布有变化的半边：纯 Worker 发布不会重推 agent `latest`，节点不会白白重启。失败在 Actions 里 **Re-run jobs** 即可，不会重复建 release。
+只发布有变化的半边：纯 Worker 发布不会重推 agent `latest`。失败在 Actions 里 **Re-run jobs** 即可；自动打 tag 工作流重跑会复用同一合并提交已创建的 tag。
 
 - **D1 迁移必须向后兼容**（expand/contract）：先加列/表 → 改代码 → 再删旧结构；D1 不会随 Worker 回滚。
-- **回滚**：把旧 tag 重新发布一次 release（走同一流程、有记录），或用 `v<sha>` 镜像重建 agent。不要在本地直接 `wrangler rollback`。
-- 仓库 Secrets 需要 `CLOUDFLARE_API_TOKEN`；建议给 `production` environment 配 required reviewer，让发布先等人工批准。
-- 迁移 / 首次 seed（`0013_seed_news.sql`）/ 镜像标签与版本回写的约定见 `AGENTS.md`「发布（CI）」。
+- **回滚**：不要覆盖已有 tag；创建新的回滚提交和版本 tag，或用 `v<sha>` 镜像回滚 agent。不要在本地直接 `wrangler rollback`。
+- 仓库 Secrets 需要 `CLOUDFLARE_API_TOKEN`；工作流使用默认 `GITHUB_TOKEN`。
+- 迁移 / 首次 seed / 镜像标签与版本回写约定见 `AGENTS.md`「发布（CI）」。
 
 ### Cloudflare API Token
 
