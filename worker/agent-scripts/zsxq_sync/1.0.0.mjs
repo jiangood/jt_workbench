@@ -10,7 +10,7 @@
 //   "reliability": "reliable"
 // }
 
-import { zsxqHandler } from '../../dist/remote-libs/zsxq-jobs.mjs'
+import { zsxqHandler } from '../../dist/remote-libs/zsxq-jobs-v1.mjs'
 
 export async function run(ctx, payload) {
   return zsxqHandler(payload, {
