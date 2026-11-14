@@ -276,6 +276,13 @@ interface ZsxqCommentStateItem {
   groupId: string
 }
 
+/** 评论抓取失败：记录错误并对该帖子做指数退避 */
+interface ZsxqCommentFailureItem {
+  topicId: string
+  groupId: string
+  message: string | null
+}
+
 function asText(v: unknown): string | null {
   if (typeof v === 'string') return v || null
   if (typeof v === 'number' && Number.isFinite(v)) return String(v)
@@ -406,6 +413,18 @@ function asZsxqCommentStateItem(item: unknown): ZsxqCommentStateItem | null {
   return { topicId: it.topicId, groupId: it.groupId }
 }
 
+function asZsxqCommentFailureItem(item: unknown): ZsxqCommentFailureItem | null {
+  if (typeof item !== 'object' || item === null) return null
+  const it = item as Record<string, unknown>
+  if (typeof it.topicId !== 'string' || !it.topicId) return null
+  if (typeof it.groupId !== 'string' || !it.groupId) return null
+  return {
+    topicId: it.topicId,
+    groupId: it.groupId,
+    message: typeof it.message === 'string' && it.message ? it.message.slice(0, 200) : null,
+  }
+}
+
 /** 计数：非数字 / 负数当未知（null），不要用 0 覆盖已有值 */
 function countOrNull(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : null
@@ -486,6 +505,7 @@ export async function ingest(
     const states: ZsxqStateItem[] = []
     const checks: ZsxqTopicCheckItem[] = []
     const commentStates: ZsxqCommentStateItem[] = []
+    const commentFailures: ZsxqCommentFailureItem[] = []
     for (const item of items) {
       const kind = zsxqKind(item)
       if (kind === 'comment') {
@@ -500,13 +520,16 @@ export async function ingest(
       } else if (kind === 'comment_state') {
         const c = asZsxqCommentStateItem(item)
         if (c) commentStates.push(c)
+      } else if (kind === 'comment_failure') {
+        const c = asZsxqCommentFailureItem(item)
+        if (c) commentFailures.push(c)
       } else if (kind === 'topic') {
         const t = asZsxqTopicItem(item)
         if (t) topics.push(t)
       }
       // 其它 kind：agent 先升级的窗口，忽略即可（不让整批入库失败）
     }
-    if (!topics.length && !comments.length && !states.length && !checks.length && !commentStates.length) {
+    if (!topics.length && !comments.length && !states.length && !checks.length && !commentStates.length && !commentFailures.length) {
       return 0
     }
 
@@ -609,12 +632,35 @@ export async function ingest(
       }
     }
 
-    // 评论对账完成：只推进时间戳，让这条帖子排到轮转队尾（0 条评论也算核对过）
+    // 评论对账成功：推进时间戳并清除失败退避状态（0 条评论也算核对过）
     for (const c of commentStates) {
       stmts.push(
         db
-          .prepare('UPDATE zsxq_topic SET comments_checked_at = ? WHERE id = ?')
-          .bind(now, c.topicId),
+          .prepare(
+            `UPDATE zsxq_topic SET
+               comments_checked_at = ?,
+               comments_fail_count = 0,
+               comments_retry_at = NULL,
+               comments_last_error = NULL
+             WHERE id = ? AND group_id = ?`,
+          )
+          .bind(now, c.topicId, c.groupId),
+      )
+    }
+
+    // 评论对账失败：指数退避，首次 5 分钟，逐次翻倍，最多 6 小时。
+    // 失败帖子在 retry_at 之前不进入 comments 队列，避免每轮重复打同一批失败对象。
+    for (const c of commentFailures) {
+      stmts.push(
+        db
+          .prepare(
+            `UPDATE zsxq_topic SET
+               comments_fail_count = comments_fail_count + 1,
+               comments_retry_at = ? + MIN(21600000, 300000 * (1 << MIN(comments_fail_count, 6))),
+               comments_last_error = ?
+             WHERE id = ? AND group_id = ?`,
+          )
+          .bind(now, c.message, c.topicId, c.groupId),
       )
     }
 
