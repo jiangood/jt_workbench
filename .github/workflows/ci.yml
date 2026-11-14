@@ -37,10 +37,11 @@ jobs:
       - name: Verify remote scripts resolve image dependencies and helper bundles
         working-directory: agent
         run: |
-          mkdir -p .agent-scripts/zsxq_sync .agent-scripts/rss_fetch
+          mkdir -p .agent-scripts/zsxq_sync .agent-scripts/rss_fetch .agent-scripts/stock_eod
           cp ../worker/agent-scripts/zsxq_sync/1.0.0.mjs .agent-scripts/zsxq_sync/1.0.0.mjs
           cp ../worker/agent-scripts/rss_fetch/1.0.0.mjs .agent-scripts/rss_fetch/1.0.0.mjs
-          node --input-type=module -e "const zsxq = await import('./.agent-scripts/zsxq_sync/1.0.0.mjs'); const rss = await import('./.agent-scripts/rss_fetch/1.0.0.mjs'); if (typeof zsxq.run !== 'function' || typeof rss.run !== 'function') throw new Error('remote script entrypoint missing')"
+          cp ../worker/agent-scripts/stock_eod/1.0.0.mjs .agent-scripts/stock_eod/1.0.0.mjs
+          node --input-type=module -e "const zsxq = await import('./.agent-scripts/zsxq_sync/1.0.0.mjs'); const rss = await import('./.agent-scripts/rss_fetch/1.0.0.mjs'); const stock = await import('./.agent-scripts/stock_eod/1.0.0.mjs'); if (typeof zsxq.run !== 'function' || typeof rss.run !== 'function' || typeof stock.run !== 'function') throw new Error('remote script entrypoint missing')"
           rm -rf .agent-scripts
 
   worker:
