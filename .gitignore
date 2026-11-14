@@ -9,3 +9,4 @@ online-token.txt
 .idea/
 .opencode/
 worker/public/agent-scripts/
+agent/.agent-scripts/
