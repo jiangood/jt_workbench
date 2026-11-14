@@ -1,7 +1,7 @@
 /** stock_eod：新浪批量行情接口 → 结构化 items（收盘同步，agent 执行） */
 
 import { z } from 'zod'
-import { readBody, safeFetch } from '../ssrf.js'
+import { readBody, safeFetch } from './ssrf-v1.js'
 import type { JobHandler } from '../types.js'
 
 const payloadSchema = z.object({
