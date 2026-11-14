@@ -448,7 +448,7 @@ export async function ingest(
   now: number,
 ): Promise<number | null> {
   if (type === 'rss_fetch') {
-    const fallbackSourceId = typeof payload.sourceId === 'string'' ? payload.sourceId : null
+    const fallbackSourceId = typeof payload.sourceId === 'string' ? payload.sourceId : null
     const rows = items
       .map(asRssItem)
       .filter((r): r is RssItem => r !== null)
