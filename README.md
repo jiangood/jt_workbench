@@ -10,7 +10,7 @@
 | 目录 | 说明 |
 |------|------|
 | `worker/` | Cloudflare Worker：静态页 + API + `/node/*` 节点协议（core/modules 分层） |
-| `agent/` | 局域网计算节点：Node 22 + TS + esbuild 单文件，docker compose 双容器（agent + watchtower fork） |
+| `agent/` | 局域网计算节点：Node 22 运行时；业务脚本从 Worker 同步并动态执行，docker compose 双容器（agent + watchtower fork） |
 
 ## 开发
 
@@ -57,9 +57,20 @@ cd agent && npm ci && npm run dev      # build + node dist/agent.mjs（需 NODE_
 - 首次绑定自定义域若报 DNS 权限错误，再给 token 加 `Zone : DNS : Edit`
 - 轮换：新建 token 更新 secret 后，在 Cloudflare 撤销旧 token；泄露时立即撤销
 
+## Agent 运行模型
+
+> 下述为 Issue #30 确定的目标架构，按独立 PR 分阶段落地。迁移完成前，线上 Agent 仍以当前已发布版本的实际行为为准；不要仅凭本文推断线上已支持远程脚本。
+
+- 业务脚本在服务端以原生 JavaScript 发布，Agent 每次申请下一步动作时上报脚本清单并按需同步；更新后必须二次校验。
+- 脚本 metadata 在源码头部声明 Cron、启用状态、超时和可靠性等级；时区固定 Asia/Shanghai。
+- 新闻 RSS 使用 `best_effort`：错过触发丢弃，失败不强制重试。
+- 知识星球使用 `reliable`：失败重试、启动补偿、业务游标和断点续跑；多个错过的 Cron 合并成一次同步恢复，而不是逐个回放。
+- 第一版是永久单 Agent；脚本在 Agent 进程内执行且没有沙箱，只允许可信发布代码。不要把 SHA-256 校验理解为安全隔离。
+- 详见 [Agent Script Runtime ADR](docs/architecture/agent-script-runtime.md)。
+
 ## 部署计算节点（agent）
 
-agent 是局域网里的哑计算节点：poll 领任务 → 执行 → 回传，无状态、无本地队列；升级交给 Watchtower，不手工重建。
+Agent 是永久单节点的脚本运行时：启动/轮询时先与 Worker 对账远程脚本，再由 Agent 本地 Cron 调度并执行，执行状态由 Worker/D1 持久化。业务脚本以原生 JavaScript 发布；Agent 镜像提供运行时和预装依赖，不包含业务脚本副本。升级交给 Watchtower，不手工重建。
 
 **部署只有两步：后台点「添加节点」→ 之后在该行点「接入」拿命令 → 在目标机器粘贴执行。** 宿主机不需要 `.env`，节点密钥由安装脚本直接写进 `docker-compose.yml`。
 
@@ -121,12 +132,12 @@ cd workbench-agent && docker compose logs -f workbench-agent
 
 | 日志 / 现象 | 含义 |
 |-------------|------|
-| `agent starting` + `pollIntervalMs:600000` | 正常，之后约每 10min 一轮 poll |
+| `agent starting` | Agent 运行时已启动；随后应能看到脚本清单对账/同步日志和下一次调度信息 |
 | `节点未登记或密钥已失效` | 密钥被重置 / 节点被注销 / 记录被删：回后台该行「接入」取新命令重装（或重新添加节点） |
 | `缺少 NODE_KEY` | compose 里没有密钥（手动方案漏了），或用了旧的 agent 镜像 |
-| `poll failed` + `fetch failed` | Worker 地址不可达（域名 / 网络 / 证书问题） |
+| `next action failed` / `script sync failed` | Worker 地址不可达或脚本对账/下载失败；未完成脚本校验前不会执行任务 |
 | Watchtower 拉取并重建容器 | 正常升级：Watchtower 轮询发现新 `:latest` 镜像后自动更新 |
-| `job failed` + `fetch <url> failed: … [ENOTFOUND]` | 某个任务的外网源抓不动：方括号里是 cause 的错误码（DNS / TLS / 连接被重置），message 里带完整 URL；周期任务会在下个 cron 自动重试，不用重装 |
+| `script execution failed` + `fetch <url> failed: … [ENOTFOUND]` | 脚本访问外网源失败：方括号里是 cause 的错误码（DNS / TLS / 连接被重置）。是否自动重试由脚本 reliability 等级决定：best_effort 等下次 Cron，reliable 按持久化执行状态重试/恢复 |
 
 ### 5. 升级、回滚、重装
 
