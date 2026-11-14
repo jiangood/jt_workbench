@@ -1,6 +1,6 @@
 # Agent scripts
 
-Add one trusted JavaScript ES module per script as `<id>.mjs`.
+Add one trusted JavaScript ES module per immutable version as `<id>/<version>.mjs`. Keep older versions in the tree so in-flight executions can recover the exact code they were created with.
 
 Each file must begin with a JSON metadata comment:
 
@@ -25,6 +25,7 @@ export async function run(context, payload) {
 ```
 
 The Worker release build validates metadata and the six-field Asia/Shanghai Cron,
-calculates SHA-256 over the exact UTF-8 source bytes, and copies immutable
-`<id>/<version>.mjs` assets plus a generated manifest into `public/agent-scripts`.
+calculates SHA-256 over the exact UTF-8 source bytes, copies every immutable version
+into `public/agent-scripts/<id>/<version>.mjs`, and marks the highest semver as the
+active version in the generated manifest.
 Never put credentials in source or metadata. Code is published only through reviewed PRs.
