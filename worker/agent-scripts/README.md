@@ -5,19 +5,17 @@ Add one trusted JavaScript ES module per immutable version as `<id>/<version>.mj
 Each file must begin with a JSON metadata comment:
 
 ```js
-/**
- * @script
- * {
- *   "id": "example",
- *   "name": "Example task",
- *   "version": "1.0.0",
- *   "description": "Short purpose",
- *   "schedule": "0 0 */2 * * *",
- *   "enabled": false,
- *   "timeout": 300,
- *   "reliability": "best_effort"
- * }
- */
+// @script
+// {
+//   "id": "example",
+//   "name": "Example task",
+//   "version": "1.0.0",
+//   "description": "Short purpose",
+//   "schedule": "0 0 */2 * * *",
+//   "enabled": false,
+//   "timeout": 300,
+//   "reliability": "best_effort"
+// }
 
 export async function run(context, payload) {
   // Trusted code only. The runtime does not sandbox this module.
