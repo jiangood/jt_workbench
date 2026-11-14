@@ -62,9 +62,9 @@ test('syncs source atomically, verifies its hash, and returns active cached scri
   }, root)
 
   assert.equal(calls, 2)
-  assert.equal(active.length, 1)
-  assert.equal(active[0].id, 'sample')
-  assert.equal(await readFile(active[0].path, 'utf8'), source)
+  assert.equal(active.scripts.length, 1)
+  assert.equal(active.scripts[0].id, 'sample')
+  assert.equal(await readFile(active.scripts[0].path, 'utf8'), source)
 })
 
 test('rejects a bad hash without replacing the last known good version', async (t) => {
