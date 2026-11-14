@@ -5,7 +5,7 @@
  * - 1059/瞬时故障、网络异常按可重试处理；保留 httpStatus 供删除判定使用
  */
 
-import { describeError } from '../describe-error.js'
+import { describeError } from './describe-error-v1.js'
 import {
   ZsxqClient as SdkClient,
   ZsxqClientBuilder,
