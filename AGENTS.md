@@ -57,7 +57,7 @@
 - **调度约定**：Agent 本地执行 6 字段 Cron，固定 `Asia/Shanghai`。同一脚本不并发；普通 Cron 触发遇到正在执行的同脚本时跳过，不排队。reliable 的恢复/补偿是已有逻辑执行的恢复，不机械回放每个错过的 Cron 时间槽。
 - **执行语义**：脚本必须幂等；系统按至少一次语义设计，不承诺 exactly-once。重试沿用同一个 `execution_id` 和创建时固定的脚本版本。Agent 崩溃后无法确认副作用结果时记录为 interrupted/unknown，再按业务幂等策略恢复。
 - **职责边界**：Agent 负责脚本同步、Cron 触发、执行和结果回传；Worker/D1 是脚本发布清单、执行许可、执行记录、租约和结果状态的权威。Worker 不负责业务脚本 Cron 计算；Worker 内部清理、邮件扫描等基础设施 tick 仍可保留。
-- **统一 context**：脚本通过明确的运行时 context 获取 logger、配置、受控 fetch、AbortSignal、executionId 等能力。不要把节点密钥或 Agent 内部状态作为普通 context 字段暴露；但同进程执行意味着脚本仍可绕过 context 直接访问宿主权限，不能把 context 误认为安全沙箱。
+- **统一 context**：远程模块导出 `async run(ctx, payload)`，返回 `{items, summary}`；context 提供 logger/config/受控 fetch/signal/executionId/scriptId/scriptVersion/scheduledAt。timeout 是 AbortSignal 协作式超时，不是硬 CPU 隔离；同进程脚本仍可绕过 context 访问宿主权限，不能把 context 误认为安全沙箱。
 - **节点身份与凭据**：节点密钥仍由后台生成，通过 compose 的 `NODE_KEY` 注入；第三方 token / API Key 存 D1 参数中心，按任务/脚本需要注入。节点密钥不能写入脚本缓存、脚本 metadata、日志或结果。
 - 出站 fetch 一律挂取消/超时信号并遵守 SSRF 守卫；默认拒绝内网/环回地址。
 
