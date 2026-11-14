@@ -3,10 +3,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "node scripts/guard-deploy.mjs && wrangler deploy",
-    "deploy:dry": "wrangler deploy --dry-run",
-    "check": "tsc --noEmit"
+    "dev": "npm run scripts:build && wrangler dev",
+    "deploy": "node scripts/guard-deploy.mjs && npm run scripts:build && wrangler deploy",
+    "deploy:dry": "npm run scripts:build && wrangler deploy --dry-run",
+    "check": "tsc --noEmit",
+    "scripts:build": "node scripts/build-agent-scripts.mjs"
   },
   "dependencies": {
     "croner": "^8.0.0",
