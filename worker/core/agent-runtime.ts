@@ -121,12 +121,14 @@ function validateLocalScripts(values: unknown[]): LocalAgentScript[] {
   })
 }
 
-async function claimRuntimeOwner(db: D1Database, nodeId: string, now: number): Promise<void> {
+async function claimRuntimeOwner(db: D1Database, nodeId: string, now: number, remoteScriptIds: string[]): Promise<void> {
   await db.prepare('INSERT OR IGNORE INTO agent_runtime_owner (id, node_id, claimed_at) VALUES (1, ?, ?)')
     .bind(nodeId, now).run()
   const owner = await db.prepare('SELECT node_id FROM agent_runtime_owner WHERE id = 1')
     .first<{ node_id: string }>()
   if (!owner || owner.node_id !== nodeId) throw new ApiError(409, 409, 'permanent Agent runtime owner is already assigned')
+  await db.prepare('UPDATE agent_runtime_owner SET remote_script_ids_json = ? WHERE id = 1 AND node_id = ?')
+    .bind(JSON.stringify([...new Set(remoteScriptIds)]), nodeId).run()
 }
 
 async function readRuntimeOwner(db: D1Database): Promise<string | null> {
@@ -422,7 +424,7 @@ export async function handleAgentNext(
 
   // Claim the permanent owner only after the script set is fully reconciled.
   // A failed first sync must not permanently lock out the legacy Agent.
-  await claimRuntimeOwner(db, nodeId, now)
+  await claimRuntimeOwner(db, nodeId, now, manifest.versions.map((script) => script.id))
   if (!body.report) await recoverOrphanedExecutions(db, nodeId, now)
 
   let triggerResults: Array<{ scriptId: string; scheduledAt: number; accepted: boolean; reason?: string }> = []
