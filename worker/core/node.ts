@@ -439,6 +439,21 @@ async function claimPipeline(env: Bindings, nodeId: string, now: number): Promis
  * 读取 zsxq_sync_state，按 payload 里启用的星球拼成 { [groupId]: { cursor, done } }。
  * 表还没建（迁移未 apply）/ 查询失败一律当没有游标：agent 从头回溯，幂等入库，不影响领任务。
  */
+/** 回溯是否未完成：任一目标星球未 done 即视为仍需继续切片追赶 */
+async function zsxqBackfillHasPending(db: D1Database, ids: string[]): Promise<boolean> {
+  if (!ids.length) return false
+  try {
+    const placeholders = ids.map(() => '?').join(',')
+    const result = await db.prepare(
+      'SELECT group_id AS groupId, done FROM zsxq_sync_state WHERE group_id IN (' + placeholders + ')',
+    ).bind(...ids).all<{ groupId: string; done: number }>()
+    const done = new Set((result.results ?? []).filter((row) => row.done === 1).map((row) => row.groupId))
+    return ids.some((id) => !done.has(id))
+  } catch {
+    return true
+  }
+}
+
 /** ① upsert node_state 心跳（每次 poll 必做，含被限频的重复 poll） */
 async function registerNode(db: D1Database, nodeId: string, agentVersion: string, now: number) {
   await db
