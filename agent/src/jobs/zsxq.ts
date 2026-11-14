@@ -427,21 +427,50 @@ export const zsxqProbeHandler: JobHandler = async (payload, ctx) => {
   }
 }
 
-// 兼容旧单体任务：按星球串行执行 backfill（不再单独处理 refresh/check，拆分任务接管）
+// 统一总任务：单次领取内依次执行评论对账、删除探测和帖子回溯，减少 job 行及状态写入
 export const zsxqHandler: JobHandler = async (payload, ctx) => {
-  const { groupId, groupIds: rawIds, count, endTime, cursors, token } = syncPayloadSchema.parse(payload)
+  const { groupId, groupIds: rawIds, count, endTime, cursors, refresh, check, token } =
+    syncPayloadSchema.parse(payload)
   const groupIds = [...new Set(rawIds?.length ? rawIds : [groupId!])]
   const items: unknown[] = []
   const summaries: string[] = []
+
+  // 先处理轻量的历史评论对账与删除探测，避免长时间回溯挤占这两类任务的执行机会
   for (const gid of groupIds) {
     if (ctx.signal.aborted) return { items, summary: 'aborted' }
-    const r = await zsxqBackfillHandler(
-      { groupId: gid, groupIds: [gid], count, endTime, cursors: cursors ? { [gid]: cursors[gid] } : undefined, token },
+    const comments = await zsxqCommentsHandler(
+      { groupId: gid, groupIds: [gid], refresh: (refresh ?? []).filter((t) => t.groupId === gid), token },
       ctx,
     )
-    items.push(...r.items)
-    summaries.push(r.summary)
+    items.push(...comments.items)
+    if (comments.summary !== 'aborted') summaries.push(comments.summary)
+
+    if (ctx.signal.aborted) return { items, summary: 'aborted' }
+    const probe = await zsxqProbeHandler(
+      { groupId: gid, groupIds: [gid], check: (check ?? []).filter((t) => t.groupId === gid), token },
+      ctx,
+    )
+    items.push(...probe.items)
+    if (probe.summary !== 'aborted') summaries.push(probe.summary)
   }
+
+  for (const gid of groupIds) {
+    if (ctx.signal.aborted) return { items, summary: 'aborted' }
+    const backfill = await zsxqBackfillHandler(
+      {
+        groupId: gid,
+        groupIds: [gid],
+        count,
+        endTime,
+        cursors: cursors ? { [gid]: cursors[gid] } : undefined,
+        token,
+      },
+      ctx,
+    )
+    items.push(...backfill.items)
+    if (backfill.summary !== 'aborted') summaries.push(backfill.summary)
+  }
+
   return { items, summary: summaries.join('；') || 'zsxq done' }
 }
 
