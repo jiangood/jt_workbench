@@ -3,8 +3,7 @@ name: ci
 on:
   pull_request:
     branches:
-      - main
-      - feat/agent-reliability-aware-runtime
+      - '**'
     paths:
       - 'agent/**'
       - 'worker/**'
