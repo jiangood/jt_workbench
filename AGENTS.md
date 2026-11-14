@@ -47,8 +47,11 @@
 
 ## agent 约定
 
-- 哑执行器：**任务 = 数据不是代码**（type 只是查表键，不执行任何来自网络的代码）
-- 不动态安装依赖；工具箱（cheerio / music-metadata / jszip 等）编译期预装进镜像
+- Agent Core 负责任务生命周期、心跳 / 租约、结果回传和通用运行能力；业务脚本由 Worker 发布，Agent 通过 `POST /node/agent/next` 在领取任务前同步并动态执行原生 JavaScript ES Module
+- **任务 = 数据不是代码**：type 只作为脚本 handler 查表键；绝不执行任务 payload 携带或拼接的代码
+- 当前脚本在 Agent Node.js 进程内执行，暂不隔离，具备宿主进程权限；只允许运行经过可信代码审查和受控发布流程下发的脚本
+- 每次领取任务都上报脚本 ID / version / SHA-256 清单；Worker 返回新增 / 更新脚本和删除 ID；Agent 下载后校验 SHA-256、原子替换，再次调用同一接口，校验一致后才领取任务
+- 不动态安装 npm 依赖；远程脚本第一阶段只使用 Node.js 内置 API 与 Agent 显式提供的公共能力；SHA-256 只校验内容一致性，不代表脚本发布者可信
 - **节点身份不靠 ID，密钥由后台生成**：Server 地址 / 密钥都走环境变量（安装脚本写进 compose 的 `SERVER_URL` / `NODE_KEY`）；后台「添加节点」直接把记录写进 `node_registry`（接入前显示离线）并生成 `curl | sh` 接入命令（`GET /install/<key>.sh`，长期有效；现场不能马上接入也没关系），脚本在当前目录创建 `workbench-agent/docker-compose.yml` 并写好这两个变量；`POLL_INTERVAL=600` 仅调试可选
 - **密钥不在页面展示**：`/api/admin/nodes` 不返回 `node_key`，取密钥只能从该行「接入」弹窗的 compose 里拿；换密钥点「重置密钥」（`POST /api/admin/nodes/:name/rotate-key`）——旧密钥立即失效、心跳行删除（立刻显示离线），随后用新接入命令重装（命令自带 `WORKBENCH_AGENT_FORCE=1`）
 - **密钥一律不进 agent 环境变量**（例外只有节点自身的 `NODE_KEY`，由安装脚本写进 compose）：与 Worker 同一条红线——第三方 token / API Key 存 D1（`app_config` + `CONFIG_FIELDS`），Worker 下发任务时注入 payload，agent 只读 `payload` 里的值（例：`zsxq_sync` 的 token）
