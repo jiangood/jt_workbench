@@ -6,6 +6,7 @@ import { getConfig } from './config'
 import { ingest } from './ingest'
 import { resolveNodeId } from './nodekey'
 import { handleAgentNext } from './agent-runtime'
+import { payloadGroupIds, zsxqCursors, zsxqReconcileTargets } from './zsxq-payload'
 
 // /node/* 协议（v4.9：领 1 + 捎带下发；tick 锁只护内置任务；时间权威在 Worker）
 // v4.12：节点身份由密钥反查（node_registry），agent 不再上报 nodeId
@@ -438,83 +439,6 @@ async function claimPipeline(env: Bindings, nodeId: string, now: number): Promis
  * 读取 zsxq_sync_state，按 payload 里启用的星球拼成 { [groupId]: { cursor, done } }。
  * 表还没建（迁移未 apply）/ 查询失败一律当没有游标：agent 从头回溯，幂等入库，不影响领任务。
  */
-async function zsxqCursors(
-  db: D1Database,
-  ids: string[],
-): Promise<Record<string, { cursor: string | null; done: boolean }>> {
-  if (!ids.length) return {}
-  try {
-    const placeholders = ids.map(() => '?').join(',')
-    const res = await db
-      .prepare(`SELECT group_id AS groupId, cursor, done FROM zsxq_sync_state WHERE group_id IN (${placeholders})`)
-      .bind(...ids)
-      .all<{ groupId: string; cursor: string | null; done: number }>()
-    const out: Record<string, { cursor: string | null; done: boolean }> = {}
-    for (const r of res.results ?? []) {
-      out[r.groupId] = { cursor: r.cursor ?? null, done: r.done === 1 }
-    }
-    return out
-  } catch {
-    return {}
-  }
-}
-
-/** payload 里启用的星球（新格式 groupIds，兼容旧的单 groupId） */
-function payloadGroupIds(payload: Record<string, unknown>): string[] {
-  const raw = Array.isArray(payload.groupIds) ? payload.groupIds : [payload.groupId]
-  return raw.filter((id): id is string => typeof id === 'string' && id !== '')
-}
-
-/** 每个星球每轮下发多少条对账目标：按最久没核对轮转，量控制在 agent 单轮请求预算内 */
-const ZSXQ_RECONCILE_LIMIT = 30
-
-/** 回溯是否未完成：任一目标星球未 done 即视为仍需继续切片追赶 */
-async function zsxqBackfillHasPending(db: D1Database, ids: string[]): Promise<boolean> {
-  if (!ids.length) return false
-  try {
-    const placeholders = ids.map(() => '?').join(',')
-    const res = await db
-      .prepare(`SELECT group_id AS groupId, done FROM zsxq_sync_state WHERE group_id IN (${placeholders})`)
-      .bind(...ids)
-      .all<{ groupId: string; done: number }>()
-    const done = new Set((res.results ?? []).filter((r) => r.done === 1).map((r) => r.groupId))
-    return ids.some((id) => !done.has(id))
-  } catch {
-    // 表不存在/查询失败：保守按未完成处理，让 backfill 继续尝试
-    return true
-  }
-}
-
-/**
- * 对账队列：挑「最久没核对」的主题下发。
- * - comments_checked_at：评论会持续新增，列表页之外的老帖靠它定期补拉；
- * - checked_at：详情探测，接口查不到即判定主题被删除（连续两轮才落 deleted=1）。
- * 表 / 列还没建（迁移未 apply）或查询失败 → 空队列，不影响同步主流程。
- */
-async function zsxqReconcileTargets(
-  db: D1Database,
-  ids: string[],
-  column: 'comments_checked_at' | 'checked_at',
-): Promise<Array<{ topicId: string; groupId: string }>> {
-  if (!ids.length) return []
-  try {
-    const placeholders = ids.map(() => '?').join(',')
-    const res = await db
-      .prepare(
-        `SELECT id AS topicId, group_id AS groupId FROM zsxq_topic
-         WHERE group_id IN (${placeholders}) AND deleted = 0
-           ${column === 'comments_checked_at' ? 'AND (comments_retry_at IS NULL OR comments_retry_at <= ?)' : ''}
-         ORDER BY COALESCE(${column}, 0) ASC, create_time DESC
-         LIMIT ?`,
-      )
-      .bind(...ids, ...(column === 'comments_checked_at' ? [Date.now()] : []), ZSXQ_RECONCILE_LIMIT)
-      .all<{ topicId: string; groupId: string }>()
-    return (res.results ?? []).filter((r) => r.topicId && r.groupId)
-  } catch {
-    return []
-  }
-}
-
 /** ① upsert node_state 心跳（每次 poll 必做，含被限频的重复 poll） */
 async function registerNode(db: D1Database, nodeId: string, agentVersion: string, now: number) {
   await db
