@@ -241,8 +241,15 @@ async function refreshScripts(): Promise<void> {
 
   const response = await requestNext({ triggers: startupTriggers })
   if (response.action === 'sync') {
+    for (const trigger of startupTriggers) activeRevisions.delete(trigger.scriptId)
     needsResync = true
     return
+  }
+  for (const trigger of startupTriggers) {
+    const accepted = response.triggerResults?.find(
+      (item) => item.scriptId === trigger.scriptId && item.scheduledAt === trigger.scheduledAt,
+    )?.accepted
+    if (!accepted) activeRevisions.delete(trigger.scriptId)
   }
 
   scheduler = startLocalScheduler(activeScripts, handleScheduledTrigger, {
