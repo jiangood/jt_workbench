@@ -440,6 +440,19 @@ function zsxqKind(item: unknown): string {
 }
 
 /** 按任务类型入库；返回插入行数。未注册类型返回 null（调用方按 fail 处理） */
+async function batchInChunks(
+  db: D1Database,
+  statements: D1PreparedStatement[],
+  chunkSize = 100,
+): Promise<number> {
+  let changes = 0
+  for (let offset = 0; offset < statements.length; offset += chunkSize) {
+    const results = await db.batch(statements.slice(offset, offset + chunkSize))
+    changes += results.reduce((sum, result) => sum + (result.meta.changes ?? 0), 0)
+  }
+  return changes
+}
+
 export async function ingest(
   db: D1Database,
   type: string,
@@ -456,7 +469,8 @@ export async function ingest(
       .map((r) => ({ ...r, sourceId: r.sourceId ?? fallbackSourceId }))
       .filter((r): r is RssItem & { sourceId: string } => typeof r.sourceId === 'string' && r.sourceId.length > 0)
     if (!rows.length) return items.length === 0 ? 0 : null
-    const results = await db.batch(
+    return batchInChunks(
+      db,
       rows.map((r) =>
         db
           .prepare(
@@ -466,7 +480,6 @@ export async function ingest(
           .bind(r.sourceId, r.externalId, r.title ?? null, r.link ?? null, r.author ?? null, r.publishedAt ?? null, r.contentHtml ?? null, now),
       ),
     )
-    return results.reduce((n, r) => n + (r.meta.changes ?? 0), 0)
   }
   if (type === 'stock_eod') {
     const rows = items.map(asStockItem).filter((r): r is StockItem => r !== null)
@@ -745,8 +758,7 @@ export async function ingest(
       )
     }
 
-    const results = await db.batch(stmts)
-    return results.reduce((n, r) => n + (r.meta.changes ?? 0), 0)
+    return batchInChunks(db, stmts)
   }
   return null // unknown type：Worker 先升级 / agent 先升级窗口的安全兜底（验收场景 #5）
 }
