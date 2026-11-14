@@ -23,12 +23,12 @@ await build({
 
 await mkdir('dist/remote-libs', { recursive: true })
 await build({
-  entryPoints: ['src/jobs/zsxq.ts'],
+  entryPoints: ['src/remote-libs/zsxq-jobs-v1.ts'],
   bundle: true,
   platform: 'node',
   target: 'node22',
   format: 'esm',
   packages: 'external',
-  outfile: 'dist/remote-libs/zsxq-jobs.mjs',
+  outfile: 'dist/remote-libs/zsxq-jobs-v1.mjs',
   logLevel: 'info',
 })
