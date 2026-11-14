@@ -33,7 +33,6 @@ interface RunningExecution {
 let running: RunningExecution | null = null
 let pendingExecution: AgentExecution | null = null
 let scheduler: ReturnType<typeof startLocalScheduler> | null = null
-let activeScripts: ActiveScript[] = []
 let activeRevisions = new Map<string, string>()
 let needsResync = true
 let nextSyncAt = 0
@@ -222,7 +221,6 @@ async function refreshScripts(): Promise<void> {
   }
 
   const sync = await synchronizeScripts((scripts) => client.next({ scripts }))
-  activeScripts = sync.scripts
   const checkpoints = new Map<string, ScheduleCheckpoint>(
     sync.checkpoints.map((checkpoint) => [checkpoint.scriptId, checkpoint]),
   )
