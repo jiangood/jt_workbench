@@ -132,7 +132,7 @@ export async function applyScriptSync(root, response) {
   }
 }
 
-export async function loadCachedScript(root, id, version, sha256) {
+export async function loadCachedScript(root = defaultRoot(), id, version, sha256) {
   const base = resolve(root)
   const path = scriptPath(base, id, version)
   const bytes = await readFile(path)
