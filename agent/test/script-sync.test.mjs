@@ -24,7 +24,6 @@ const meta = {
 }
 const source = [
   '// @script',
-  '// @script',
   '// ' + JSON.stringify(meta),
   '' ,
   'export async function run() { return "ok" }',
