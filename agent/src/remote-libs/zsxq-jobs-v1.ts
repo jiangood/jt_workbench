@@ -8,7 +8,7 @@
  */
 
 import { z } from 'zod'
-import { describeError } from '../describe-error.js'
+import { describeError } from './describe-error-v1.js'
 import {
   ZsxqClient,
   ZsxqApiError,
