@@ -8,6 +8,7 @@ import { test } from 'node:test'
 import {
   applyScriptSync,
   getScriptInventory,
+  loadCachedScript,
   parseScriptMetadata,
   synchronizeScripts,
 } from '../src/script-sync.mjs'
@@ -65,6 +66,16 @@ test('syncs source atomically, verifies its hash, and returns active cached scri
   assert.equal(active.scripts.length, 1)
   assert.equal(active.scripts[0].id, 'sample')
   assert.equal(await readFile(active.scripts[0].path, 'utf8'), source)
+})
+
+test('loads a pinned cached version by exact version and hash', async (t) => {
+  const root = await tempRoot(t)
+  await applyScriptSync(root, { schemaVersion: 1, scripts: [update], deletes: [] })
+  const cached = await loadCachedScript(root, 'sample', '1.0.0', descriptor.sha256)
+  assert.equal(cached.id, 'sample')
+  assert.equal(cached.version, '1.0.0')
+  assert.equal(cached.sha256, descriptor.sha256)
+  await assert.rejects(loadCachedScript(root, 'sample', '1.0.0', '0'.repeat(64)), /hash mismatch/)
 })
 
 test('rejects a bad hash without replacing the last known good version', async (t) => {
