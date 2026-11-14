@@ -47,6 +47,9 @@ jobs:
       - name: Install Worker dependencies
         working-directory: worker
         run: npm ci
+      - name: Build Agent script manifest
+        working-directory: worker
+        run: npm run scripts:build
       - name: Worker typecheck
         working-directory: worker
         run: npm run check
