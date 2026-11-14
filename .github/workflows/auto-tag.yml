@@ -1,0 +1,64 @@
+name: auto-tag
+
+# PR 合并到 main 后自动递增 patch 版本并触发同一发布流程。
+# GITHUB_TOKEN 创建的 tag 不会触发 push workflow，因此显式 workflow_dispatch。
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: auto-tag-main
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    if: github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+
+      - name: Create next patch tag
+        id: tag
+        env:
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        shell: bash
+        run: |
+          git fetch --tags --force origin
+          TAG=$(git tag --points-at "$MERGE_SHA" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)
+          if [ -z "$TAG" ]; then
+            LATEST=$(git tag --list | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)
+            if [ -z "$LATEST" ]; then
+              MAJOR=0; MINOR=1; PATCH=0
+            else
+              IFS=. read -r MAJOR MINOR PATCH <<< "${LATEST#v}"
+              PATCH=$((PATCH + 1))
+            fi
+            TAG="v${MAJOR}.${MINOR}.${PATCH}"
+            git tag -a "$TAG" "$MERGE_SHA" -m "Release $TAG"
+            git push origin "$TAG"
+          else
+            echo "Reusing existing tag $TAG"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch release workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/dispatches" \
+            -f ref=main \
+            -f "inputs[tag]=$TAG"
+
+      - name: Summary
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: echo "Created/reused $TAG and dispatched production release." >> "$GITHUB_STEP_SUMMARY"
