@@ -329,7 +329,7 @@ async function claimPipeline(env: Bindings, nodeId: string, now: number): Promis
       try {
         const parsed: unknown = JSON.parse(runtimeOwner.remote_script_ids_json)
         if (!Array.isArray(parsed) || parsed.some((id) => typeof id !== 'string')) return []
-        remoteScriptIds = [...new Set(parsed)]
+        remoteScriptIds = expandRemoteJobTypes([...new Set(parsed)])
       } catch {
         return [] // fail closed: never hand a remotely managed job to the legacy runner
       }
