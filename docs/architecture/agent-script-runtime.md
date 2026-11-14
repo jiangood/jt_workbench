@@ -79,22 +79,22 @@ metadata 必须严格解析和校验：未知等级、无效 Cron、重复 ID、
 - 静态脚本资源本身可被公开读取，因此脚本中严禁包含凭据；可信边界是 PR 审查和 release 权限，而不是 URL 隐藏。节点动作 API 仍要求节点密钥。
 - D1 不保存发布脚本源码；后续 D1 迁移只保存执行实例、租约和恢复状态。版本化静态资源保留旧版本，以支持执行实例固定版本。
 
-Agent 请求至少包含 Agent 版本、本地脚本清单（`id/version/sha256`），以及可选的待申请触发信息。Worker 响应动作状态：
+Agent 请求包含 Agent 版本、本地脚本清单（id/version/sha256），并可携带 runtimeReady、Cron 触发、运行中租约心跳或执行结果报告。Worker 响应动作：
 
-- `sync`：返回需要下载/更新的脚本清单及撤销删除清单。
-- `task` / 执行许可：脚本对账通过后，授权一个执行实例及其固定脚本版本。
-- `idle`：当前没有同步或执行动作。
+- sync：返回需要下载/更新的脚本清单及撤销删除清单；此时不授予新执行。
+- execute：脚本对账完成后，授权一个执行实例及其固定脚本版本/hash。
+- running：确认当前执行租约仍有效。
+- idle：当前没有同步或执行动作。
 
 协议流程：
 
-1. Agent 上报本地脚本清单。
-2. Worker 对比权威发布清单；若有差异，只返回同步动作，不授予执行许可。
-3. Agent 下载脚本到临时文件，校验 SHA-256、metadata 和目标路径；校验成功后原子 rename 替换。删除清单只删除受控缓存目录中的脚本。
-4. Agent 再次请求同一接口并上报新清单。
-5. Worker 二次对账确认完全一致后，才可处理触发申请/发放执行许可。
+1. Agent 上报本地脚本清单；Worker 对比权威发布清单。对账不一致时只返回同步动作，不处理新的触发、不授予执行。
+2. Agent 下载脚本到临时文件，校验 SHA-256、metadata 和目标路径；校验成功后原子 rename 替换。删除清单只删除受控缓存目录中的脚本。
+3. Agent 再次请求同一接口并上报新清单；Worker 二次对账确认完全一致后，才处理触发申请。
+4. Agent 发送 Cron/startup/catch-up 触发，Worker 校验当前发布 metadata 和 schedule revision，在 D1 创建唯一 execution。只有 Worker 发放 execution lease 后 Agent 才能执行。
+5. 执行期间 Agent 使用 execution ID + lease token 心跳；结束后用稳定 report ID 回传结果。Worker 通过现有 ingest 写入数据，再将 execution 标记为成功/失败。
 
-Agent 缓存目录默认为工作目录下的 `.agent-scripts/<id>/<version>.mjs`（容器中为 `/app/.agent-scripts/`）。Agent 先验证源码 SHA-256、metadata 与 Worker 返回的描述符一致，再写同目录临时文件并原子 rename；撤销操作只接受经过 id/version 白名单校验的缓存路径。Agent 在每轮旧任务 poll 之前先完成同步，Worker 不可用或同步未收敛时不会进入旧任务领取流程。
-6. 若再次不一致则继续同步；下载失败、hash 不匹配或 metadata 无效时不覆盖现有可用版本、不执行任务，并按退避策略重试。
+Agent 缓存目录默认为工作目录下的 .agent-scripts/<id>/<version>.mjs（容器中为 /app/.agent-scripts/）。Agent 在每轮领取/执行新任务前完成同步；执行中的任务只续租，不在运行期间切换脚本版本。
 
 脚本缓存路径必须防止路径穿越；禁止由 metadata 的路径字段决定任意文件位置。任务 payload 永远是数据，不得携带 JavaScript、动态 import 地址、表达式或其他可执行内容。节点认证、结果回传和现有 API envelope 尽量复用。
 
@@ -102,17 +102,19 @@ Agent 缓存目录默认为工作目录下的 `.agent-scripts/<id>/<version>.mjs
 
 ## 执行与调度语义
 
-- Agent 启动后先完成脚本同步和校验，再解析 metadata 并注册 Cron。
-- 时间基准固定 `Asia/Shanghai`；Agent 重启后不回放 `best_effort` 停机期间错过的时间槽，只计算未来触发。
-- Cron 触发是一次执行申请，不等于执行许可。只有 Worker 授权后 Agent 才能运行脚本。
-- Worker 不可用时 Agent 不绕过 Worker 离线执行。
-- 同一脚本最多一个并发执行。普通 Cron 触发时若该脚本仍在执行，跳过本次触发，不排队。
-- 每个 Cron 时间槽最多一个逻辑 execution，建议唯一键为 `script_id + schedule_revision + scheduled_at`。
-- `schedule_revision` 只在调度定义（schedule/enabled 或其语义）改变时变化，不使用整个脚本 hash；仅修改业务代码不应改变时间槽身份。
-- 重试沿用原 `execution_id`、原脚本版本和原始计划时间；新时间槽才创建新 execution。
-- 迟到触发需有明确宽限期，超过宽限期的普通触发丢弃；宽限期在实现阶段定值并测试，不能因事件循环阻塞而无限执行陈旧任务。
-- 执行记录至少区分 pending/running/succeeded/failed/interrupted(or unknown)/expired。Agent 在副作用发生后、成功回传前崩溃时，结果属于未知，不能伪装成确定失败或成功。
-- 对取消/超时，Agent 尽力传递 AbortSignal；但不能假定脚本或外部服务一定能及时停止。
+- Agent 启动后先完成脚本同步和校验，再计算 reliable 启动 catch-up，最后启动未来 Cron 定时器。
+- 时间基准固定 Asia/Shanghai；六字段 Cron，最小间隔 60 秒。超过 60 秒宽限期的迟到 best_effort 触发丢弃；迟到 reliable 触发合并成一次 catch-up。
+- schedule_revision = SHA256(schedule + NUL + enabled) 的前 32 位十六进制；不包含脚本版本/hash。调度定义变化才产生新 revision。
+- 每个逻辑 execution 的唯一键为 script_id + schedule_revision + scheduled_at。Worker 在 agent_script_state 持久化 last_scheduled_at；启动 catch-up 使用第一个错过槽作为稳定键，同时把检查点推进到 catch-up 的时间上界，因此不会逐槽回放。
+- Cron 触发是执行申请，不等于执行许可。只有 Worker 创建/恢复 D1 execution 并发放 lease 后 Agent 才能运行脚本。
+- Worker 一次只发放一个 execution lease；同一脚本已有 pending/running/interrupted/needs_attention 实例时，不再创建并行实例。普通触发不排队；不同脚本的待执行实例由 Worker 顺序发放。
+- 重试沿用原 execution_id、原脚本版本/hash 和原始计划时间；新时间槽才创建新 execution。
+- Agent 执行期间定期续租。Agent 进程重启后，Worker 将遗留的 reliable running execution 标记为 interrupted 并用同一 ID/版本恢复；遗留 best_effort execution 标记 expired，不重试。
+- execution 状态：pending/running/succeeded/failed/interrupted/expired/needs_attention。副作用发生后、成功回传前崩溃时，结果视为未知；依靠可靠任务幂等和同一 execution 重试恢复。
+- Worker 不可用时 Agent 不离线执行；best_effort 本次触发丢弃，reliable 触发在 Agent 存活期间退避重试，重启后由 D1 checkpoint 重建 catch-up。
+- Worker 内部 tick（提醒扫描/清理）独立于业务脚本 Cron，切换 Agent 协议后仍必须运行。
+- runtimeReady=true 的 Agent 在脚本同步成功后原子 claim 永久 owner；D1 只允许一个 owner，之后旧 /node/poll 返回 426。没有自动接管或选举；人工恢复需先停止旧 Agent，再显式清理 owner 记录。
+- Worker owner claim 之前旧 Agent 协议仍可用；新 Agent 完成同步后才 claim，避免首次同步失败时永久锁定旧协议。
 
 ## 可靠性等级
 
@@ -132,7 +134,7 @@ Agent 缓存目录默认为工作目录下的 `.agent-scripts/<id>/<version>.mjs
 - 不逐个回放错过的 Cron 时间槽。Agent 启动时为 reliable 脚本提交一次合并的 reconcile/catch-up 申请；同脚本已有未完成 execution 时恢复该实例，避免创建并行同步。
 - Cron 负责定期启动同步检查；业务游标决定数据从哪里继续。多个错过时间槽合并为一次补偿同步，而不是连续执行 N 次历史 Cron。
 - Worker/D1 持久化未完成 execution 和恢复状态；Agent 重启后可以重新取得许可并恢复，不能依赖内存队列。
-- 失败按退避策略自动重试；重试沿用同一 execution ID 和脚本版本。达到阈值后保留待人工处理状态并告警，不能静默丢弃。
+- 失败按退避策略自动重试；重试沿用同一 execution ID 和脚本版本。当前 Worker 策略为 5 分钟起始、指数退避、最长 6 小时、最多 8 次；达到阈值后保留 needs_attention 状态。告警通知仍需补齐，不能把状态保留等同于已告警。
 - Worker 不可用时不执行脚本；reliable 恢复意图必须由持久化状态表达，Worker 恢复后继续协调。
 - 脚本必须实现幂等、稳定业务 ID 去重、分页/分批处理和断点续跑。
 - 同步游标只在对应数据已可靠持久化后推进；游标语义由业务脚本和 Worker ingest/存储契约共同定义。
@@ -179,7 +181,7 @@ context 字段：`logger`、`config`、`fetch`、`signal`、`executionId`、`scr
 - 已创建 execution 固定引用脚本版本/hash；脚本升级只影响之后创建的 execution。
 - Agent 镜像包含 Node 运行时及预装依赖，不包含业务脚本的静态副本。
 - 禁止运行时 npm install。必须用技术验证确认远程 ES Module 能解析镜像预装依赖；必要时设计受控的 module resolution/import strategy。
-- 脚本源码发布仍走 GitHub PR、CI 和受信任发布链路；服务端脚本内容存储的具体实现（R2 对象 key、版本索引和访问 URL）在实现阶段确定。
+- 脚本源码发布走 GitHub PR、CI 和受信任发布链路；Worker Static Assets 提供 manifest 和版本化脚本内容，D1 只保存执行状态、检查点和租约。
 - Worker 与 Agent 的升级需有兼容窗口；不能依赖 Watchtower 与 Worker 同时更新。
 - D1 迁移遵循 expand/contract；新旧 Agent/Worker 协议过渡必须可回滚。
 
