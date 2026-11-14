@@ -379,7 +379,19 @@ export async function handleAgentNext(
 
   let reportResult: { accepted: boolean; inserted: number } | null = null
   if (body.report) reportResult = await processReport(db, nodeId, body.report, now)
-  if (body.running && !body.report) await renewExecutionLease(db, nodeId, body.running, now)
+  if (body.running && !body.report) {
+    await renewExecutionLease(db, nodeId, body.running, now)
+    return {
+      schemaVersion: 1,
+      action: 'running' as const,
+      scripts: [],
+      deletes: [],
+      activeScripts: [],
+      checkpoints: [],
+      reportAccepted: false,
+      inserted: 0,
+    }
+  }
   if (!body.running && !body.report && runtimeReady) await recoverOrphanedExecutions(db, nodeId, now)
 
   const local = validateLocalScripts(body.scripts ?? [])
