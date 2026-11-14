@@ -125,6 +125,16 @@ jobs:
         working-directory: agent
         run: npm run check
 
+      - name: Agent — tests
+        if: steps.diff.outputs.agent == 'true'
+        working-directory: agent
+        run: npm test
+
+      - name: Agent — bundle
+        if: steps.diff.outputs.agent == 'true'
+        working-directory: agent
+        run: npm run build
+
       # 迁移必须向后兼容（expand/contract）：D1 不能随 Worker 回滚
       - name: D1 — apply migrations
         if: steps.diff.outputs.worker == 'true'
