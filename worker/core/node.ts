@@ -530,7 +530,7 @@ async function readAgentScriptManifest(env: Bindings, requestUrl: string): Promi
     const contentPath = script.contentPath
     if (
       typeof id !== 'string' || !/^[a-z][a-z0-9_-]{0,63}$/.test(id) ||
-      typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version) ||
+      typeof version !== 'string' || !/^\d+\.\d+\.\d+$/.test(version) ||
       typeof sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(sha256) ||
       contentPath !== '/agent-scripts/' + id + '/' + version + '.mjs' ||
       typeof script.name !== 'string' || typeof script.description !== 'string' ||
