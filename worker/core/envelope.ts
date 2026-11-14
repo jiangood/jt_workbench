@@ -14,6 +14,8 @@ export interface Bindings {
   // 只有 binding：参数与凭据全部存 D1（app_config / auth_state），不使用 wrangler secret
   DB: D1Database
   R2: R2Bucket
+  /** Static Worker assets, used to serve the reviewed Agent script manifest and immutable modules. */
+  ASSETS: Fetcher
 }
 
 export type Env = {
