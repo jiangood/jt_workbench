@@ -54,7 +54,7 @@
 - **脚本同步先于执行**：Agent 请求 `POST /node/agent/next` 时上报本地脚本清单（id/version/SHA-256）；Worker 返回更新/删除清单。Agent 验证 SHA-256/metadata 后写临时文件并原子 rename，再请求同一接口二次对账；每轮旧任务领取前先同步，未通过对账不得领取或执行任务。
 - **不动态安装依赖**：Agent 镜像预装脚本所需第三方依赖；远程脚本不得运行时 npm install。远程 ES Module 对镜像内依赖的解析方式必须有自动化验证。
 - **可靠性由脚本声明**：`best_effort` 适用于新闻 RSS 等可丢失任务，错过触发丢弃、失败不强制重试；`reliable` 适用于知识星球等重要同步，支持失败重试、启动补偿、业务游标和断点续跑。第一版不实现 strict。
-- **调度约定**：Agent 本地执行 6 字段 Cron，固定 `Asia/Shanghai`。同一脚本不并发；普通 Cron 触发遇到正在执行的同脚本时跳过，不排队。reliable 的恢复/补偿是已有逻辑执行的恢复，不机械回放每个错过的 Cron 时间槽。
+- **调度约定**：Agent 本地执行 6 字段 Cron，固定 `Asia/Shanghai`，最小间隔 60 秒。`schedule_revision` 只由 schedule/enabled 决定，不由脚本版本/hash 决定。reliable 启动补偿把所有错过的槽合并为一次 reconcile；Worker 持久化调度检查点。同一脚本不并发；普通 Cron 触发遇到正在执行的同脚本时跳过，不排队。
 - **执行语义**：脚本必须幂等；系统按至少一次语义设计，不承诺 exactly-once。重试沿用同一个 `execution_id` 和创建时固定的脚本版本。Agent 崩溃后无法确认副作用结果时记录为 interrupted/unknown，再按业务幂等策略恢复。
 - **职责边界**：Agent 负责脚本同步、Cron 触发、执行和结果回传；Worker/D1 是脚本发布清单、执行许可、执行记录、租约和结果状态的权威。Worker 不负责业务脚本 Cron 计算；Worker 内部清理、邮件扫描等基础设施 tick 仍可保留。
 - **统一 context**：远程模块导出 `async run(ctx, payload)`，返回 `{items, summary}`；context 提供 logger/config/受控 fetch/signal/executionId/scriptId/scriptVersion/scheduledAt。timeout 是 AbortSignal 协作式超时，不是硬 CPU 隔离；同进程脚本仍可绕过 context 访问宿主权限，不能把 context 误认为安全沙箱。
