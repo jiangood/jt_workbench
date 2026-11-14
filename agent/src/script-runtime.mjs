@@ -22,11 +22,11 @@ export async function executeRemoteScript(script, payload, context, safeFetch) {
   const source = await readFile(script.path, 'utf8')
   if (hash(source) !== script.sha256) throw new Error('script cache hash mismatch: ' + script.id)
   const metadata = parseScriptMetadata(source)
-  if (
-    metadata.id !== script.id || metadata.version !== script.version ||
-    metadata.timeout !== script.timeout || metadata.enabled !== true
-  ) {
-    throw new Error('script cache metadata mismatch: ' + script.id)
+  for (const key of ['id', 'name', 'version', 'description', 'schedule', 'enabled', 'timeout', 'reliability']) {
+    if (metadata[key] !== script[key]) throw new Error('script cache metadata mismatch: ' + script.id + ' (' + key + ')')
+  }
+  if (context.scriptId !== script.id || context.scriptVersion !== script.version) {
+    throw new Error('script execution context identity mismatch: ' + script.id)
   }
 
   const timeoutController = new AbortController()
