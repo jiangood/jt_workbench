@@ -413,7 +413,7 @@ zsxq.post('/job', async (c) => {
         .filter(Boolean),
     ),
   ]
-  if (groupIds.some((id) => !/^\\d{1,20}$/.test(id))) {
+  if (groupIds.some((id) => !/^\d{1,20}$/.test(id))) {
     throw new ApiError(400, 400, 'groupId 应为星球数字 ID（网页版地址 /group/ 后面那串数字）')
   }
   const enabling = b.enabled !== false
