@@ -175,9 +175,10 @@ Agent 不理解知识星球业务语义；通用运行时只提供 execution lif
 - [ ] 定义接口协议、metadata schema、执行状态机和兼容升级策略。
 
 ### PR 2：运行时技术验证
-- [ ] 验证 Node 22 动态加载远程/缓存 ES Module。
-- [ ] 验证模块如何解析镜像预装依赖，不引入运行时 npm install。
-- [ ] 验证原子缓存替换、删除、hash 校验、超时/取消和失败回滚。
+- [x] 验证 Node 22 动态加载远程/缓存 ES Module：缓存为 .mjs 文件后通过 file: URL 动态 import。
+- [x] 验证模块如何解析镜像预装依赖，不引入运行时 npm install：脚本缓存放在 /app/scripts/，依赖放在 /app/node_modules/，Node ESM 按父目录查找依赖；镜像单独复制 npm ci --omit=dev 的生产依赖。
+- [ ] 验证原子缓存替换、删除、hash 校验、超时/取消和失败回滚（属于同步器实现阶段，不在本次实验中伪称完成）。
+- [ ] 在 Node 22 CI 中运行动态导入依赖测试；CI 结果以 PR 检查为准。
 
 ### PR 3：脚本发布与同步协议
 - [ ] Worker 侧版本化脚本 manifest/content 管理。
