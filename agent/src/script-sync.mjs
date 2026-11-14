@@ -132,9 +132,19 @@ export async function applyScriptSync(root, response) {
   }
 }
 
+export async function loadCachedScript(root, id, version, sha256) {
+  const base = resolve(root)
+  const path = scriptPath(base, id, version)
+  const bytes = await readFile(path)
+  const source = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  if (digest(source) !== sha256) throw new Error('cached script hash mismatch: ' + id + '@' + version)
+  const meta = parseScriptMetadata(source)
+  if (meta.id !== id || meta.version !== version) throw new Error('cached script identity mismatch: ' + id + '@' + version)
+  return { ...meta, sha256, path }
+}
+
 export async function loadActiveScripts(root, activeScripts) {
   if (!Array.isArray(activeScripts) || activeScripts.length > 100) throw new Error('invalid active script manifest')
-  const base = resolve(root)
   const seen = new Set()
   const active = []
   for (const descriptor of activeScripts) {
@@ -142,11 +152,9 @@ export async function loadActiveScripts(root, activeScripts) {
     if (!meta.enabled) throw new Error('disabled script included in active manifest')
     if (seen.has(meta.id)) throw new Error('duplicate active script id: ' + meta.id)
     seen.add(meta.id)
-    const path = scriptPath(base, meta.id, meta.version)
-    const source = await readFile(path, 'utf8')
-    if (digest(source) !== descriptor.sha256) throw new Error('active script cache hash mismatch: ' + meta.id)
-    assertMetadataMatches(parseScriptMetadata(source), meta)
-    active.push({ ...meta, sha256: descriptor.sha256, path })
+    const cached = await loadCachedScript(root, meta.id, meta.version, descriptor.sha256)
+    assertMetadataMatches(cached, meta)
+    active.push(cached)
   }
   return active
 }
@@ -161,7 +169,10 @@ export async function synchronizeScripts(next, root = defaultRoot()) {
     const deletes = response.deletes ?? []
     if (response.action === 'idle') {
       if (scripts.length || deletes.length) throw new Error('idle response contains sync actions')
-      return loadActiveScripts(root, response.activeScripts ?? [])
+      return {
+        scripts: await loadActiveScripts(root, response.activeScripts ?? []),
+        checkpoints: response.checkpoints ?? [],
+      }
     }
     if (response.action !== 'sync') throw new Error('unexpected Agent action: ' + response.action)
     if (!scripts.length && !deletes.length) throw new Error('empty script sync response would not converge')
