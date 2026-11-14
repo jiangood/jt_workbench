@@ -122,6 +122,8 @@ async function requestNext(request: AgentNextRequest = {}): Promise<AgentNextRes
     }
     if (running && !request.running && !request.report) {
       if (request.triggers?.length) {
+        const reliability = activeScripts.find((script) => script.id === request.triggers?.[0]?.scriptId)?.reliability
+        if (reliability === 'reliable') throw new Error('Agent busy with another execution; reliable trigger will retry')
         return {
           now: Date.now(), schemaVersion: 1, action: 'running',
           scripts: [], deletes: [], activeScripts: [], checkpoints: [],
