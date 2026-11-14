@@ -217,22 +217,36 @@ async function processTriggers(
     if (script.reliability === 'best_effort' && value.kind !== 'cron') {
       throw new ApiError(400, 400, 'best_effort scripts cannot request startup catch-up')
     }
-    await updateScheduleCheckpoint(db, script.id, revision, value.through, now)
     const active = await db.prepare(
-      "SELECT execution_id FROM agent_execution WHERE script_id = ? AND status IN ('pending', 'running', 'interrupted', 'needs_attention') LIMIT 1",
-    ).bind(script.id).first<{ execution_id: string }>()
+      "SELECT execution_id, schedule_revision FROM agent_execution WHERE script_id = ? AND status IN ('pending', 'running', 'interrupted', 'needs_attention') LIMIT 1",
+    ).bind(script.id).first<{ execution_id: string; schedule_revision: string }>()
     if (active) {
-      results.push({ scriptId: script.id, scheduledAt: value.scheduledAt, accepted: true, reason: 'execution_already_active' })
+      if (active.schedule_revision === revision) {
+        await updateScheduleCheckpoint(db, script.id, revision, value.through, now)
+        results.push({ scriptId: script.id, scheduledAt: value.scheduledAt, accepted: true, reason: 'execution_already_active' })
+      } else {
+        results.push({ scriptId: script.id, scheduledAt: value.scheduledAt, accepted: false, reason: 'previous_schedule_revision_running' })
+      }
       continue
     }
+
     const executionId = crypto.randomUUID()
-    await db.prepare(
-      "INSERT OR IGNORE INTO agent_execution (execution_id, script_id, script_version, script_sha256, schedule_revision, scheduled_at, trigger_kind, reliability, status, attempt, max_attempts, next_attempt_at, node_id, payload_json, created_at, updated_at) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, '{}', ?, ?)",
-    ).bind(
-      executionId, script.id, script.version, script.sha256, revision, value.scheduledAt,
-      value.kind, script.reliability, DEFAULT_MAX_ATTEMPTS, now, nodeId, now, now,
-    ).run()
+    // Execution creation and checkpoint advancement must commit atomically.
+    await db.batch([
+      db.prepare(
+        "INSERT OR IGNORE INTO agent_execution (execution_id, script_id, script_version, script_sha256, schedule_revision, scheduled_at, trigger_kind, reliability, status, attempt, max_attempts, next_attempt_at, node_id, payload_json, created_at, updated_at) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, '{}', ?, ?)",
+      ).bind(
+        executionId, script.id, script.version, script.sha256, revision, value.scheduledAt,
+        value.kind, script.reliability, DEFAULT_MAX_ATTEMPTS, now, nodeId, now, now,
+      ),
+      db.prepare(
+        'INSERT INTO agent_script_state (script_id, schedule_revision, last_scheduled_at, updated_at) VALUES (?, ?, ?, ?) ' +
+        'ON CONFLICT(script_id, schedule_revision) DO UPDATE SET ' +
+        'last_scheduled_at = CASE WHEN agent_script_state.last_scheduled_at IS NULL OR agent_script_state.last_scheduled_at < excluded.last_scheduled_at ' +
+        'THEN excluded.last_scheduled_at ELSE agent_script_state.last_scheduled_at END, updated_at = excluded.updated_at',
+      ).bind(script.id, revision, value.through, now),
+    ])
     results.push({ scriptId: script.id, scheduledAt: value.scheduledAt, accepted: true })
   }
   return results
