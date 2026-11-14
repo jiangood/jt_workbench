@@ -106,15 +106,23 @@ export function startLocalScheduler(scripts, onTrigger, options = {}) {
         if (kind !== 'drop' && !delivering) {
           delivering = true
           const deliver = async () => {
+            if (stopped) return
             try {
               await onTrigger(trigger)
               delivering = false
-              if (retryTimer) clearTimeout(retryTimer)
+              if (retryTimer) {
+                clearTimeout(retryTimer)
+                timers.delete(retryTimer)
+              }
               retryTimer = null
             } catch (error) {
               if (script.reliability === 'reliable' && !stopped) {
-                retryTimer = setTimeout(deliver, retryMs)
+                retryTimer = setTimeout(() => {
+                  timers.delete(retryTimer)
+                  void deliver()
+                }, retryMs)
                 retryTimer.unref?.()
+                timers.add(retryTimer)
               } else {
                 delivering = false
                 options.onError?.(error, script)
