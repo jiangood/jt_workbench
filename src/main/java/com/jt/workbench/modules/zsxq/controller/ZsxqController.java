@@ -10,6 +10,7 @@ import io.github.jiangood.openadmin.framework.perm.HasPermission;
 import io.github.jiangood.openadmin.util.dto.AjaxResult;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
@@ -24,6 +25,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -48,15 +50,35 @@ public class ZsxqController {
     @Autowired
     private JdbcTemplate jdbc;
 
+    /** 可排序话题字段（限定取值，防止请求传入非法属性） */
+    private static final Set<String> SORT_PROPERTIES = Set.of("sourceCreateTime", "lastCommentTime");
+
     @HasPermission("zsxq:read")
     @PostMapping("page")
-    public AjaxResult page(@PageableDefault(sort = "lastCommentTime", direction = Sort.Direction.DESC, size = 20) Pageable pageable,
+    public AjaxResult page(@PageableDefault(sort = "sourceCreateTime", direction = Sort.Direction.DESC, size = 20) Pageable pageable,
                            @RequestParam(required = false) String keyword,
                            @RequestParam(required = false) String columnId,
-                           @RequestParam(required = false) Boolean ownerOnly) {
+                           @RequestParam(required = false) Boolean ownerOnly,
+                           @RequestParam(required = false) String sort,
+                           @RequestParam(required = false) String direction) {
         Page<ZsxqTopic> page = topicRepository.search(blankToNull(keyword), blankToNull(columnId),
-                Boolean.TRUE.equals(ownerOnly), pageable);
+                Boolean.TRUE.equals(ownerOnly), effectivePageable(pageable, sort, direction));
         return new AjaxResult().ok().data(page);
+    }
+
+    /** 取最终分页参数：请求显式指定 sort/direction 时优先；未指定时沿用默认（发布时间倒序） */
+    private static Pageable effectivePageable(Pageable pageable, String sort, String direction) {
+        Sort sortBy = sortSpec(sort, direction, pageable.getSort());
+        if (!pageable.isPaged()) return pageable;
+        return PageRequest.of(pageable.getPageNumber(), pageable.getPageSize(), sortBy);
+    }
+
+    private static Sort sortSpec(String sort, String direction, Sort fallback) {
+        String property = blankToNull(sort);
+        if (property == null || !SORT_PROPERTIES.contains(property)) return fallback;
+        Sort.Direction order = Sort.Direction.ASC.name().equalsIgnoreCase(blankToNull(direction))
+                ? Sort.Direction.ASC : Sort.Direction.DESC;
+        return Sort.by(order, property);
     }
 
     @HasPermission("zsxq:read")

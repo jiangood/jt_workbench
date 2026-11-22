@@ -1,6 +1,6 @@
 import React from 'react'
 import {MoreOutlined, ReadOutlined, ReloadOutlined, SearchOutlined} from '@ant-design/icons'
-import {Input, Switch} from 'antd'
+import {Input, Select, Switch} from 'antd'
 import {HttpClient, history} from '@jiangood/open-admin'
 import SwipeReader from '../../components/SwipeReader'
 import {fmtTime, imageSrc, topicImages} from './media'
@@ -9,9 +9,18 @@ export const pageMeta = {layout: 'blank', title: '知识星球'}
 
 const PAGE_SIZE = 20
 
+/** 时间排序选项：发布时间（默认倒序）/ 发布时间正序 / 最近回复倒序 / 最近回复正序 */
+const SORT_OPTIONS = [
+    {value: 'sourceCreateTime|DESC', label: '发布时间倒序'},
+    {value: 'sourceCreateTime|ASC', label: '发布时间正序'},
+    {value: 'lastCommentTime|DESC', label: '最近回复倒序'},
+    {value: 'lastCommentTime|ASC', label: '最近回复正序'},
+]
+
 export default class ZsxqReaderPage extends React.Component {
     state = {
         keyword: '',
+        sort: 'sourceCreateTime|DESC',
         ownerOnly: false,
         ownerCommentOnly: false,
         items: [],
@@ -78,6 +87,9 @@ export default class ZsxqReaderPage extends React.Component {
             const kw = this.state.keyword?.trim()
             if (kw) params.keyword = kw
             if (this.state.ownerOnly) params.ownerOnly = true
+            const [sortProp, sortDir] = (this.state.sort || 'sourceCreateTime|DESC').split('|')
+            params.sort = sortProp || 'sourceCreateTime'
+            params.direction = sortDir || 'DESC'
             const rs = await HttpClient.post('admin/zsxq/page', null, params)
             if (seq !== this.loadSeq) return
             const data = rs.data || {}
@@ -177,13 +189,15 @@ export default class ZsxqReaderPage extends React.Component {
                 onLoadMore={this.loadMore}
                 emptyDescription={keyword ? `没有匹配「${keyword}」的内容` : '暂无内容'}
                 drawerTitle='帖子列表'
-                drawerControls={<div style={{display: 'flex', alignItems: 'center', gap: 12}}>
+                drawerControls={<div style={{display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap'}}>
                     <Input allowClear prefix={<SearchOutlined />} placeholder='搜索摘要' value={keyword} onChange={this.onKeywordChange} />
                     <label style={{display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap', cursor: 'pointer'}}>
                         <Switch size='small' checked={this.state.ownerOnly}
                                 onChange={(v) => this.setState({ownerOnly: v}, () => this.reloadList(false))} />
                         <span>只看星主</span>
                     </label>
+                    <Select size='small' style={{width: 128}} value={this.state.sort} options={SORT_OPTIONS}
+                            onChange={(v) => this.setState({sort: v}, () => this.reloadList(false))}/>
                 </div>}
                 renderArticle={(item) => {
                     const group = groups.find(g => String(g.id) === String(item.groupId))
