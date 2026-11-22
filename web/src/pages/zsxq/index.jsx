@@ -153,8 +153,7 @@ export default class ZsxqReaderPage extends React.Component {
         const {keyword, items, loading, initialLoading, hasMore, stats, groups, columns, swipeIndex} = this.state
         const current = items[swipeIndex] || null
         const currentColumn = current ? columns.find(c => String(c.columnId) === String(current.columnId)) : null
-        const subtitle = currentColumn?.name
-            || (current?.sourceCreateTime ? fmtTime(current.sourceCreateTime) : '帖子')
+        const subtitle = currentColumn?.name || '帖子'
         const posText = items.length ? `${Math.min(swipeIndex + 1, items.length)}/${items.length}${hasMore ? '+' : ''}` : ''
         const progressPct = items.length ? Math.round(((Math.min(swipeIndex, items.length - 1) + 1) / Math.max(items.length, 1)) * 100) : 0
 
