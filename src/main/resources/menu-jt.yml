@@ -11,7 +11,7 @@ menus:
       - {name: 源管理, code: news:source}
       - {name: 屏蔽词, code: news:block}
   jt-stock:
-    name: 股票
+    name: 鱼池
     icon: FundOutlined
     path: /stock
     perms:
