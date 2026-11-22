@@ -277,56 +277,6 @@ export default class HomePage extends React.Component {
         );
     }
 
-    renderStockCard() {
-        const watch = this.state.summary?.stocks?.watch || [];
-        const {quotes, quoteFailed} = this.state;
-        const quoteMap = new Map((quotes || []).map((q) => [q.code, q]));
-        const firstTime = quotes && quotes.length ? quoteTimeText(quotes[0].time) : null;
-        return (
-            <Card bordered={false} style={{height: '100%'}} bodyStyle={{padding: 18}}>
-                <CardHead icon={<FundOutlined style={{color: '#13c2c2'}}/>} title="自选股" href="#/stock"/>
-                {watch.length ? (
-                    <div>
-                        {watch.map((w) => {
-                            const q = quoteMap.get(w.code);
-                            const preOpen = q?.preOpen === true;
-                            const pct = Number(q?.changePct);
-                            let pctColor = '#999';
-                            if (!preOpen && Number.isFinite(pct)) {
-                                if (pct > 0) pctColor = '#cf1322';
-                                else if (pct < 0) pctColor = '#389e0d';
-                            }
-                            return (
-                                <a key={w.code || w.id} href="#/stock" style={{display: 'flex', justifyContent: 'space-between', gap: 12, padding: '10px 0', borderBottom: '1px solid #f5f5f5', color: 'inherit'}}>
-                                    <div style={{minWidth: 0}}>
-                                        <div style={{fontSize: 14, color: '#222', lineHeight: 1.5}}>
-                                            {w.name || w.code}
-                                            {w.groupName ? <Tag style={{marginLeft: 6}}>{w.groupName}</Tag> : null}
-                                        </div>
-                                        <div style={{fontSize: 12, color: '#999', marginTop: 2}}>{w.code}</div>
-                                    </div>
-                                    <div style={{flex: 'none', textAlign: 'right'}}>
-                                        <div style={{fontSize: 14, fontWeight: 500, color: preOpen ? '#999' : '#222', fontFamily: 'monospace'}}>
-                                            {q && Number.isFinite(Number(q.price)) ? Number(q.price).toFixed(2) : '—'}
-                                        </div>
-                                        <div style={{fontSize: 12, color: pctColor, marginTop: 2, fontFamily: 'monospace'}}>
-                                            {preOpen ? '未开盘' : (Number.isFinite(pct) ? `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%` : '—')}
-                                        </div>
-                                    </div>
-                                </a>
-                            );
-                        })}
-                        <div style={{marginTop: 10, fontSize: 12, color: '#999'}}>
-                            行情 {firstTime || (quoteFailed ? '暂不可用' : '待更新')}
-                        </div>
-                    </div>
-                ) : (
-                    <EmptyHint text="暂无自选股" href="#/stock" action="添加自选股"/>
-                )}
-            </Card>
-        );
-    }
-
     renderNoteCard() {
         const notes = this.state.summary?.notes || {};
         const items = notes.latest || [];
@@ -385,42 +335,6 @@ export default class HomePage extends React.Component {
         );
     }
 
-    renderNewsModal() {
-        const {newsOpen, newsLoading, newsItem} = this.state;
-        const title = newsItem?.title || '资讯详情';
-        const safe = sanitize(newsItem?.content || '');
-        return (
-            <Modal
-                title={title}
-                open={newsOpen}
-                onCancel={() => this.setState({newsOpen: false})}
-                footer={newsItem?.link ? <a href={newsItem.link} target="_blank" rel="noreferrer">查看原文</a> : null}
-                width={860}
-            >
-                {newsLoading ? (
-                    <div style={{textAlign: 'center', padding: '40px 0'}}><Spin/></div>
-                ) : newsItem ? (
-                    <div>
-                        <div style={{fontSize: 12, color: '#999', marginBottom: 12, display: 'flex', gap: 12, flexWrap: 'wrap'}}>
-                            {newsItem.author ? <span>{newsItem.author}</span> : null}
-                            {newsItem.pubTime ? <span>{fmtFullTime(typeof newsItem.pubTime === 'string' ? newsItem.pubTime : (newsItem.pubTime || ''))}</span> : null}
-                            {newsItem.sourceId ? <span>来源ID: {newsItem.sourceId}</span> : null}
-                        </div>
-                        {safe ? (
-                            <div className="jt-news-content"
-                                 style={{lineHeight: 1.8, fontSize: 14, wordBreak: 'break-word'}}
-                                 dangerouslySetInnerHTML={{__html: safe}}/>
-                        ) : (
-                            <Empty description="（无正文）"/>
-                        )}
-                    </div>
-                ) : (
-                    <Empty description="未找到内容"/>
-                )}
-            </Modal>
-        );
-    }
-
     render() {
         const {loading, summary, updatedAt} = this.state;
         return (
@@ -442,17 +356,11 @@ export default class HomePage extends React.Component {
                     <div style={{textAlign: 'center', padding: '80px 0'}}><Spin size="large"/></div>
                 ) : (
                     <Row gutter={[16, 16]}>
-                        <Col xs={24} xl={14}>
-                            {this.renderNewsCard()}
-                        </Col>
                         <Col xs={24} xl={10}>
                             {this.renderVixCard()}
                         </Col>
                         <Col xs={24} lg={12} xl={8}>
                             {this.renderReminderCard()}
-                        </Col>
-                        <Col xs={24} lg={12} xl={8}>
-                            {this.renderStockCard()}
                         </Col>
                         <Col xs={24} lg={12} xl={8}>
                             {this.renderNoteCard()}
@@ -462,8 +370,6 @@ export default class HomePage extends React.Component {
                         </Col>
                     </Row>
                 )}
-
-                {this.renderNewsModal()}
             </Page>
         );
     }
