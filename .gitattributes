@@ -1,0 +1,2 @@
+piper/voices/*.onnx filter=lfs diff=lfs merge=lfs -text
+piper/voices/*.onnx.json filter=lfs diff=lfs merge=lfs -text

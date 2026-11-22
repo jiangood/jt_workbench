@@ -1,0 +1,9 @@
+#!/bin/sh
+# 提交前提示：本地优先运行测试与检查（不阻塞提交；如需强制可改为失败退出）
+cat >&2 <<'MSG'
+[pre-commit 提示] 提交前建议本地运行：
+  - worker: cd worker && npm run check && npm test
+  - agent:  cd agent  && npm run check && npm test
+  （按改动范围选择；提交/推送后仍需监控 CI 直至完成）
+MSG
+exit 0

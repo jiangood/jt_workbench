@@ -1,0 +1,59 @@
+## jt-workbench 业务菜单。框架预设菜单（首页/系统管理/定时任务等）位于 open-admin 框架的 menu.yml。
+menus:
+  jt-news:
+    name: 资讯
+    icon: ReadOutlined
+    path: /news
+    perms:
+      - {name: 读取, code: news:read}
+      - {name: 新建, code: news:create}
+      - {name: 编辑, code: news:update}
+      - {name: 源管理, code: news:source}
+      - {name: 屏蔽词, code: news:block}
+  jt-stock:
+    name: 股票
+    icon: FundOutlined
+    path: /stock
+    perms:
+      - {name: 读取, code: stock:read}
+      - {name: 管理, code: stock:manage}
+  jt-note:
+    name: 笔记
+    icon: FileTextOutlined
+    path: /note
+    perms:
+      - {name: 读取, code: note:read}
+      - {name: 编辑, code: note:edit}
+  jt-music:
+    name: 音乐
+    icon: CustomerServiceOutlined
+    path: /music
+    perms:
+      - {name: 读取, code: music:read}
+      - {name: 编辑, code: music:edit}
+  jt-book:
+    name: 书架
+    icon: BookOutlined
+    path: /book
+    perms:
+      - {name: 读取, code: book:read}
+      - {name: 编辑, code: book:edit}
+  jt-reminder:
+    name: 提醒
+    icon: BellOutlined
+    path: /reminder
+    perms:
+      - {name: 读取, code: reminder:read}
+      - {name: 编辑, code: reminder:edit}
+  jt-zsxq:
+    name: 知识星球
+    icon: TeamOutlined
+    path: /zsxq
+    perms:
+      - {name: 读取, code: zsxq:read}
+  jt-zsxq-column:
+    name: 知识星球专栏
+    icon: ReadOutlined
+    path: /zsxq/columns
+    perms:
+      - {name: 读取, code: zsxq:read}

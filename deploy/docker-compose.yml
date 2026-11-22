@@ -1,0 +1,13 @@
+# 数据库为内置 H2（数据在挂载的 ./app-data）；:latest 镜像由 CI（每次 push main）与 release（tag）推送至阿里云 ACR
+services:
+  app:
+    image: registry.cn-hangzhou.aliyuncs.com/jiangood/jt_workbench:latest
+    container_name: jt-workbench-app
+    ports:
+      - "8080:8080"
+    stop_grace_period: 60s
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - ./app-data:/data/db/jt-workbench
+    restart: unless-stopped

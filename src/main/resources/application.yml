@@ -1,0 +1,32 @@
+# jt-workbench（open-admin 迁移版）
+# H2 数据库文件根路径（不含扩展名）；本地开发可用 -Ddb_path=./data/db/jt-workbench 覆盖。
+db_path: /data/db/jt-workbench
+
+server:
+  servlet:
+    context-path: /  # 容器部署由 prod profile 覆盖；前端 dev 代理按 admin/file/ureport 精确前缀匹配
+
+spring:
+  config:
+    # 顺序敏感：application-lib.yml（框架默认，20MB 上传上限等）在前，本项目覆盖文件在后（后导入优先）
+    # 注意：必须用逗号分隔的单值写法——框架 ConfigChecker 校验的是 spring.config.import 字符串
+    import: classpath:application-lib.yml,classpath:application-jt.yml
+  servlet:
+    multipart:
+      max-file-size: 100MB
+      max-request-size: 200MB
+  datasource:
+    # 内置 H2（MySQL 兼容模式），首次启动自动建表并写入种子数据
+    driver-class-name: org.h2.Driver
+    url: "jdbc:h2:file:${db_path};MODE=MySQL;DB_CLOSE_DELAY=-1"
+    username: sa
+    password:
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+
+sys:
+  title: 个人工作台

@@ -1,0 +1,25 @@
+node_modules/
+dist/
+.env
+*.local
+online-token.txt
+.playwright-mcp/
+.idea/
+.opencode/*
+!.opencode/skills/
+!.opencode/skills/**
+worker/public/agent-scripts/
+agent/.agent-scripts/
+worker/.test-dist/
+.test-dist/
+worker/node/dist/
+
+# local runtime data
+.data/
+worker/.data/
+deploy/app-data/
+
+# maven / spring boot
+target/
+logs/
+/data/

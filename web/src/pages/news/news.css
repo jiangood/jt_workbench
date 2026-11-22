@@ -1,0 +1,339 @@
+/* 统一资讯阅读页（参考图书阅读器，全屏滑动阅读） */
+
+.news-reader-root {
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: #fff;
+    color: #1f1f1f;
+}
+
+.news-reader-topbar {
+    flex: none;
+    height: 52px;
+    padding: 0 8px 0 4px;
+    padding-top: env(safe-area-inset-top, 0px);
+    box-sizing: content-box;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    border-bottom: 1px solid #f0f0f0;
+    background: #fff;
+    z-index: 5;
+}
+
+.news-reader-left,
+.news-reader-right {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+}
+
+.news-reader-left {
+    flex: 1;
+    min-width: 0;
+}
+
+.news-reader-right {
+    flex: none;
+}
+
+.news-reader-iconbtn {
+    flex: none;
+    width: 32px;
+    height: 32px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: #444;
+    font-size: 16px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 0;
+}
+
+.news-reader-iconbtn:hover {
+    background: rgba(0, 0, 0, 0.04);
+    color: #1677ff;
+}
+
+.news-reader-meta {
+    min-width: 0;
+    margin-left: 2px;
+    line-height: 1.25;
+}
+
+.news-reader-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: #1f1f1f;
+}
+
+.news-reader-badge,
+.news-reader-collect,
+.news-reader-pos {
+    font-size: 12px;
+    color: #888;
+    white-space: nowrap;
+}
+
+.news-reader-badge {
+    color: #1677ff;
+}
+
+.news-reader-collect {
+    display: none;
+}
+
+@media (min-width: 720px) {
+    .news-reader-topbar {
+        height: 56px;
+        padding: 0 12px;
+    }
+    .news-reader-collect {
+        display: inline;
+    }
+}
+
+.news-reader-stage {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+    overflow: hidden;
+    background: #fafafa;
+}
+
+.news-reader-center {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.news-reader-track {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    background: #fafafa;
+}
+
+.news-reader-track::-webkit-scrollbar {
+    display: none;
+}
+
+.news-reader-slide {
+    flex: 0 0 100%;
+    width: 100%;
+    height: 100%;
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
+    box-sizing: border-box;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    background: #fafafa;
+}
+
+.news-reader-article {
+    min-height: 100%;
+    box-sizing: border-box;
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 20px 18px calc(32px + env(safe-area-inset-bottom, 0px));
+    background: #fff;
+}
+
+@media (min-width: 900px) {
+    .news-reader-slide {
+        padding: 16px 24px;
+    }
+    .news-reader-article {
+        min-height: auto;
+        margin: 0 auto;
+        border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+        padding: 28px 36px 36px;
+    }
+}
+
+.news-reader-article-meta {
+    font-size: 12px;
+    color: #999;
+    margin-bottom: 10px;
+    line-height: 1.6;
+}
+
+.news-reader-article-title {
+    margin: 0 0 12px;
+    font-size: 22px;
+    line-height: 1.4;
+    font-weight: 600;
+    color: #111;
+    word-break: break-word;
+}
+
+@media (min-width: 720px) {
+    .news-reader-article-title {
+        font-size: 26px;
+    }
+}
+
+.news-reader-tags {
+    margin-bottom: 10px;
+}
+
+.news-reader-content {
+    font-size: 16px;
+    line-height: 1.85;
+    color: #222;
+    word-break: break-word;
+}
+
+.news-reader-content .jt-news-content {
+    font-size: 16px;
+    line-height: 1.85;
+    color: #222;
+    word-break: break-word;
+    overflow: hidden;
+}
+
+/* 资讯正文：图片适配 */
+.jt-news-content img {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    margin: 0 auto 10px;
+}
+
+.news-reader-article-actions {
+    margin-top: 28px;
+    padding-top: 14px;
+    border-top: 1px solid #f0f0f0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.news-reader-favbtn,
+.news-reader-readbtn {
+    border: none;
+    background: none;
+    padding: 6px 4px;
+    margin: 0;
+    font-size: 14px;
+    color: #666;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+}
+
+.news-reader-favbtn.active {
+    color: #d48806;
+}
+
+.news-reader-favbtn:hover,
+.news-reader-readbtn:hover {
+    color: #1677ff;
+}
+
+.news-reader-readbtn {
+    color: #1677ff;
+}
+
+.news-reader-statuslabel {
+    font-size: 13px;
+    color: #999;
+}
+
+.news-reader-progress-line {
+    flex: none;
+    height: 3px;
+    background: #eee;
+}
+
+.news-reader-progress-line > div {
+    height: 100%;
+    background: #1677ff;
+    transition: width .2s ease;
+}
+
+/* 列表抽屉 */
+.news-reader-list-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 10px;
+    flex: none;
+}
+
+.news-reader-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.news-reader-list-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: 0;
+    border-bottom: 1px solid #f5f5f5;
+    background: transparent;
+    padding: 10px 8px;
+    cursor: pointer;
+    border-radius: 6px;
+}
+
+.news-reader-list-item:hover {
+    background: rgba(0, 0, 0, 0.03);
+}
+
+.news-reader-list-item.active {
+    background: rgba(22, 119, 255, 0.08);
+}
+
+.news-reader-list-title {
+    font-size: 14px;
+    line-height: 1.5;
+    color: #222;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.news-reader-list-item.active .news-reader-list-title {
+    color: #1677ff;
+    font-weight: 500;
+}
+
+.news-reader-list-meta {
+    margin-top: 4px;
+    font-size: 12px;
+    color: #999;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.news-reader-list-more {
+    text-align: center;
+    color: #999;
+    font-size: 12px;
+    padding: 12px 0;
+}

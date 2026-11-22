@@ -1,0 +1,18 @@
+# 参考框架 .dockerignore：构建取 pom.xml、src、web（前端在镜像内构建）
+target
+node_modules
+**/node_modules
+web/dist
+data
+worker
+docs
+scripts
+deploy
+.github
+.opencode
+.idea
+*.log
+*.sql
+*.mjs
+online-token.txt
+AGENTS.md

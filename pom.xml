@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>4.1.0</version>
+        <relativePath/> <!-- lookup parent from repository -->
+    </parent>
+    <groupId>com.jt</groupId>
+    <artifactId>jt-workbench</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <name>jt-workbench</name>
+    <description>个人工作台（open-admin 迁移版）：资讯/股票/笔记/音乐/书架/提醒/知识星球</description>
+
+    <properties>
+        <java.version>21</java.version>
+        <!-- 预览版：框架快照通道（Maven 3.3.4-SNAPSHOT / npm 3.3.4-SNAPSHOT.1） -->
+        <open-admin.version>3.3.4-SNAPSHOT</open-admin.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.github.jiangood</groupId>
+            <artifactId>open-admin</artifactId>
+            <version>${open-admin.version}</version>
+        </dependency>
+        <!-- 农历换算（提醒/生日按农历每年重复） -->
+        <dependency>
+            <groupId>cn.6tail</groupId>
+            <artifactId>lunar</artifactId>
+            <version>1.7.7</version>
+        </dependency>
+        <!-- 知识星球 SDK（简化签名/请求与模型解析） -->
+        <dependency>
+            <groupId>io.github.yiancode</groupId>
+            <artifactId>zsxq-sdk</artifactId>
+            <version>1.3.2</version>
+        </dependency>
+        <!-- EPUB 读取/编辑（删除广告页等内容修整） -->
+        <dependency>
+            <groupId>io.documentnode</groupId>
+            <artifactId>epub4j-core</artifactId>
+            <version>4.2.2</version>
+        </dependency>
+        <!-- 默认数据库：H2 文件模式（零外部依赖） -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <!-- 容器部署数据库：MySQL 8（连接信息由 docker-compose 环境变量覆盖） -->
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+    <!-- 依赖仓库镜像（国内加速） -->
+    <repositories>
+        <!-- 框架快照仓库（仅快照，正式依赖仍走镜像/Central） -->
+        <repository>
+            <id>central-snapshots</id>
+            <url>https://central.sonatype.com/repository/maven-snapshots/</url>
+            <releases>
+                <enabled>false</enabled>
+            </releases>
+            <snapshots>
+                <enabled>true</enabled>
+            </snapshots>
+        </repository>
+        <repository>
+            <id>huaweicloud</id>
+            <url>https://mirrors.huaweicloud.com/repository/maven/</url>
+        </repository>
+    </repositories>
+    <pluginRepositories>
+        <pluginRepository>
+            <id>huaweicloud-plugins</id>
+            <url>https://mirrors.huaweicloud.com/repository/maven/</url>
+        </pluginRepository>
+    </pluginRepositories>
+</project>

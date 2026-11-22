@@ -1,0 +1,374 @@
+/* 书架：封面卡片网格（跟随 open-admin 明暗主题变量） */
+
+.jt-book-shelf {
+    background: var(--oa-color-bg-container, #fff);
+    border-radius: 12px;
+    padding: 20px 24px 24px;
+}
+
+.jt-book-head {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 18px;
+}
+
+.jt-book-heading h1 {
+    margin: 0;
+    font-size: 22px;
+    font-weight: 650;
+    letter-spacing: .2px;
+    color: var(--oa-color-text, #1f1f1f);
+}
+
+.jt-book-heading p {
+    margin: 4px 0 0;
+    font-size: 13px;
+    color: var(--oa-color-text-secondary, #8c8c8c);
+}
+
+.jt-book-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px 16px;
+    margin-bottom: 22px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--oa-color-border, #f0f0f0);
+}
+
+.jt-book-status-filter {
+    flex: none;
+    max-width: 100%;
+}
+
+.jt-book-filters {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.jt-book-search {
+    width: 220px;
+}
+
+.jt-book-select {
+    width: 136px;
+}
+
+.jt-book-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+    gap: 26px 22px;
+    transition: opacity .15s ease;
+}
+
+.jt-book-grid.is-loading {
+    opacity: .55;
+    pointer-events: none;
+}
+
+.jt-book-card {
+    min-width: 0;
+    cursor: pointer;
+}
+
+.jt-book-cover-wrap {
+    position: relative;
+    aspect-ratio: 2 / 3;
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--oa-color-fill-quaternary, #fafafa);
+    box-shadow: 0 4px 14px rgba(15, 23, 42, .10);
+    transition: transform .18s ease, box-shadow .18s ease;
+}
+
+.jt-book-card:hover .jt-book-cover-wrap {
+    transform: translateY(-3px);
+    box-shadow: 0 10px 24px rgba(15, 23, 42, .18);
+}
+
+.jt-book-cover {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    background: var(--oa-color-fill-quaternary, #fafafa);
+}
+
+.jt-book-cover-placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 32px;
+    color: var(--oa-color-text-tertiary, #bfbfbf);
+    background: linear-gradient(155deg, var(--oa-color-fill-quaternary, #fafafa), var(--oa-color-fill, #f0f0f0));
+}
+
+.jt-book-status {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    z-index: 2;
+    padding: 0 8px;
+    border-radius: 9px;
+    font-size: 11px;
+    line-height: 18px;
+    letter-spacing: .2px;
+    color: #fff;
+    pointer-events: none;
+}
+
+.jt-book-status-unread {
+    background: rgba(0, 0, 0, .52);
+}
+
+.jt-book-status-reading {
+    background: #1677ff;
+}
+
+.jt-book-status-read {
+    background: #16a34a;
+}
+
+.jt-book-hover {
+    position: absolute;
+    inset: auto 0 0 0;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 28px 8px 8px;
+    background: linear-gradient(180deg, transparent, rgba(0, 0, 0, .66));
+    opacity: 0;
+    transition: opacity .18s ease;
+}
+
+.jt-book-card:hover .jt-book-hover,
+.jt-book-card:focus-within .jt-book-hover {
+    opacity: 1;
+}
+
+.jt-book-hover-read {
+    min-width: 0;
+    overflow: hidden;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, .35);
+}
+
+.jt-book-more {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, .24);
+    color: #fff;
+    font-size: 14px;
+    cursor: pointer;
+    backdrop-filter: blur(4px);
+}
+
+.jt-book-more:hover {
+    background: rgba(255, 255, 255, .4);
+}
+
+.jt-book-progress {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 3;
+    height: 3px;
+    background: rgba(255, 255, 255, .35);
+}
+
+.jt-book-progress span {
+    display: block;
+    height: 100%;
+    background: #1677ff;
+}
+
+.jt-book-progress.is-done span {
+    background: #16a34a;
+}
+
+.jt-book-info {
+    padding: 10px 2px 0;
+}
+
+.jt-book-title {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+    min-height: 40px;
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.45;
+    color: var(--oa-color-text, #1f1f1f);
+}
+
+.jt-book-subtitle {
+    overflow: hidden;
+    min-height: 17px;
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--oa-color-text-secondary, #8c8c8c);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.jt-book-muted {
+    color: var(--oa-color-text-tertiary, #bfbfbf);
+}
+
+.jt-book-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 18px;
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--oa-color-text-tertiary, #bfbfbf);
+}
+
+.jt-book-meta-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.jt-book-rating {
+    flex: none;
+    color: #d48806;
+    font-variant-numeric: tabular-nums;
+}
+
+.jt-book-category {
+    overflow: hidden;
+    padding: 0 6px;
+    border-radius: 4px;
+    background: var(--oa-color-fill, #f5f5f5);
+    line-height: 18px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.jt-book-percent {
+    flex: none;
+    color: var(--oa-color-text-secondary, #8c8c8c);
+    font-variant-numeric: tabular-nums;
+}
+
+.jt-book-empty {
+    padding: 56px 0 36px;
+}
+
+.jt-book-pagination {
+    display: flex;
+    justify-content: center;
+    margin-top: 28px;
+}
+
+/* 首屏骨架 */
+@keyframes jt-book-shimmer {
+    0% { opacity: .55; }
+    50% { opacity: 1; }
+    100% { opacity: .55; }
+}
+
+.jt-book-skeleton-cover {
+    aspect-ratio: 2 / 3;
+    border-radius: 8px;
+    background: var(--oa-color-fill, #f2f2f2);
+    animation: jt-book-shimmer 1.4s ease-in-out infinite;
+}
+
+.jt-book-skeleton-line {
+    height: 12px;
+    margin-top: 10px;
+    border-radius: 4px;
+    background: var(--oa-color-fill, #f2f2f2);
+    animation: jt-book-shimmer 1.4s ease-in-out infinite;
+}
+
+/* 触屏没有 hover：操作层常驻 */
+@media (hover: none) {
+    .jt-book-hover {
+        opacity: 1;
+        padding-top: 20px;
+    }
+}
+
+@media (max-width: 768px) {
+    .jt-book-shelf {
+        padding: 16px 12px 20px;
+        border-radius: 10px;
+    }
+
+    .jt-book-heading h1 {
+        font-size: 20px;
+    }
+
+    .jt-book-filters {
+        width: 100%;
+    }
+
+    .jt-book-search {
+        flex: 1 1 100%;
+        width: 100%;
+    }
+
+    .jt-book-select {
+        flex: 1 1 120px;
+        width: auto;
+    }
+
+    .jt-book-grid {
+        grid-template-columns: repeat(auto-fill, minmax(98px, 1fr));
+        gap: 20px 10px;
+    }
+
+    .jt-book-title {
+        min-height: 38px;
+        font-size: 13px;
+    }
+
+    .jt-book-category {
+        display: none;
+    }
+
+    /* 触屏窄屏：把「更多」收纳为封面右上角的常驻按钮，避免操作层遮住封面 */
+    .jt-book-hover {
+        inset: 6px 6px auto auto;
+        padding: 0;
+        background: none;
+        opacity: 1;
+    }
+
+    .jt-book-hover-read {
+        display: none;
+    }
+
+    .jt-book-more {
+        width: 24px;
+        height: 24px;
+        background: rgba(0, 0, 0, .34);
+    }
+}

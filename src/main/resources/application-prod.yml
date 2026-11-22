@@ -1,0 +1,10 @@
+# 生产 / 容器部署（SPRING_PROFILES_ACTIVE=prod 时生效）。
+# 显式覆盖框架 jar 内 application-prod.yml 写死的 /data/db/open-admin——
+# 数据库位置必须沿用本项目的 db_path，否则容器会忽略已有 jt-workbench 数据而新建空库。
+server:
+  servlet:
+    context-path: /
+
+spring:
+  datasource:
+    url: "jdbc:h2:file:${db_path};MODE=MySQL;DB_CLOSE_DELAY=-1"

@@ -1,0 +1,34 @@
+package com.jt.workbench.modules.job;
+
+import com.jt.workbench.modules.job.service.NewsReadPruneService;
+import io.github.jiangood.openadmin.modules.job.BaseJob;
+import io.github.jiangood.openadmin.modules.job.JobDescription;
+import io.github.jiangood.openadmin.modules.job.entity.JobLogAggregation;
+import jakarta.annotation.Resource;
+import org.quartz.JobDataMap;
+import org.slf4j.Logger;
+import org.springframework.stereotype.Component;
+
+/** 清理已读资讯（每 10 分钟）。 */
+@Component
+@JobDescription(
+        key = "jt.newsReadPrune",
+        label = "清理已读资讯",
+        defaultCron = "0 0/10 * * * ?",
+        defaultEnabled = true,
+        logAggregation = JobLogAggregation.PER_RUN
+)
+public class NewsReadPruneJob extends BaseJob {
+
+    @Resource
+    private NewsReadPruneService service;
+
+    @Override
+    public String execute(JobDataMap data, Logger logger) {
+        return service.run(logger, this::progress);
+    }
+    /** 兼容当前框架版本缺失 BaseJob#progress(String) 的情况。 */
+    protected void progress(String msg) {
+        // no-op
+    }
+}

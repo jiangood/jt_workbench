@@ -1,0 +1,26 @@
+# 本项目覆盖项（在 spring.config.import 中排在 application-lib.yml 之后，优先级更高）。
+# 单独成文件的原因：框架 application-lib.yml 通过 import 注入，直接写在 application.yml 里会被它覆盖。
+
+spring:
+  servlet:
+    multipart:
+      # 笔记附件等文件上传；框架默认 20MB 不够
+      max-file-size: 100MB
+      max-request-size: 200MB
+
+sys:
+  # 同一账号最多 3 个会话同时在线（3 个人并发登录共用账号），第 4 次登录被阻止并提示先退出
+  maximum-sessions: 3
+
+  # 对象存储：默认 LOCAL（容器内 /home/files），无需外部依赖。
+  # 书籍 EPUB / 上传附件若要落到 R2（与原 Node 单体共用 bucket jt-workbench），
+  # 取消下面的注释并通过环境变量注入密钥后重启（注意：S3 密钥不回显，修改需重启）：
+  # file:
+  #   store-type: S3
+  #   s3:
+  #     endpoint: ${R2_ENDPOINT:https://<account_id>.r2.cloudflarestorage.com}
+  #     region: auto
+  #     access-key: ${R2_ACCESS_KEY:}
+  #     secret-key: ${R2_SECRET_KEY:}
+  #     bucket-name: jt-workbench
+  #     path-style-access: false
