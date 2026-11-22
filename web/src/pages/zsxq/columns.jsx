@@ -77,6 +77,7 @@ export default class ZsxqColumnsPage extends React.Component {
 
     renderCard(column) {
         const groupName = this.groupName(column.groupId)
+        const showGroup = this.state.groups.length > 1
         return <article key={column.id || column.columnId} className='zsxq-column-card'
                         onClick={() => this.openColumn(column)} title={column.name || '专栏'}>
             <ColumnCover column={column}/>
@@ -84,7 +85,7 @@ export default class ZsxqColumnsPage extends React.Component {
                 <div className='zsxq-column-name'>{column.name || column.columnId || '未命名专栏'}</div>
                 <div className='zsxq-column-desc'>{column.description || <span className='zsxq-column-muted'>暂无简介</span>}</div>
                 <div className='zsxq-column-meta'>
-                    <span className='zsxq-column-group'><TeamOutlined/> {groupName || '未知星球'}</span>
+                    {showGroup ? <span className='zsxq-column-group'><TeamOutlined/> {groupName || '未知星球'}</span> : <span/>}
                     <span className='zsxq-column-count'>{Number(column.topicsCount) || 0} 篇</span>
                 </div>
             </div>
@@ -138,7 +139,7 @@ export default class ZsxqColumnsPage extends React.Component {
                             value={keyword}
                             onChange={e => this.setState({keyword: e.target.value})}
                         />
-                        <Select
+                        {groups.length > 1 ? <Select
                             className='zsxq-columns-group'
                             allowClear
                             showSearch
@@ -147,7 +148,7 @@ export default class ZsxqColumnsPage extends React.Component {
                             value={groupId}
                             options={groupOptions}
                             onChange={v => this.setState({groupId: v ?? null})}
-                        />
+                        /> : null}
                         <Tooltip title='刷新专栏'>
                             <Button icon={<ReloadOutlined/>} loading={loading} onClick={this.load} aria-label='刷新专栏'/>
                         </Tooltip>

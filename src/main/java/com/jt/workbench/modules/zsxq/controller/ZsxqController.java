@@ -63,7 +63,21 @@ public class ZsxqController {
     @GetMapping("column/{columnId}")
     public AjaxResult column(@PathVariable String columnId) {
         ZsxqColumn item = columnRepository.findByColumnId(columnId).orElse(null);
-        return item != null ? new AjaxResult().ok().data(item) : new AjaxResult();
+        if (item == null) return new AjaxResult();
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("id", item.getId());
+        data.put("columnId", item.getColumnId());
+        data.put("groupId", item.getGroupId());
+        data.put("name", item.getName());
+        data.put("description", item.getDescription());
+        data.put("coverUrl", item.getCoverUrl());
+        data.put("topicsCount", item.getTopicsCount());
+        data.put("visible", item.getVisible());
+        groupRepository.findById(item.getGroupId() == null ? "" : item.getGroupId()).ifPresent(g -> {
+            data.put("groupName", g.getName());
+            data.put("groupOwner", g.getOwner());
+        });
+        return new AjaxResult().ok().data(data);
     }
 
     @HasPermission("zsxq:read")

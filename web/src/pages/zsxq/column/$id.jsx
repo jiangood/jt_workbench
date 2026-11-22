@@ -3,18 +3,11 @@ import {SearchOutlined} from '@ant-design/icons'
 import {Input, Switch} from 'antd'
 import {HttpClient, history} from '@jiangood/open-admin'
 import SwipeReader from '../../../components/SwipeReader'
-import {imageSrc, topicImages} from '../media'
+import {fmtTime, imageSrc, topicImages} from '../media'
 
 export const pageMeta = {layout: 'blank', title: '专栏阅读'}
 
 const PAGE_SIZE = 20
-
-function fmtTime(v) {
-    if (!v) return ''
-    const s = String(v)
-    if (s.includes('T')) return s.replace('T', ' ').slice(0, 16).replace(/-/g, '/')
-    return s.slice(0, 16)
-}
 
 export default class ZsxqColumnReaderPage extends React.Component {
     state = {
@@ -64,18 +57,11 @@ export default class ZsxqColumnReaderPage extends React.Component {
         try {
             const rs = await HttpClient.get(`admin/zsxq/column/${encodeURIComponent(columnId)}`)
             const column = rs.data || null
-            let groupName = ''
-            let groupOwner = ''
-            if (column?.groupId) {
-                try {
-                    const gRs = await HttpClient.get('admin/zsxq/groups')
-                    const groups = Array.isArray(gRs.data) ? gRs.data : []
-                    const group = groups.find(g => String(g.id) === String(column.groupId))
-                    groupName = group?.name || ''
-                    groupOwner = group?.owner || ''
-                } catch (_) {}
-            }
-            this.setState({column, groupName, groupOwner})
+            this.setState({
+                column,
+                groupName: column?.groupName || '',
+                groupOwner: column?.groupOwner || '',
+            })
         } catch (_) {
             this.setState({column: null, groupName: '', groupOwner: ''})
         }
@@ -164,7 +150,7 @@ export default class ZsxqColumnReaderPage extends React.Component {
     render() {
         const {keyword, column, groupName, groupOwner, items, loading, initialLoading, hasMore, swipeIndex} = this.state
         const title = column?.name || '专栏阅读'
-        const subtitle = [groupName, column?.topicsCount != null ? `${column.topicsCount} 篇` : null].filter(Boolean).join(' · ') || '专栏'
+        const subtitle = column?.topicsCount != null ? `${column.topicsCount} 篇` : '专栏'
         const posText = items.length ? `${Math.min(swipeIndex + 1, items.length)}/${items.length}${hasMore ? '+' : ''}` : ''
         const progressPct = items.length ? Math.round(((Math.min(swipeIndex, items.length - 1) + 1) / Math.max(items.length, 1)) * 100) : 0
 
@@ -174,7 +160,7 @@ export default class ZsxqColumnReaderPage extends React.Component {
             badges={[{text: `专栏`, accent: true}]}
             posText={posText}
             progressPct={progressPct}
-            onBack={() => history.push('/zsxq')}
+            onBack={() => { if (window.history.length > 1) window.history.back(); else history.push('/zsxq/columns') }}
             items={items}
             index={swipeIndex}
             onIndexChange={(swipeIndex) => this.setState({swipeIndex}, () => {
@@ -195,7 +181,7 @@ export default class ZsxqColumnReaderPage extends React.Component {
                 </label>
             </div>}
             renderArticle={(item) => {
-                const metaParts = [groupName, fmtTime(item.sourceCreateTime || item.lastCommentTime)].filter(Boolean)
+                const metaParts = [fmtTime(item.sourceCreateTime || item.lastCommentTime)].filter(Boolean)
                 const images = topicImages(item)
                 const isOwner = !!item.author && !!groupOwner && item.author === groupOwner
                 const comments = this.state.commentsByTopicId[String(item.topicId)] || []

@@ -27,3 +27,11 @@ export function topicImages(topic) {
     if (list.length) return list
     return topic?.cover ? [topic.cover] : []
 }
+
+/** 统一时间展示：ISO/毫秒/日期字符串 -> 简短本地显示 */
+export function fmtTime(v) {
+    if (!v) return ''
+    const s = String(v)
+    if (s.includes('T')) return s.replace('T', ' ').slice(0, 16).replace(/-/g, '/')
+    return s.slice(0, 16)
+}

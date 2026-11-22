@@ -1,20 +1,13 @@
 import React from 'react'
-import {MoreOutlined, ReadOutlined, ReloadOutlined, SearchOutlined, TeamOutlined} from '@ant-design/icons'
-import {Input, Modal, Switch, Table, Typography} from 'antd'
+import {MoreOutlined, ReadOutlined, ReloadOutlined, SearchOutlined} from '@ant-design/icons'
+import {Input, Switch} from 'antd'
 import {HttpClient, history} from '@jiangood/open-admin'
 import SwipeReader from '../../components/SwipeReader'
-import {imageSrc, topicImages} from './media'
+import {fmtTime, imageSrc, topicImages} from './media'
 
 export const pageMeta = {layout: 'blank', title: '知识星球'}
 
 const PAGE_SIZE = 20
-
-function fmtTime(v) {
-    if (!v) return ''
-    const s = String(v)
-    if (s.includes('T')) return s.replace('T', ' ').slice(0, 16).replace(/-/g, '/')
-    return s.slice(0, 16)
-}
 
 export default class ZsxqReaderPage extends React.Component {
     state = {
@@ -31,8 +24,6 @@ export default class ZsxqReaderPage extends React.Component {
         groups: [],
         columns: [],
         commentsByTopicId: {},
-        groupModalOpen: false,
-        columnModalOpen: false,
     }
 
     loadSeq = 0
@@ -143,69 +134,14 @@ export default class ZsxqReaderPage extends React.Component {
     openColumn = (column) => {
         const cid = column?.columnId
         if (!cid) return
-        this.setState({columnModalOpen: false})
         history.push(`/zsxq/column/${encodeURIComponent(cid)}`)
-    }
-
-    renderGroupsModal() {
-        const {groups} = this.state
-        return <Modal title='星球信息' open={this.state.groupModalOpen} onCancel={() => this.setState({groupModalOpen: false})} footer={null} width={720}>
-            <Table
-                rowKey='id'
-                size='small'
-                pagination={false}
-                dataSource={groups}
-                locale={{emptyText: '暂无星球'}}
-                columns={[
-                    {
-                        title: '名称', dataIndex: 'name',
-                        render: (v, row) => <div>
-                            <div>{v}</div>
-                            {row.introduction ? <Typography.Text type='secondary' style={{fontSize: 12}}>{row.introduction}</Typography.Text> : null}
-                        </div>,
-                    },
-                    {title: '星主', dataIndex: 'owner', width: 100, render: (v) => v || '—'},
-                    {title: '成员', dataIndex: 'memberCount', width: 80, align: 'right', render: (v) => Number(v) || 0},
-                ]}
-            />
-        </Modal>
-    }
-
-    renderColumnsModal() {
-        const {columns, groups} = this.state
-        return <Modal title='专栏列表' open={this.state.columnModalOpen} onCancel={() => this.setState({columnModalOpen: false})} footer={null} width={760}>
-            <Table
-                rowKey='columnId'
-                size='small'
-                pagination={false}
-                dataSource={columns}
-                locale={{emptyText: '暂无专栏，等待专栏同步任务执行'}}
-                onRow={(row) => ({onClick: () => this.openColumn(row), style: {cursor: 'pointer'}})}
-                columns={[
-                    {
-                        title: '专栏', dataIndex: 'name',
-                        render: (v, row) => <div>
-                            <div style={{fontWeight: 500}}>{v || row.columnId}</div>
-                            {row.description ? <Typography.Text type='secondary' style={{fontSize: 12}} ellipsis>{row.description}</Typography.Text> : null}
-                        </div>,
-                    },
-                    {
-                        title: '星球', dataIndex: 'groupId', width: 160,
-                        render: (gid) => groups.find(g => String(g.id) === String(gid))?.name || gid || '—',
-                    },
-                    {title: '帖子', dataIndex: 'topicsCount', width: 80, align: 'right', render: (v) => Number(v) || 0},
-                    {title: '操作', width: 80, render: (_, row) => <a onClick={(e) => { e.stopPropagation(); this.openColumn(row) }}>阅读</a>},
-                ]}
-            />
-        </Modal>
     }
 
     render() {
         const {keyword, items, loading, initialLoading, hasMore, stats, groups, columns, swipeIndex} = this.state
         const current = items[swipeIndex] || null
-        const currentGroup = current ? groups.find(g => String(g.id) === String(current.groupId)) : null
         const currentColumn = current ? columns.find(c => String(c.columnId) === String(current.columnId)) : null
-        const subtitle = [currentGroup?.name, currentColumn?.name].filter(Boolean).join(' · ')
+        const subtitle = currentColumn?.name
             || (current?.sourceCreateTime ? fmtTime(current.sourceCreateTime) : '帖子')
         const posText = items.length ? `${Math.min(swipeIndex + 1, items.length)}/${items.length}${hasMore ? '+' : ''}` : ''
         const progressPct = items.length ? Math.round(((Math.min(swipeIndex, items.length - 1) + 1) / Math.max(items.length, 1)) * 100) : 0
@@ -213,12 +149,10 @@ export default class ZsxqReaderPage extends React.Component {
         const moreItems = [
             {key: 'refresh', icon: <ReloadOutlined />, label: '刷新'},
             {key: 'columns', icon: <ReadOutlined />, label: '专栏列表'},
-            {key: 'groups', icon: <TeamOutlined />, label: '星球信息'},
         ]
         const onMore = ({key}) => {
             if (key === 'refresh') { this.loadBase(); this.reloadList(false) }
-            else if (key === 'groups') this.setState({groupModalOpen: true})
-            else if (key === 'columns') this.setState({columnModalOpen: true})
+            else if (key === 'columns') history.push('/zsxq/columns')
         }
 
         return <>
@@ -263,7 +197,6 @@ export default class ZsxqReaderPage extends React.Component {
                     const shownComments = this.state.ownerCommentOnly ? ownerComments : comments
                     return <>
                         <div className='swipe-reader-article-meta'>
-                            {group?.name ? <span>{group.name}</span> : null}
                             {author ? <span>作者 {author}{isOwner ? ' · 星主' : ''}</span> : null}
                             {column?.name ? <a style={{color: 'inherit'}} onClick={(e) => { e.preventDefault(); this.openColumn(column) }}>{column.name}</a> : null}
                             {time ? <span>{time}</span> : null}
@@ -305,12 +238,10 @@ export default class ZsxqReaderPage extends React.Component {
                     const column = columns.find(c => String(c.columnId) === String(item.columnId))
                     return <button key={item.id} type='button' className={`swipe-reader-list-item${active ? ' active' : ''}`} onClick={onClick}>
                         <div className='swipe-reader-list-title'>{item.digest || '(无内容)'}</div>
-                        <div className='swipe-reader-list-meta'>{[[group?.name, column?.name].filter(Boolean).join(' · '), fmtTime(item.sourceCreateTime || item.lastCommentTime)].filter(Boolean).join(' · ')}</div>
+                        <div className='swipe-reader-list-meta'>{[column?.name, fmtTime(item.sourceCreateTime || item.lastCommentTime)].filter(Boolean).join(' · ')}</div>
                     </button>
                 }}
             />
-            {this.renderGroupsModal()}
-            {this.renderColumnsModal()}
         </>
     }
 }
