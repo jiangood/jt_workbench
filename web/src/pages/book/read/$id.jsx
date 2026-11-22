@@ -8,7 +8,6 @@ import {
     DeleteOutlined,
     ExpandOutlined,
     FontSizeOutlined,
-    FullscreenOutlined,
     MenuOutlined,
     MoreOutlined,
     PauseOutlined,
@@ -938,14 +937,6 @@ export default function BookReader({params}) {
         }
     }
 
-    const toggleFullscreen = () => {
-        try {
-            if (document.fullscreenElement) document.exitFullscreen()
-            else document.documentElement.requestFullscreen()
-        } catch {
-            /* 浏览器不支持全屏 */
-        }
-    }
 
     const cycleTheme = () => {
         const order = Object.keys(THEMES)
@@ -1304,14 +1295,12 @@ function pickTtsVoice() {
 
     const moreItems = [
         {key: 'tts', icon: <SoundOutlined/>, label: '语音朗读'},
-        {key: 'fullscreen', icon: <FullscreenOutlined/>, label: '全屏'},
         {key: 'immersive', icon: <CompressOutlined/>, label: '沉浸阅读'},
         ...(ready ? [{type: 'divider'}, {key: 'remove-page', icon: <DeleteOutlined/>, label: '删除当前页', danger: true}] : []),
     ]
 
     const onMoreClick = ({key}) => {
         if (key === 'tts') openTts()
-        else if (key === 'fullscreen') toggleFullscreen()
         else if (key === 'immersive') setImmersive(true)
         else if (key === 'remove-page') removeCurrentPage()
     }
@@ -1445,7 +1434,6 @@ function pickTtsVoice() {
                         onChange={v => setAutoSec(v)}/>
             </SettingRow>
             <SettingRow label='显示'>
-                <Button size='small' icon={<FullscreenOutlined/>} onClick={toggleFullscreen}>全屏</Button>
                 <Button size='small' icon={<SoundOutlined/>} onClick={openTts}>语音朗读</Button>
                 <Button size='small' icon={<CompressOutlined/>} onClick={() => {
                     setSettingsOpen(false)
