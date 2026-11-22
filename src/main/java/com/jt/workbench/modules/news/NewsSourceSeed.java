@@ -11,7 +11,7 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * 内置资讯订阅源与默认屏蔽词种子。
+ * 默认屏蔽词种子。
  * 仅补齐缺失项，不覆盖已有数据。
  */
 @Slf4j
@@ -24,48 +24,10 @@ public class NewsSourceSeed implements ApplicationRunner {
     @Override
     public void run(ApplicationArguments args) {
         try {
-            seedSources();
-        } catch (Exception e) {
-            log.warn("seed builtin news sources skipped: {}", e.getMessage());
-        }
-        try {
             seedBlockWords();
         } catch (Exception e) {
             log.warn("seed default news block words skipped: {}", e.getMessage());
         }
-    }
-
-    private void seedSources() {
-        List<Seed> seeds = List.of(
-                new Seed("wb-src-infoq-cn", "InfoQ 中文", "RSS", "https://www.infoq.cn/feed"),
-                new Seed("wb-src-36kr", "36Kr", "RSS", "https://www.36kr.com/feed"),
-                new Seed("wb-src-sspai", "少数派", "RSS", "https://sspai.com/feed"),
-                new Seed("wb-src-ruanyf", "阮一峰的网络日志", "RSS", "https://www.ruanyifeng.com/blog/atom.xml"),
-                new Seed("wb-src-cloudflare", "Cloudflare Blog", "RSS", "https://blog.cloudflare.com/rss/"),
-                new Seed("wb-src-github", "GitHub Blog", "RSS", "https://github.blog/feed/"),
-                new Seed("wb-src-solidot", "Solidot", "RSS", "https://www.solidot.org/index.rss"),
-                new Seed("wb-src-meituan", "美团技术团队", "RSS", "https://tech.meituan.com/feed/"),
-                new Seed("wb-src-wallstreetcn", "华尔街见闻", "RSS", "https://feed.wallstreetcn.com/"),
-                new Seed("wb-src-marketwatch", "MarketWatch", "RSS", "http://feeds.marketwatch.com/marketwatch/topstories/"),
-                new Seed("wb-src-zhihu-hot", "知乎热榜", "RSS", "https://rsshub.app/zhihu/hotlist"),
-                new Seed("wb-src-zhihu-daily", "知乎日报", "RSS", "https://rsshub.app/zhihu/daily")
-        );
-
-        int added = 0;
-        for (Seed s : seeds) {
-            try {
-                Integer exists = jdbc.queryForObject("SELECT COUNT(*) FROM news_source WHERE id = ?", Integer.class, s.id());
-                if (exists != null && exists > 0) continue;
-                int n = jdbc.update(
-                        "INSERT INTO news_source (id, name, type, url, enabled) " +
-                        "SELECT ?, ?, ?, ?, TRUE WHERE NOT EXISTS (SELECT 1 FROM news_source WHERE id = ?)",
-                        s.id(), s.name(), s.type(), s.url(), s.id());
-                if (n > 0) added++;
-            } catch (Exception e) {
-                log.warn("seed news source failed id={} name={} err={}", s.id(), s.name(), e.getMessage());
-            }
-        }
-        if (added > 0) log.info("seeded {} builtin news sources", added);
     }
 
     private void seedBlockWords() {
@@ -93,6 +55,4 @@ public class NewsSourceSeed implements ApplicationRunner {
         }
         if (added > 0) log.info("seeded {} default news block words", added);
     }
-
-    private record Seed(String id, String name, String type, String url) {}
 }
