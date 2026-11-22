@@ -3,17 +3,12 @@ import {Button, Drawer, Dropdown, Empty, Modal, Segmented, Select, Spin, Tooltip
 import {
     ArrowLeftOutlined,
     BgColorsOutlined,
-    CaretRightOutlined,
     CompressOutlined,
     DeleteOutlined,
     ExpandOutlined,
     FontSizeOutlined,
     MenuOutlined,
     MoreOutlined,
-    PauseOutlined,
-    SoundOutlined,
-    StepBackwardOutlined,
-    StepForwardOutlined,
 } from '@ant-design/icons'
 import ePub from 'epubjs'
 import {HttpClient, UrlUtils, history} from '@jiangood/open-admin'
@@ -25,8 +20,6 @@ export const pageMeta = {layout: 'blank', title: '阅读'}
 
 const PREFS_KEY = 'book:reader:prefs'
 const POS_PREFIX = 'book:reader:pos:'
-const TTS_SPEED_KEY = 'book:reader:ttsSpeed'
-const TTS_MAX_CHARS = 500
 
 const THEMES = {
     paper: {
@@ -253,17 +246,6 @@ export default function BookReader({params}) {
     const [immersive, setImmersive] = React.useState(false)
     const [autoSec, setAutoSec] = React.useState(0)
 
-    const [ttsOpen, setTtsOpen] = React.useState(false)
-    const [ttsPreparing, setTtsPreparing] = React.useState(false)
-    const [ttsPlaying, setTtsPlaying] = React.useState(false)
-    const [ttsSegments, setTtsSegments] = React.useState([])
-    const [ttsIndex, setTtsIndex] = React.useState(0)
-    const [ttsStatus, setTtsStatus] = React.useState('未开始')
-    const [ttsSpeed, setTtsSpeed] = React.useState(() => {
-        const v = Number(readStorage(TTS_SPEED_KEY) || readStorage('book:reader:ttsRate'))
-        return Number.isFinite(v) && v > 0 ? v : 1
-    })
-
     const viewRef = React.useRef(null)
     const renditionRef = React.useRef(null)
     const epubRef = React.useRef(null)
@@ -274,18 +256,9 @@ export default function BookReader({params}) {
     const prefsRef = React.useRef(prefs)
     const uiOpenRef = React.useRef(false)
     const reportersRef = React.useRef(null)
-    const ttsSpeedRef = React.useRef(ttsSpeed)
-    const ttsSegmentsRef = React.useRef([])
-    const ttsIndexRef = React.useRef(0)
-    const ttsChapterRef = React.useRef(null)
-    const ttsSessionRef = React.useRef(0) // 播放会话序号：cancel 后递增，旧会话回调作废
-    const ttsKeepAliveRef = React.useRef(null)
 
     prefsRef.current = prefs
-    ttsSpeedRef.current = ttsSpeed
-    ttsSegmentsRef.current = ttsSegments
-    ttsIndexRef.current = ttsIndex
-    uiOpenRef.current = tocOpen || settingsOpen || ttsOpen
+    uiOpenRef.current = tocOpen || settingsOpen
 
     const theme = THEMES[prefs.theme] || THEMES.sepia
 
@@ -945,294 +918,6 @@ export default function BookReader({params}) {
     }
 
 
-function splitTtsText(text, max) {
-    if (!text) return []
-    const cleaned = String(text).replace(/\r\n/g, '\n').replace(/\u00a0/g, ' ').trim()
-    if (!cleaned) return []
-    const paras = cleaned.split(/\n+/)
-    const out = []
-    let buf = ''
-    const pushBuf = () => {
-        const s = buf.trim()
-        if (s) out.push(s)
-        buf = ''
-    }
-    for (const raw of paras) {
-        const p = raw.replace(/\s+/g, ' ').trim()
-        if (!p) continue
-        const candidate = buf ? (buf + '\n' + p) : p
-        if (candidate.length <= max) {
-            buf = candidate
-            continue
-        }
-        pushBuf()
-        if (p.length <= max) {
-            buf = p
-            continue
-        }
-        let rest = p
-        while (rest.length > max) {
-            let cut = -1
-            for (const mark of ['。', '！', '？', '；', '.', '!', '?', ';', '，', ',', ' ']) {
-                const idx = rest.lastIndexOf(mark, max)
-                if (idx > cut) cut = idx
-            }
-            if (cut < max * 0.5) cut = max
-            else cut += 1
-            const part = rest.slice(0, cut).trim()
-            if (part) out.push(part)
-            rest = rest.slice(cut).trim()
-        }
-        if (rest) buf = rest
-    }
-    pushBuf()
-    return out
-}
-
-function pickTtsVoice() {
-    const synth = window.speechSynthesis
-    if (!synth) return null
-    const voices = synth.getVoices() || []
-    if (!voices.length) return null
-    const zh = voices.filter(v => /^zh([-_]|$)/i.test(v.lang || ''))
-    if (zh.length) return zh.find(v => v.default) || zh.find(v => v.localService) || zh[0]
-    return voices.find(v => v.default) || voices[0]
-}
-
-    /* ---------- 听书（浏览器内置 TTS：前端切段 + speechSynthesis） ---------- */
-
-    const stopKeepAlive = () => {
-        if (ttsKeepAliveRef.current) {
-            window.clearInterval(ttsKeepAliveRef.current)
-            ttsKeepAliveRef.current = null
-        }
-    }
-
-    const startKeepAlive = () => {
-        stopKeepAlive()
-        // Chrome 存在长句朗读中途停下的缺陷，周期 pause/resume 保活
-        ttsKeepAliveRef.current = window.setInterval(() => {
-            const synth = window.speechSynthesis
-            if (!synth || !synth.speaking || synth.paused) return
-            try {
-                synth.pause()
-                synth.resume()
-            } catch {
-                /* ignore */
-            }
-        }, 10000)
-    }
-
-    const stopTtsAudio = () => {
-        const synth = window.speechSynthesis
-        if (synth) {
-            try {
-                synth.cancel()
-            } catch {
-                /* ignore */
-            }
-        }
-        stopKeepAlive()
-        ttsSessionRef.current++
-        setTtsPlaying(false)
-    }
-
-    const getCurrentChapterInfo = () => {
-        const book = epubRef.current
-        const rendition = renditionRef.current
-        if (!book || !rendition) return null
-        let href = currentSectionRef.current?.href || ''
-        let index = currentSectionRef.current?.index
-        try {
-            const loc = rendition.currentLocation && rendition.currentLocation()
-            if (loc && loc.start) {
-                if (loc.start.href) href = loc.start.href
-                if (typeof loc.start.index === 'number') index = loc.start.index
-            }
-        } catch { /* ignore */ }
-        let section = null
-        try {
-            if (href) section = book.spine.get(href)
-        } catch { /* ignore */ }
-        if (!section && typeof index === 'number' && index >= 0) {
-            try { section = book.spine.get(index) } catch { /* ignore */ }
-        }
-        if (!section) return null
-        const secIndex = typeof section.index === 'number' ? section.index : index
-        const secHref = section.href || href || String(secIndex ?? '')
-        return {section, index: secIndex ?? 0, href: secHref}
-    }
-
-    const extractSectionText = async section => {
-        if (!section) return ''
-        try {
-            const loaded = await section.load(epubRef.current.load.bind(epubRef.current))
-            let text = ''
-            if (loaded && loaded.body) {
-                text = loaded.body.innerText || loaded.body.textContent || ''
-            } else if (loaded && loaded.documentElement) {
-                text = loaded.documentElement.textContent || ''
-            } else if (typeof loaded === 'string') {
-                const doc = new DOMParser().parseFromString(loaded, 'text/html')
-                text = doc.body ? (doc.body.innerText || doc.body.textContent || '') : ''
-            } else if (loaded && loaded.textContent) {
-                text = loaded.textContent
-            }
-            try { section.unload && section.unload() } catch { /* ignore */ }
-            return String(text || '').replace(/\u00a0/g, ' ').trim()
-        } catch {
-            return ''
-        }
-    }
-
-    const ensureTtsSegments = async (force = false) => {
-        const info = getCurrentChapterInfo()
-        if (!info) {
-            setTtsStatus('未定位到当前章节，请翻页后重试')
-            return null
-        }
-        const chapterKey = `${info.index}:${info.href}`
-        if (!force && ttsChapterRef.current === chapterKey && ttsSegmentsRef.current.length > 0) {
-            return {chapterKey, segments: ttsSegmentsRef.current}
-        }
-        setTtsPreparing(true)
-        setTtsStatus('正在提取当前章节文本…')
-        const text = await extractSectionText(info.section)
-        const segs = splitTtsText(text, TTS_MAX_CHARS)
-        if (!segs.length) {
-            setTtsPreparing(false)
-            setTtsSegments([])
-            ttsSegmentsRef.current = []
-            ttsChapterRef.current = chapterKey
-            setTtsIndex(0)
-            ttsIndexRef.current = 0
-            setTtsStatus('当前章节没有可朗读的文本')
-            return null
-        }
-        stopTtsAudio()
-        setTtsSegments(segs)
-        ttsSegmentsRef.current = segs
-        ttsChapterRef.current = chapterKey
-        setTtsIndex(0)
-        ttsIndexRef.current = 0
-        setTtsPreparing(false)
-        setTtsStatus(`就绪 ${segs.length} 段 · 第 1 段`)
-        return {chapterKey, segments: segs}
-    }
-
-    const playTtsAt = async index => {
-        const ensured = await ensureTtsSegments()
-        const segments = ensured?.segments || ttsSegmentsRef.current
-        if (!segments || !segments.length) return
-        if (index < 0) {
-            setTtsStatus('已经是第一段')
-            return
-        }
-        if (index >= segments.length) {
-            stopTtsAudio()
-            setTtsStatus('本章已播完')
-            return
-        }
-        const synth = window.speechSynthesis
-        if (!synth) {
-            setTtsStatus('当前浏览器不支持语音合成')
-            return
-        }
-        stopTtsAudio()
-        const session = ++ttsSessionRef.current
-        setTtsIndex(index)
-        ttsIndexRef.current = index
-        setTtsPlaying(true)
-        setTtsStatus(`第 ${index + 1} / ${segments.length} 段`)
-        const speak = segIndex => {
-            if (ttsSessionRef.current !== session) return
-            const u = new SpeechSynthesisUtterance(segments[segIndex])
-            u.lang = 'zh-CN'
-            u.rate = Math.min(2, Math.max(0.5, ttsSpeedRef.current || 1))
-            const voice = pickTtsVoice()
-            if (voice) u.voice = voice
-            u.onend = () => {
-                if (ttsSessionRef.current !== session) return
-                if (segIndex + 1 >= segments.length) {
-                    stopKeepAlive()
-                    setTtsPlaying(false)
-                    setTtsStatus('本章已播完')
-                    return
-                }
-                setTtsIndex(segIndex + 1)
-                ttsIndexRef.current = segIndex + 1
-                setTtsStatus(`第 ${segIndex + 2} / ${segments.length} 段`)
-                speak(segIndex + 1)
-            }
-            u.onerror = e => {
-                if (ttsSessionRef.current !== session) return
-                if (e?.error === 'canceled' || e?.error === 'interrupted') return
-                stopKeepAlive()
-                setTtsPlaying(false)
-                setTtsStatus(e?.error === 'not-allowed' ? '浏览器阻止了语音播放，请检查权限' : '语音播放出错，请重试')
-            }
-            try {
-                synth.speak(u)
-            } catch {
-                stopKeepAlive()
-                setTtsPlaying(false)
-                setTtsStatus('语音播放失败')
-            }
-        }
-        startKeepAlive()
-        speak(index)
-    }
-
-    const toggleTtsPlay = () => {
-        const synth = window.speechSynthesis
-        if (ttsPlaying) {
-            try {
-                synth?.pause()
-            } catch {
-                /* ignore */
-            }
-            stopKeepAlive()
-            setTtsPlaying(false)
-            setTtsStatus(`已暂停 · 第 ${(ttsIndexRef.current || 0) + 1} 段`)
-            return
-        }
-        // 暂停态直接恢复（保留段内进度），否则从当前段头重新朗读
-        if (synth?.paused) {
-            try {
-                synth.resume()
-            } catch {
-                /* ignore */
-            }
-            setTtsPlaying(true)
-            setTtsStatus(`第 ${(ttsIndexRef.current || 0) + 1} 段`)
-            startKeepAlive()
-            return
-        }
-        playTtsAt(ttsIndexRef.current || 0)
-    }
-
-    const openTts = () => {
-        setTtsOpen(true)
-        if (!ttsSegmentsRef.current.length) ensureTtsSegments().catch(() => {})
-    }
-
-    const changeTtsSpeed = v => {
-        setTtsSpeed(v)
-        writeStorage(TTS_SPEED_KEY, String(v))
-        // 语速对下一个 utterance 生效，切换后从当前段重新朗读
-        const current = ttsIndexRef.current || 0
-        const wasPlaying = ttsPlaying
-        stopTtsAudio()
-        setTtsIndex(current)
-        ttsIndexRef.current = current
-        if (ttsSegmentsRef.current.length) {
-            setTtsStatus(`语速已切换为 ${v}×`)
-            if (wasPlaying || ttsOpen) {
-                window.setTimeout(() => { playTtsAt(current).catch(() => {}) }, 0)
-            }
-        }
-    }
-
     const removeCurrentPage = () => {
         if (!ready) {
             message.warning('书籍尚未加载完成')
@@ -1264,18 +949,6 @@ function pickTtsVoice() {
     }
 
 
-    React.useEffect(() => () => {
-        stopKeepAlive()
-        const synth = window.speechSynthesis
-        if (synth) {
-            try {
-                synth.cancel()
-            } catch {
-                /* ignore */
-            }
-        }
-    }, [])
-
     /* ---------- 渲染 ---------- */
 
     const rootStyle = {
@@ -1294,14 +967,12 @@ function pickTtsVoice() {
     }
 
     const moreItems = [
-        {key: 'tts', icon: <SoundOutlined/>, label: '语音朗读'},
         {key: 'immersive', icon: <CompressOutlined/>, label: '沉浸阅读'},
         ...(ready ? [{type: 'divider'}, {key: 'remove-page', icon: <DeleteOutlined/>, label: '删除当前页', danger: true}] : []),
     ]
 
     const onMoreClick = ({key}) => {
-        if (key === 'tts') openTts()
-        else if (key === 'immersive') setImmersive(true)
+        if (key === 'immersive') setImmersive(true)
         else if (key === 'remove-page') removeCurrentPage()
     }
 
@@ -1434,7 +1105,6 @@ function pickTtsVoice() {
                         onChange={v => setAutoSec(v)}/>
             </SettingRow>
             <SettingRow label='显示'>
-                <Button size='small' icon={<SoundOutlined/>} onClick={openTts}>语音朗读</Button>
                 <Button size='small' icon={<CompressOutlined/>} onClick={() => {
                     setSettingsOpen(false)
                     setImmersive(true)
@@ -1443,32 +1113,6 @@ function pickTtsVoice() {
             <p className='reader-tip' style={{marginTop: 16}}>
                 分页模式：方向键 / 滚轮 / 左右滑动翻页；点屏幕中间进入沉浸阅读。<br/>
                 阅读进度与位置会自动保存，换设备可继续读。
-            </p>
-        </Drawer>
-
-        <Drawer title='语音朗读' width={Math.min(window.innerWidth * 0.92, 380)}
-                open={ttsOpen} onClose={() => {
-            stopTtsAudio()
-            setTtsOpen(false)
-        }} styles={drawerStyles}>
-            <div className='reader-tts-status'>{ttsPreparing ? '正在准备…' : ttsStatus}</div>
-            <div className='reader-tts-controls'>
-                <Button shape='circle' icon={<StepBackwardOutlined/>} disabled={ttsPreparing || ttsSegments.length === 0}
-                        onClick={() => playTtsAt(ttsIndex - 1)}/>
-                <Button type='primary' shape='circle' disabled={ttsPreparing}
-                        icon={ttsPlaying ? <PauseOutlined/> : <CaretRightOutlined/>}
-                        onClick={toggleTtsPlay}/>
-                <Button shape='circle' icon={<StepForwardOutlined/>} disabled={ttsPreparing || ttsSegments.length === 0}
-                        onClick={() => playTtsAt(ttsIndex + 1)}/>
-            </div>
-            <div className='reader-tts-row'>
-                <span>语速</span>
-                <Select size='small' style={{width: 100}} value={ttsSpeed}
-                        options={[0.8, 1, 1.2, 1.5, 2].map(v => ({value: v, label: `${v}×`}))}
-                        onChange={changeTtsSpeed}/>
-            </div>
-            <p className='reader-tip' style={{marginTop: 18}}>
-                语音由浏览器内置 TTS 朗读（无需服务端合成），将朗读当前章节，点击播放即可开始。
             </p>
         </Drawer>
     </div>

@@ -27,7 +27,7 @@
 | 2 | stock 股票 | stock_watch / stock_daily + 行情搜索/实时/日K 代理（东财/新浪/腾讯） | `web/src/pages/stock/` | 外部行情接口 Referer/UA 限制 |
 | 3 | note 笔记 | note_folder / note + 检索 + 附件 | `web/src/pages/note/` | FTS5 → H2 全文检索/LIKE 方案 |
 | 4 | music 音乐 | music + 上传/元数据/Range 播放 | `web/src/pages/music/`（music-metadata 浏览器解析） | 大文件分片 → 框架 SysFile 分片上传 |
-| 5 | book 书架 | book + 豆瓣搜索/建档/封面代理 + EPUB 上传/进度/阅读 | `web/src/pages/book/`（epub.js） | 豆瓣反爬（Referer 代理）；阅读器使用浏览器内置 TTS（speechSynthesis）实时朗读 |
+| 5 | book 书架 | book + 豆瓣搜索/建档/封面代理 + EPUB 上传/进度/阅读 | `web/src/pages/book/`（epub.js） | 豆瓣反爬（Referer 代理） |
 | 6 | reminder 提醒 | reminder + 递推计算（公历/农历）+ 发送 | `web/src/pages/reminder/` | 农历库（lunar-java）；邮件复用框架 MailService |
 | 7 | zsxq 星球 | zsxq_group/column/topic/comment/file/sync_state + 检索 + 代理 | `web/src/pages/zsxq/` | 星球同步单一 Quartz 作业（每 3 小时，执行前校验 token；话题/专栏/图片回填）＋风控冷却，详见 [`zsxq-sync.md`](zsxq-sync.md)；token 存框架系统参数 |
 | 8 | admin/jobs | dashboard 汇总、磁盘分析、参数密钥、任务记录 | dashboard/admin 页面 | 部分能力由框架内置页提供（系统参数/操作日志/定时任务页） |
