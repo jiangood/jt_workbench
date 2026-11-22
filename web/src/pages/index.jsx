@@ -5,7 +5,6 @@ import {
     Card,
     Col,
     Empty,
-    Modal,
     Row,
     Space,
     Spin,
@@ -19,15 +18,11 @@ import {
     BellOutlined,
     BookOutlined,
     FileTextOutlined,
-    FundOutlined,
-    ReadOutlined,
     ReloadOutlined,
     StockOutlined,
     TeamOutlined,
 } from '@ant-design/icons';
-import DOMPurify from 'dompurify';
 import {HttpClient, Page} from '@jiangood/open-admin';
-import './news/news.css';
 
 const {Text, Title, Paragraph} = Typography;
 
@@ -69,24 +64,6 @@ function fmtDateTime(v) {
     return s.slice(0, 16);
 }
 
-function fmtFullTime(v) {
-    if (!v) return '';
-    const s = String(v);
-    if (/^\d{4}-\d{2}-\d{2}T/.test(s)) return s.replace('T', ' ').slice(0, 16);
-    if (/^\d+$/.test(s)) {
-        const d = new Date(Number(s));
-        if (!Number.isNaN(d.getTime())) {
-            return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-        }
-    }
-    return s;
-}
-
-function quoteTimeText(value) {
-    const m = String(value ?? '').match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})/);
-    return m ? `${m[2]}-${m[3]} ${m[4]}:${m[5]}` : String(value ?? '');
-}
-
 function offsetText(offsets) {
     const list = Array.isArray(offsets) ? offsets : [];
     const leads = list.filter((o) => o > 0).sort((a, b) => b - a);
@@ -107,13 +84,6 @@ function remindTone(daysLeft) {
 function lunarLabel(r) {
     if (!r?.lunar || !r.lunarMonth || !r.lunarDay) return null;
     return `农历${r.lunarLeap ? '闰' : ''}${r.lunarMonth}月${r.lunarDay}日`;
-}
-
-function sanitize(html) {
-    return DOMPurify.sanitize(html || '', {
-        FORBID_TAGS: ['script', 'style', 'iframe', 'object'],
-        FORBID_ATTR: ['onerror', 'onload', 'onclick'],
-    });
 }
 
 function VixSparkline({history = []}) {
@@ -180,14 +150,9 @@ export default class HomePage extends React.Component {
     state = {
         loading: true,
         summary: null,
-        quotes: [],
-        quoteFailed: false,
         vix: null,
         vixFailed: false,
         updatedAt: null,
-        newsOpen: false,
-        newsItem: null,
-        newsLoading: false,
     };
 
     componentDidMount() {
@@ -196,9 +161,8 @@ export default class HomePage extends React.Component {
 
     load = async () => {
         this.setState({loading: true});
-        const [sumRs, quoteRs, vixRs] = await Promise.allSettled([
+        const [sumRs, vixRs] = await Promise.allSettled([
             HttpClient.get('admin/dashboard/summary'),
-            HttpClient.get('admin/stock/quote'),
             HttpClient.get('admin/stock/vix'),
         ]);
 
@@ -208,14 +172,6 @@ export default class HomePage extends React.Component {
         } else {
             next.summary = null;
             message.error('首页数据加载失败');
-        }
-
-        if (quoteRs.status === 'fulfilled') {
-            next.quotes = quoteRs.value?.data?.quotes || [];
-            next.quoteFailed = false;
-        } else {
-            next.quotes = [];
-            next.quoteFailed = true;
         }
 
         if (vixRs.status === 'fulfilled') {
@@ -228,76 +184,6 @@ export default class HomePage extends React.Component {
 
         this.setState(next);
     };
-
-    openNews = async (id) => {
-        if (!id) return;
-        this.setState({newsOpen: true, newsLoading: true, newsItem: null});
-        try {
-            const rs = await HttpClient.get(`admin/news/info/${id}`);
-            const item = rs?.data || null;
-            this.setState({newsItem: item, newsLoading: false});
-            // 打开详情即标记已读
-            try {
-                await HttpClient.post(`admin/news/${id}/read`, null, null, {toastError: false});
-                this.setState((prev) => {
-                    const summary = prev.summary;
-                    if (!summary?.news?.latest) return null;
-                    const latest = summary.news.latest.map((n) =>
-                        String(n.id) === String(id) ? {...n, status: 'read'} : n
-                    );
-                    const unreadCount = Math.max(0, (Number(summary.news.unread) || 0) - 1);
-                    return {summary: {...summary, news: {...summary.news, latest, unread: unreadCount}}};
-                });
-            } catch (_) {
-                // 忽略标记失败，不阻断阅读
-            }
-        } catch (_) {
-            this.setState({newsLoading: false});
-            message.error('加载资讯详情失败');
-        }
-    };
-
-    renderNewsCard() {
-        const news = this.state.summary?.news || {};
-        const items = news.latest || [];
-        return (
-            <Card bordered={false} style={{height: '100%'}} bodyStyle={{padding: 18}}>
-                <CardHead icon={<ReadOutlined style={{color: '#1677ff'}}/>} title="资讯" href="#/news"/>
-                {items.length ? (
-                    <div>
-                        {items.map((n) => (
-                            <div
-                                key={n.id}
-                                onClick={() => this.openNews(n.id)}
-                                style={{padding: '10px 0', borderBottom: '1px solid #f5f5f5', cursor: 'pointer'}}
-                            >
-                                <div style={{display: 'flex', alignItems: 'flex-start', gap: 8}}>
-                                    <span style={{
-                                        width: 6, height: 6, borderRadius: 3, marginTop: 8, flex: 'none',
-                                        background: n.status === 'unread' ? '#1677ff' : '#d9d9d9',
-                                    }}/>
-                                    <div style={{minWidth: 0, flex: 1}}>
-                                        <div style={{fontSize: 14, color: '#222', lineHeight: 1.5, fontWeight: n.status === 'unread' ? 600 : 400}}>
-                                            {n.title || '(无标题)'}
-                                        </div>
-                                        <div style={{fontSize: 12, color: '#999', marginTop: 2}}>
-                                            {n.sourceName || ''}
-                                            {n.sourceName && (n.author || n.pubTime) ? ' · ' : ''}
-                                            {n.author || ''}
-                                            {n.author && n.pubTime ? ' · ' : ''}
-                                            {fmtDateTime(n.pubTime)}
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                ) : (
-                    <EmptyHint text="暂无未读资讯，等待定时抓取" href="#/news" action="管理订阅源"/>
-                )}
-            </Card>
-        );
-    }
 
     renderVixCard() {
         const {vix, vixFailed} = this.state;
