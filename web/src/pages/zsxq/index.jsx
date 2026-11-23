@@ -1,5 +1,5 @@
 import React from 'react'
-import {MoreOutlined, ReadOutlined, ReloadOutlined, SearchOutlined} from '@ant-design/icons'
+import {MoreOutlined, ReloadOutlined, SearchOutlined} from '@ant-design/icons'
 import {Input, Select, Switch} from 'antd'
 import {HttpClient, history} from '@jiangood/open-admin'
 import SwipeReader from '../../components/SwipeReader'
@@ -156,17 +156,15 @@ export default class ZsxqReaderPage extends React.Component {
 
         const moreItems = [
             {key: 'refresh', icon: <ReloadOutlined />, label: '刷新'},
-            {key: 'columns', icon: <ReadOutlined />, label: '专栏列表'},
         ]
         const onMore = ({key}) => {
             if (key === 'refresh') { this.loadBase(); this.reloadList(false) }
-            else if (key === 'columns') history.push('/zsxq/columns')
         }
 
         return <>
             <SwipeReader
                 title='知识星球'
-                badges={[{text: `帖子 ${stats.topics ?? 0}`, accent: true}, {text: `专栏 ${stats.columns ?? 0}`}]}
+                badges={[{text: `帖子 ${stats.topics ?? 0}`, accent: true}]}
                 posText={posText}
                 progressPct={progressPct}
                 onBack={() => history.push('/')}
