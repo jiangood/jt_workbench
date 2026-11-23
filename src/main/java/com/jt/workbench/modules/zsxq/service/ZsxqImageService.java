@@ -116,6 +116,37 @@ public class ZsxqImageService {
         }
     }
 
+    /** 解析正文图片 key 列表（{@code images} 为 JSON 数组；空值/解析失败返回空列表） */
+    public List<String> parseKeys(String imagesJson) {
+        if (imagesJson == null || imagesJson.isBlank()) return List.of();
+        try {
+            String[] keys = objectMapper.readValue(imagesJson, String[].class);
+            if (keys == null) return List.of();
+            List<String> out = new ArrayList<>();
+            for (String key : keys) {
+                if (key == null) continue;
+                String k = key.trim();
+                if (!k.isEmpty()) out.add(k);
+            }
+            return out;
+        } catch (Exception e) {
+            log.debug("解析知识星球图片 key 失败 error={}", e.getMessage());
+            return List.of();
+        }
+    }
+
+    /** 删除图片对象；单个失败只记日志，不阻塞后续删除 */
+    public void deleteKeys(List<String> keys) {
+        if (keys == null) return;
+        for (String key : keys) {
+            try {
+                fileOperator.delete(key);
+            } catch (Exception e) {
+                log.warn("知识星球图片删除失败 key={} error={}", key, e.getMessage());
+            }
+        }
+    }
+
     /** 根据图片字节判断 MIME，供响应头使用 */
     public String contentType(byte[] bytes, String key) {
         String byMagic = contentTypeByMagic(bytes);

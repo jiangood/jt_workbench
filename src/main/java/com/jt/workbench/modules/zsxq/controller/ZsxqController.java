@@ -1,6 +1,7 @@
 package com.jt.workbench.modules.zsxq.controller;
 
 import com.jt.workbench.modules.zsxq.entity.ZsxqColumn;
+import com.jt.workbench.modules.zsxq.entity.ZsxqGroup;
 import com.jt.workbench.modules.zsxq.entity.ZsxqTopic;
 import com.jt.workbench.modules.zsxq.repo.ZsxqColumnRepository;
 import com.jt.workbench.modules.zsxq.repo.ZsxqGroupRepository;
@@ -8,6 +9,7 @@ import com.jt.workbench.modules.zsxq.repo.ZsxqTopicRepository;
 import com.jt.workbench.modules.zsxq.service.ZsxqImageService;
 import io.github.jiangood.openadmin.framework.perm.HasPermission;
 import io.github.jiangood.openadmin.util.dto.AjaxResult;
+import io.github.jiangood.openadmin.util.dto.IdReq;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -29,7 +31,7 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 知识星球：只读查询（数据由定时任务同步，无手工编辑）。
+ * 知识星球：只读查询（数据由定时任务同步）+ 管理功能（删除/启用星球）。
  */
 @RestController
 @RequestMapping("admin/zsxq")
@@ -179,6 +181,62 @@ public class ZsxqController {
         map.put("groups", groupRepository.count());
         map.put("columns", columnRepository.countByVisibleTrue());
         return new AjaxResult().ok().data(map);
+    }
+
+    // ---------- 管理：删除 / 启用星球 ----------
+
+    /**
+     * 管理：删除星球——级联删除其话题、评论、专栏与正文图片对象；星球不存在时返回成功。
+     */
+    @HasPermission("zsxq:manage")
+    @PostMapping("group/delete")
+    public AjaxResult groupDelete(@RequestBody IdReq req) {
+        String id = req == null ? null : req.getId();
+        if (id == null || id.isBlank() || !groupRepository.existsById(id)) return new AjaxResult();
+
+        List<Map<String, Object>> topicRows = jdbc.queryForList(
+                "SELECT id, topic_id, images, cover FROM zsxq_topic WHERE group_id = ?", id);
+        List<String> topicIds = new ArrayList<>(topicRows.size());
+        List<String> imageKeys = new ArrayList<>();
+        for (Map<String, Object> row : topicRows) {
+            String tid = cell(row, "topic_id");
+            if (!tid.isEmpty()) topicIds.add(tid);
+            imageKeys.addAll(imageService.parseKeys(cell(row, "images")));
+            String cover = blankToNull(cell(row, "cover"));
+            if (cover != null) imageKeys.add(cover);
+        }
+        // 评论（先删：与话题同一组）
+        StringBuilder sql = new StringBuilder("DELETE FROM zsxq_comment WHERE group_id = ?");
+        List<Object> args = new ArrayList<>();
+        args.add(id);
+        if (!topicIds.isEmpty()) {
+            sql.append(" OR topic_id IN ").append(inList(topicIds.size()));
+            args.addAll(topicIds);
+        }
+        jdbc.update(sql.toString(), args.toArray());
+        jdbc.update("DELETE FROM zsxq_column WHERE group_id = ?", id);
+        jdbc.update("DELETE FROM zsxq_topic WHERE group_id = ?", id);
+        groupRepository.deleteById(id);
+        // 正文图片对象与话题一起失效；删除失败只记日志，不阻塞
+        imageService.deleteKeys(imageKeys);
+        return new AjaxResult().ok();
+    }
+
+    /** 管理：启用/禁用星球（只改设置；星球不存在时返回成功）。 */
+    @HasPermission("zsxq:manage")
+    @PostMapping("group/update")
+    public AjaxResult groupUpdate(@RequestBody ZsxqGroup input) {
+        if (input == null || input.getId() == null || input.getEnabled() == null) return new AjaxResult();
+        ZsxqGroup group = groupRepository.findById(input.getId()).orElse(null);
+        if (group == null) return new AjaxResult();
+        group.setEnabled(input.getEnabled());
+        groupRepository.save(group);
+        return new AjaxResult().ok();
+    }
+
+    /** IN 占位符串：(?,?,...) */
+    private static String inList(int n) {
+        return "(?" + ",?".repeat(n - 1) + ")";
     }
 
     /**

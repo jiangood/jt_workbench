@@ -51,6 +51,13 @@ menus:
     path: /zsxq
     perms:
       - {name: 读取, code: zsxq:read}
+  jt-zsxq-manage:
+    name: 知识星球管理
+    icon: SettingOutlined
+    path: /zsxq/manage
+    perms:
+      - {name: 读取, code: zsxq:read}
+      - {name: 管理, code: zsxq:manage}
   jt-zsxq-column:
     name: 知识星球专栏
     icon: ReadOutlined
