@@ -43,7 +43,7 @@ jobs:
           password: ${{ secrets.ALIYUN_PASSWORD }}
 
       - name: Build (and push on main)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile
