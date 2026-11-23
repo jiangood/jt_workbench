@@ -34,7 +34,7 @@
 | `sys.codegen.frontend-dir` | 代码生成前端页面根目录 | web/src/pages |
 | `sys.codegen.frontend-import` | 生成页面引入框架组件的模块名；留空自动识别（框架仓库用相对路径，业务项目用 `@jiangood/open-admin`） | 空 |
 
-> 框架的 `.opencode/skills/` 与 `docs/open-admin/` 由 `oa-upgrade-docs` skill 从框架 GitHub Release 下载 `framework-files.zip` 同步到业务项目根目录（内容比对，无变更不写入）。无需配置。
+> 框架的 `.opencode/skills/` 与 `docs/open-admin/` 由 `oa-upgrade-docs` skill 按 `docs/framework-sync.json` 清单，从对应 tag 源码归档同步到业务项目根目录（无需配置）。同步范围与规则以清单为准。
 
 > **会话落盘（重启免登录）**：框架默认开启 `server.servlet.session.persistent`，正常停机时把 `HttpSession` 写入 `server.servlet.session.store-dir`，启动后恢复。仅对**单实例、优雅停机**有效：`kill -9`、JVM 崩溃、断电不会保留会话；多实例请改用 Spring Session 等共享会话方案。首次升级启动时旧的内存会话已丢失，所有用户需重新登录一次，之后正常重启不再需要。session 中的自定义属性必须可序列化；未挂载 `/data` 的项目请覆盖 `store-dir`，或设置 `persistent: false` 关闭。
 
@@ -73,11 +73,13 @@
 
 ### 只读系统参数
 
-页面右侧用两张只读卡片分别展示「运行时状态」和「启动期配置」：第一张是运行时长（以标签突出）与数据库连接池用量，底部另起一行展示系统版本与框架版本（含构建时间）；第二张是 `application.yml` / 代码默认值的当前生效值。这些值不能在页面修改，改完 `application.yml` 后需重启；保留版本信息便于确认部署状态，结合连接池水位可定位连接不足等问题。「运行时状态」卡片每 15 秒自动刷新（浏览器标签页隐藏时暂停），方便观察运行时长与连接池水位。
+页面右侧用两张只读卡片分别展示「运行时状态」和「启动期配置」：第一张是运行时长（以标签突出）、内网 IP、外网 IP 与数据库连接池用量，底部另起一行展示系统版本与框架版本（含构建时间）；第二张是 `application.yml` / 代码默认值的当前生效值。这些值不能在页面修改，改完 `application.yml` 后需重启；保留版本信息便于确认部署状态，结合连接池水位可定位连接不足等问题。「运行时状态」卡片每 15 秒自动刷新（浏览器标签页隐藏时暂停），方便观察运行时长、IP 与连接池水位。外网 IP 通过公网服务查询，结果缓存 1 小时，获取失败时显示 `-`。
 
 | 展示名 | 配置键 | 说明 |
 |--------|--------|------|
 | 运行时长 | - | JVM 启动至今的时长；重启后归零即说明服务已重新部署 |
+| 内网IP | - | 本机 IPv4 地址，优先取默认出站网卡地址 |
+| 外网IP | - | 公网 IPv4 地址，通过公网服务查询，结果缓存 1 小时；获取失败显示 `-` |
 | 数据库连接 | `spring.datasource.url` | 当前生效的 JDBC URL（取连接池实际值）；`//用户:密码@` 与 `password=` 形式的密码已脱敏 |
 | 连接池 | `spring.datasource.hikari` | Hikari 实时用量：活动 / 空闲 / 上限 / 等待线程；非 Hikari 数据源不展示 |
 | 系统版本 | `sys.app-version` | 业务项目（本系统）版本号；打包运行附带构建时间（如 2026/8/1 11:30） |

@@ -148,7 +148,7 @@ public class CvsMenuCustomizer implements MenuCustomizer {
 | 功能 | 说明 |
 |------|------|
 | 系统参数 | 运行时可改的全局配置：数据库只存覆盖值，`application.yml` 与代码默认值兜底；页面顶部只读展示最大并发会话数、会话超时、文件存储等启动期配置；业务模块实现 `ConfigProvider` 即可在通用配置页维护自己的参数 |
-| 定时任务 | 基于 Quartz，动态创建/暂停/恢复，继承 `BaseJob` + `@JobDescription`；`BaseJob.progress(...)` 上报运行进度，执行记录方式（每次/每小时/每天各一份记录）与保留期清理 |
+| 定时任务 | 基于 Quartz，动态创建/暂停/恢复，继承 `BaseJob` + `@JobDescription`；执行记录方式（每次/每小时/每天各一份记录）与保留期清理 |
 | 文件管理 | `sys.file.store-type` 配置（`LOCAL` / `S3`），统一上传下载预览；临时文件自动清理（TTL 可配置） |
 | 操作日志 | `@Log` 注解 + AOP 切面，异步记录（独立线程池 `operationLogExecutor`）；`@Log.detail` 或 `OperationLogContext` 记录人类可读详情，日志页支持详情列与行详情抽屉；每条日志记录 IP 与浏览器指纹（前端 `HttpClient` 自动附加请求头 `X-Browser-Fingerprint`），日志页可给指纹加备注名（如「张三的办公电脑」）并按备注筛选、可取消标记，便于判断是否为同一浏览器；只有主动标注过的指纹才写入指纹备注表，未标注的指纹不会自动入库；登录/登出及失败登录由框架自动记录 |
 | 在线用户 | 一个登录会话一行，展示账号/姓名/机构/IP/登录时间、最后活跃与最近操作（取自操作日志，按用户 + IP 匹配，可跳转日志），支持强制下线；在线记录在内存，仅单实例部署准确；登录会话默认落盘，正常重启后免登录，在线记录随用户请求自动恢复 |
@@ -164,7 +164,7 @@ public class CvsMenuCustomizer implements MenuCustomizer {
 5. **菜单** — `src/main/resources/menu.yml`（或 `menu-*.yml`）定义菜单树
 6. **前端** — 使用 `ProTable` + `Field*` 组件快速搭建 CRUD 页面
 
-> 在业务项目中创建完整 CRUD 模块可借助 opencode skill `oa-crud`（由 `oa-upgrade-docs` skill 从框架 Release 同步到 `.opencode/skills/`）。也可在「系统管理 → 代码生成」中选中已建好的实体，一键生成 Repository / Service / Controller / 前端页面 / 菜单 代码并写入项目源码目录（先预览确认）。
+> 在业务项目中创建完整 CRUD 模块可借助 opencode skill `oa-crud`（由 `oa-upgrade-docs` skill 按 `docs/framework-sync.json` 清单从对应 tag 源码归档同步到 `.opencode/skills/`，正式版/快照版一致）。也可在「系统管理 → 代码生成」中选中已建好的实体，一键生成 Repository / Service / Controller / 前端页面 / 菜单 代码并写入项目源码目录（先预览确认）。
 
 ## 内置模块
 
@@ -189,6 +189,7 @@ public class CvsMenuCustomizer implements MenuCustomizer {
   - **执行方式**：以与目标环境一致的数据库配置启动一次，传入参数 `--reset-admin-password`，命令执行完会自动退出（成功退出码 0，失败非 0）。为避免端口冲突，建议同时加 `--spring.main.web-application-type=none`。
     - Jar：`java -jar app.jar --spring.main.web-application-type=none --reset-admin-password`
     - Docker 一次性容器：`docker run --rm -v <data卷>:/data <image> --spring.main.web-application-type=none --reset-admin-password`
+    - Docker Compose：`docker compose run --rm open-admin --spring.main.web-application-type=none --reset-admin-password`
     - Kubernetes：一次性 `Job`，容器 `args: ["--spring.main.web-application-type=none", "--reset-admin-password"]`
   - **取回密码**：新密码**仅输出到控制台（stdout）**，不会写入应用日志文件；可从终端输出或容器/任务日志中查找 `[ADMIN-PASSWORD-RESET]` 获取。应用日志仅记录“已重置”审计信息（不含密码）。取回后请及时登录并完成强制改密。
   - **数据库与停机**：默认 **H2 文件库**（`jdbc:h2:file:...`）同一时间仅允许一个进程访问，执行前必须先停止正在运行的业务服务/容器，避免文件锁导致重置失败；重置完成后再正常启动服务。使用 **MySQL 等外部数据库** 无文件锁限制，一般无需停机，但仍需使用相同数据源配置并关闭 Web（避免端口冲突）。
