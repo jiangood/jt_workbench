@@ -18,6 +18,7 @@ import {
     BellOutlined,
     BookOutlined,
     FileTextOutlined,
+    FundOutlined,
     ReloadOutlined,
     StockOutlined,
     TeamOutlined,
@@ -152,6 +153,8 @@ export default class HomePage extends React.Component {
         summary: null,
         vix: null,
         vixFailed: false,
+        quotes: [],
+        quoteFailed: false,
         updatedAt: null,
     };
 
@@ -161,9 +164,10 @@ export default class HomePage extends React.Component {
 
     load = async () => {
         this.setState({loading: true});
-        const [sumRs, vixRs] = await Promise.allSettled([
+        const [sumRs, vixRs, quoteRs] = await Promise.allSettled([
             HttpClient.get('admin/dashboard/summary'),
             HttpClient.get('admin/stock/vix'),
+            HttpClient.get('admin/stock/quote'),
         ]);
 
         const next = {loading: false, updatedAt: new Date()};
@@ -180,6 +184,14 @@ export default class HomePage extends React.Component {
         } else {
             next.vix = null;
             next.vixFailed = true;
+        }
+
+        if (quoteRs.status === 'fulfilled') {
+            next.quotes = quoteRs.value?.data?.quotes || [];
+            next.quoteFailed = false;
+        } else {
+            next.quotes = [];
+            next.quoteFailed = true;
         }
 
         this.setState(next);
@@ -335,6 +347,71 @@ export default class HomePage extends React.Component {
         );
     }
 
+    renderStocksCard() {
+        const watch = this.state.summary?.stocks?.watch || [];
+        const {quotes, quoteFailed} = this.state;
+        const quoteMap = new Map((quotes || []).map((q) => [q.code, q]));
+
+        // 参考价：离重仓价跌幅；无重仓价时按入场价；缺行情或未开盘则无法计算
+        const ranked = [];
+        watch.forEach((w) => {
+            if (!w || !w.code) return;
+            const q = quoteMap.get(w.code);
+            const live = q && !q.preOpen && q.price != null ? Number(q.price) : null;
+            const heavy = Number(w.heavyPrice);
+            const entry = Number(w.entryPrice);
+            const ref = Number.isFinite(heavy) && heavy !== 0
+                ? heavy
+                : (Number.isFinite(entry) && entry !== 0 ? entry : null);
+            if (!Number.isFinite(live) || ref == null || ref === 0) return;
+            ranked.push({
+                code: w.code,
+                name: w.name || w.code,
+                groupName: w.groupName,
+                live,
+                pct: ((live - ref) / ref) * 100,
+            });
+        });
+        // 跌幅最大（最低于参考价）排在前面，只取 top 5
+        ranked.sort((a, b) => b.pct - a.pct);
+        const top = ranked.slice(0, 5);
+
+        return (
+            <Card bordered={false} style={{height: '100%'}} bodyStyle={{padding: 18}}>
+                <CardHead icon={<FundOutlined style={{color: '#13c2c2'}}/>} title="自选股跌幅榜" href="#/stock"/>
+                {top.length ? (
+                    <div>
+                        {top.map((s) => (
+                            <a key={s.code} href="#/stock" style={{display: 'flex', justifyContent: 'space-between', gap: 12, padding: '10px 0', borderBottom: '1px solid #f5f5f5', color: 'inherit'}}>
+                                <div style={{minWidth: 0}}>
+                                    <div style={{fontSize: 14, color: '#222', lineHeight: 1.5}}>
+                                        {s.name || s.code}
+                                        {s.groupName ? <Tag style={{marginLeft: 6}}>{s.groupName}</Tag> : null}
+                                    </div>
+                                    <div style={{fontSize: 12, color: '#999', marginTop: 2}}>{s.code}</div>
+                                </div>
+                                <div style={{flex: 'none', textAlign: 'right'}}>
+                                    <div style={{fontSize: 14, fontWeight: 500, color: s.pct > 0 ? '#cf1322' : s.pct < 0 ? '#389e0d' : '#222', fontFamily: 'monospace'}}>
+                                        {s.pct > 0 ? '+' : ''}{s.pct.toFixed(2)}%
+                                    </div>
+                                    <div style={{fontSize: 12, color: '#999', marginTop: 2, fontFamily: 'monospace'}}>
+                                        {s.live.toFixed(2)}
+                                    </div>
+                                </div>
+                            </a>
+                        ))}
+                    </div>
+                ) : (
+                    <EmptyHint
+                        text={quoteFailed ? '行情暂不可用（行情源连接失败）' : '暂无可计算跌幅的股票'}
+                        href="#/stock"
+                        action="查看股票"
+                    />
+                )}
+            </Card>
+        );
+    }
+
     render() {
         const {loading, summary, updatedAt} = this.state;
         return (
@@ -358,6 +435,9 @@ export default class HomePage extends React.Component {
                     <Row gutter={[16, 16]}>
                         <Col xs={24} xl={10}>
                             {this.renderVixCard()}
+                        </Col>
+                        <Col xs={24} lg={12} xl={8}>
+                            {this.renderStocksCard()}
                         </Col>
                         <Col xs={24} lg={12} xl={8}>
                             {this.renderReminderCard()}
