@@ -3,6 +3,7 @@ dist/
 .env
 *.local
 online-token.txt
+online-cookie.txt
 .playwright-mcp/
 .idea/
 .opencode/*
