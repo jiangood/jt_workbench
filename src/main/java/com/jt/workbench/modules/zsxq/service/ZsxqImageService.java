@@ -65,7 +65,7 @@ public class ZsxqImageService {
                 String key = storeUrl(url);
                 if (key != null) keys.add(key);
             } catch (Exception e) {
-                log.warn("知识星球图片存储失败 topicId={} url={} error={}", topicId, brief(url), e.getMessage());
+                log.error("知识星球图片存储失败 topicId={} url={} error={}", topicId, brief(url), e.getMessage());
             }
         }
         return keys;
@@ -92,9 +92,10 @@ public class ZsxqImageService {
         String key = KEY_PREFIX + hash + "." + extensionOf(bytes);
         try {
             fileOperator.save(key, new ByteArrayInputStream(bytes));
+            log.info("[知识星球] 图片入库 url={} key={}", brief(url), key);
             return key;
         } catch (Exception e) {
-            log.warn("知识星球图片写对象存储失败 key={} error={}", key, e.getMessage());
+            log.error("知识星球图片写对象存储失败 key={} error={}", key, e.getMessage());
             return null;
         }
     }
@@ -169,6 +170,7 @@ public class ZsxqImageService {
     }
 
     private static byte[] download(String url) {
+        log.info("[知识星球] 图片下载请求 url={}", brief(url));
         try {
             HttpRequest request = HttpRequest.newBuilder(URI.create(url))
                     .GET()
@@ -179,7 +181,7 @@ public class ZsxqImageService {
                     .build();
             HttpResponse<java.io.InputStream> response = HTTP.send(request, HttpResponse.BodyHandlers.ofInputStream());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                log.warn("知识星球图片下载失败 status={} url={}", response.statusCode(), brief(url));
+                log.error("知识星球图片下载失败 status={} url={}", response.statusCode(), brief(url));
                 return null;
             }
             byte[] body;
@@ -187,6 +189,7 @@ public class ZsxqImageService {
                 // 多读 1 字节判断是否超限，避免异常大图把内存打满
                 body = in.readNBytes(MAX_IMAGE_BYTES + 1);
             }
+            log.info("[知识星球] 图片下载响应 url={} status={} bytes={}", brief(url), response.statusCode(), body.length);
             if (body.length == 0) return null;
             if (body.length > MAX_IMAGE_BYTES) {
                 log.warn("知识星球图片超过大小上限（>{} bytes），跳过 url={}", MAX_IMAGE_BYTES, brief(url));
@@ -198,7 +201,7 @@ public class ZsxqImageService {
             }
             return body;
         } catch (Exception e) {
-            log.warn("知识星球图片下载异常 url={} error={}", brief(url), e.getMessage());
+            log.error("知识星球图片下载异常 url={} error={}", brief(url), e.getMessage());
             return null;
         }
     }

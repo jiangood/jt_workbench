@@ -120,7 +120,7 @@ public class ZsxqSyncService {
         try {
             List<Group> remoteGroups;
             try {
-                remoteGroups = client.groups().list();
+                remoteGroups = api("client.groups().list()", () -> client.groups().list());
             } catch (Exception e) {
                 if (isRiskControl(e)) throw new RiskControlException(e);
                 logger.warn("知识星球 token 校验失败：{}", e.getMessage());
@@ -128,6 +128,7 @@ public class ZsxqSyncService {
             }
 
             List<String> groupIds = resolveGroupIds(remoteGroups);
+            log.info("[知识星球] 本轮同步开始：{} 个星球", groupIds.size());
             List<String> parts = new ArrayList<>();
             parts.add(syncTopics(client, groupIds, logger, progress));
             parts.add(syncColumnsIfDue(client, groupIds, logger, progress));
@@ -135,7 +136,9 @@ public class ZsxqSyncService {
 
             // 本轮完整跑通（未触发风控）：清除连续风控计数
             setState(STATE_RISK_STRIKES, 0);
-            return String.join("；", parts);
+            String overview = String.join("；", parts);
+            log.info("[知识星球] 本轮概览：{}", overview);
+            return overview;
         } catch (RiskControlException e) {
             return enterRiskCooldown(logger, e);
         }
@@ -252,7 +255,8 @@ public class ZsxqSyncService {
                             .count(TOPICS_PER_PAGE)
                             .scope("all");
                     if (!headEnd.isEmpty()) options.endTime(headEnd);
-                    list = client.topics().list(gid, options);
+                    list = api("client.topics().list(groupId=" + gid + ", endTime=" + headEnd + ")",
+                            () -> client.topics().list(gid, options));
                 } catch (Exception e) {
                     if (isRiskControl(e)) throw new RiskControlException(e);
                     logger.warn("星球 {} 最新话题拉取失败：{}", gid, e.getMessage());
@@ -299,10 +303,12 @@ public class ZsxqSyncService {
                 pause(PAUSE_BEFORE_PAGE_FETCH_MS);
                 List<Topic> list;
                 try {
-                    list = client.topics().list(gid, new ListTopicsOptions()
-                            .count(TOPICS_PER_PAGE)
-                            .scope("all")
-                            .endTime(end));
+                    final String endTime = end;
+                    list = api("client.topics().list(groupId=" + gid + ", endTime=" + endTime + ")",
+                            () -> client.topics().list(gid, new ListTopicsOptions()
+                                    .count(TOPICS_PER_PAGE)
+                                    .scope("all")
+                                    .endTime(endTime)));
                 } catch (Exception e) {
                     if (isRiskControl(e)) throw new RiskControlException(e);
                     logger.warn("星球 {} 历史话题拉取失败：{}", gid, e.getMessage());
@@ -389,7 +395,7 @@ public class ZsxqSyncService {
             pause(PAUSE_BEFORE_PAGE_FETCH_MS);
             List<Column> columns;
             try {
-                columns = client.groups().getColumns(gid);
+                columns = api("client.groups().getColumns(groupId=" + gid + ")", () -> client.groups().getColumns(gid));
             } catch (Exception e) {
                 if (isRiskControl(e)) throw new RiskControlException(e);
                 logger.warn("星球 {} 专栏列表拉取失败：{}", gid, e.getMessage());
@@ -445,7 +451,7 @@ public class ZsxqSyncService {
             progress.accept("回填图片 " + (i + 1) + "/" + rows.size());
             pause(PAUSE_BETWEEN_TOPIC_FETCHES_MS);
             try {
-                Topic topic = client.topics().get(tid);
+                Topic topic = api("client.topics().get(topicId=" + tid + ")", () -> client.topics().get(tid));
                 TalkContent talk = topic == null ? null : topic.getTalk();
                 List<String> keys = imageService.storeAll(tid, talk);
                 boolean complete = keys.size() >= imageService.sourceImageCount(talk);
@@ -533,7 +539,8 @@ public class ZsxqSyncService {
             try {
                 ListTopicsOptions options = new ListTopicsOptions().count(TOPICS_PER_PAGE).scope("all");
                 if (!headEnd.isEmpty()) options.endTime(headEnd);
-                list = client.topics().listByColumn(gid, cid, options);
+                list = api("client.topics().listByColumn(groupId=" + gid + ", columnId=" + cid + ", endTime=" + headEnd + ")",
+                        () -> client.topics().listByColumn(gid, cid, options));
             } catch (Exception e) {
                 if (isRiskControl(e)) throw new RiskControlException(e);
                 logger.warn("专栏 {} 最新话题拉取失败：{}", cid, e.getMessage());
@@ -575,10 +582,12 @@ public class ZsxqSyncService {
             pause(PAUSE_BEFORE_PAGE_FETCH_MS);
             List<Topic> list;
             try {
-                list = client.topics().listByColumn(gid, cid, new ListTopicsOptions()
-                        .count(TOPICS_PER_PAGE)
-                        .scope("all")
-                        .endTime(end));
+                final String endTime = end;
+                list = api("client.topics().listByColumn(groupId=" + gid + ", columnId=" + cid + ", endTime=" + endTime + ")",
+                        () -> client.topics().listByColumn(gid, cid, new ListTopicsOptions()
+                                .count(TOPICS_PER_PAGE)
+                                .scope("all")
+                                .endTime(endTime)));
             } catch (Exception e) {
                 if (isRiskControl(e)) throw new RiskControlException(e);
                 logger.warn("专栏 {} 历史话题拉取失败：{}", cid, e.getMessage());
@@ -676,8 +685,9 @@ public class ZsxqSyncService {
 
     private int fetchComments(ZsxqClient client, String groupId, String topicId, Logger logger) {
         try {
-            List<Comment> list = client.topics().getComments(topicId,
-                    new ListCommentsOptions().sort("asc").count(COMMENTS_PER_TOPIC));
+            List<Comment> list = api("client.topics().getComments(topicId=" + topicId + ")",
+                    () -> client.topics().getComments(topicId,
+                            new ListCommentsOptions().sort("asc").count(COMMENTS_PER_TOPIC)));
             int n = 0;
             if (list != null) {
                 for (Comment c : list) {
@@ -858,5 +868,34 @@ public class ZsxqSyncService {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    // ---------- 知识星球交互日志 ----------
+
+    /**
+     * 知识星球 API 交互的统一包装：每次请求前打印请求描述（方法 + 关键参数），
+     * 请求后打印结果规模与耗时，错误立即以 error 级别记录，便于定位采集问题。
+     */
+    private static <T> T api(String desc, java.util.function.Supplier<T> call) {
+        long start = System.currentTimeMillis();
+        log.info("[知识星球] 请求：{}", desc);
+        T result;
+        try {
+            result = call.get();
+        } catch (RuntimeException e) {
+            log.error("[知识星球] 请求失败：{}（{} ms）error={}", desc, System.currentTimeMillis() - start, e.getMessage());
+            throw e;
+        }
+        log.info("[知识星球] 响应：{}（{} ms）-> {}", desc, System.currentTimeMillis() - start, summary(result));
+        return result;
+    }
+
+    /** 用于 API 响应日志的摘要：列表类返回条数，单个对象返回关键 ID。 */
+    private static Object summary(Object result) {
+        if (result instanceof List<?> list) return list.size();
+        if (result instanceof Topic t) return toStr(t.getTopicId());
+        if (result instanceof Column c) return toStr(c.getColumnId());
+        if (result == null) return 0;
+        return result;
     }
 }
