@@ -165,18 +165,6 @@
     word-break: break-word;
 }
 
-.reader-progress-line {
-    flex: none;
-    height: 3px;
-    background: var(--rd-border);
-}
-
-.reader-progress-line > div {
-    height: 100%;
-    background: #1677ff;
-    transition: width .2s;
-}
-
 /* ---------- 目录 ---------- */
 
 .reader-toc-list {

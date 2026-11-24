@@ -849,10 +849,6 @@ export default function BookReader({params}) {
             </div>}
         </div>
 
-        <div className='reader-progress-line'>
-            <div style={{width: `${progress}%`}}/>
-        </div>
-
         <Drawer title='目录' placement='left' width={Math.min(window.innerWidth * 0.9, 380)}
                 open={tocOpen} onClose={() => setTocOpen(false)} styles={drawerStyles}>
             {toc.length === 0
