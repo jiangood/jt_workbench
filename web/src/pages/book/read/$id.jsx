@@ -1,14 +1,10 @@
 import React from 'react'
-import {Button, Drawer, Dropdown, Empty, Modal, Segmented, Select, Spin, Tooltip, message} from 'antd'
+import {Button, Drawer, Empty, Segmented, Select, Spin, Tooltip} from 'antd'
 import {
     ArrowLeftOutlined,
     BgColorsOutlined,
-    CompressOutlined,
-    DeleteOutlined,
-    ExpandOutlined,
     FontSizeOutlined,
     MenuOutlined,
-    MoreOutlined,
 } from '@ant-design/icons'
 import ePub from 'epubjs'
 import {HttpClient, UrlUtils, history} from '@jiangood/open-admin'
@@ -237,14 +233,12 @@ export default function BookReader({params}) {
     const [tocCurrent, setTocCurrent] = React.useState(-1)
     const [tocOpen, setTocOpen] = React.useState(false)
     const [settingsOpen, setSettingsOpen] = React.useState(false)
-    const [immersive, setImmersive] = React.useState(false)
     const [autoSec, setAutoSec] = React.useState(0)
 
     const viewRef = React.useRef(null)
     const renditionRef = React.useRef(null)
     const epubRef = React.useRef(null)
     const lastLocRef = React.useRef(null)
-    const currentSectionRef = React.useRef({index: -1, href: ''})
     const locationsReadyRef = React.useRef(false)
     const totalSectionsRef = React.useRef(0)
     const prefsRef = React.useRef(prefs)
@@ -333,7 +327,7 @@ export default function BookReader({params}) {
         applyEpubStyle()
     }, [prefs, applyEpubStyle])
 
-    /* ---------- 沉浸 / 自动翻页 ---------- */
+    /* ---------- 自动翻页 ---------- */
     React.useEffect(() => {
         if (!ready || !autoSec) return undefined
         const timer = window.setInterval(() => {
@@ -476,75 +470,6 @@ export default function BookReader({params}) {
                     }
                 }
 
-                const toggleImmersive = () => setImmersive(v => !v)
-
-                // 点击屏幕中间进入 / 退出沉浸阅读；上下滚动交给浏览器原生处理
-                const wirePointer = target => {
-                    if (!target?.addEventListener) return
-                    let startX = 0
-                    let startY = 0
-                    let startAt = 0
-                    let tracking = false
-                    let moved = false
-
-                    const point = e => e.changedTouches?.[0] || e.touches?.[0] || e
-                    const enabled = () => !disposed && !uiOpenRef.current
-                    const onStart = e => {
-                        if (!enabled()) return
-                        if (e.pointerType === 'mouse' && e.button !== 0) return
-                        if (e.touches && e.touches.length > 1) return
-                        const p = point(e)
-                        startX = p.clientX
-                        startY = p.clientY
-                        startAt = Date.now()
-                        tracking = true
-                        moved = false
-                    }
-                    const onMove = e => {
-                        if (!tracking) return
-                        const p = point(e)
-                        if (Math.abs(p.clientX - startX) > 10 || Math.abs(p.clientY - startY) > 10) moved = true
-                    }
-                    const onEnd = e => {
-                        if (!tracking) return
-                        tracking = false
-                        if (!enabled()) return
-                        const p = point(e)
-                        const dx = p.clientX - startX
-                        const dy = p.clientY - startY
-                        const dt = Date.now() - startAt
-                        // 滚动过程中不响应点击（触屏滑动 / 鼠标拖选）
-                        if (moved || Math.abs(dx) > 10 || Math.abs(dy) > 10 || dt > 500) return
-                        try {
-                            const sel = target.getSelection?.() || target.ownerDocument?.getSelection?.()
-                            if (sel && !sel.isCollapsed) return
-                        } catch {
-                            /* 跨域 / 异常忽略 */
-                        }
-                        const width = target.defaultView?.innerWidth
-                            || (target === viewRef.current ? viewRef.current?.clientWidth : 0)
-                            || 1
-                        const ratio = startX / width
-                        if (ratio >= 0.3 && ratio <= 0.7) toggleImmersive()
-                    }
-                    const opts = {passive: true}
-                    target.addEventListener('pointerdown', onStart, opts)
-                    target.addEventListener('pointermove', onMove, opts)
-                    target.addEventListener('pointerup', onEnd, opts)
-                    target.addEventListener('pointercancel', () => {
-                        tracking = false
-                    }, opts)
-                    return () => {
-                        try {
-                            target.removeEventListener('pointerdown', onStart, opts)
-                            target.removeEventListener('pointermove', onMove, opts)
-                            target.removeEventListener('pointerup', onEnd, opts)
-                        } catch {
-                            /* 文档已销毁 */
-                        }
-                    }
-                }
-
                 /* ---- EPUB 图片兜底：相对路径 / 大小写 / 编码不一致时按 archive 逐张重解析 ---- */
                 const resolveEpubImage = async (raw, chapterHref) => {
                     const chapterDir = String(chapterHref || '').includes('/')
@@ -640,14 +565,11 @@ export default function BookReader({params}) {
                             body: {'touch-action': 'pan-y'},
                         })
                     } catch {
-                        /* 跨域 / 异常：指针事件仍由 wirePointer 处理，这里兜底忽略 */
+                        /* 跨域 / 异常：忽略滚动样式兜底 */
                     }
                     applyContentStyle(contents)
                     fixContentImages(contents)
-                    wirePointer(doc)
                 })
-
-                cleanupFns.push(wirePointer(viewRef.current))
 
                 /* ---- 目录：把 href 映射到 spine 序号，用于高亮当前章 ---- */
                 const nav = await Promise.race([epub.loaded.navigation.catch(() => null), openBroken])
@@ -697,14 +619,6 @@ export default function BookReader({params}) {
                 rendition.on('relocated', loc => {
                     if (disposed) return
                     lastLocRef.current = loc
-                    const idx = Number.isInteger(loc?.start?.index) ? loc.start.index : -1
-                    let href = ''
-                    try {
-                        href = String(loc?.start?.href || epubRef.current?.spine?.get(idx)?.href || '').split('#')[0]
-                    } catch {
-                        href = ''
-                    }
-                    currentSectionRef.current = {index: idx, href}
                     paintLocation(loc)
                     paintProgress()
                     scheduleEpubStyle()
@@ -731,8 +645,6 @@ export default function BookReader({params}) {
                         || e.key === ' ') {
                         e.preventDefault()
                         go('next')
-                    } else if (e.key === 'Escape') {
-                        setImmersive(false)
                     }
                 }
                 window.addEventListener('keydown', onKey)
@@ -868,38 +780,6 @@ export default function BookReader({params}) {
         changePrefs({theme: next})
     }
 
-
-    const removeCurrentPage = () => {
-        if (!ready) {
-            message.warning('书籍尚未加载完成')
-            return
-        }
-        const {index, href} = currentSectionRef.current || {}
-        if (index < 0 && !href) {
-            message.warning('未定位到当前页，请翻页后重试')
-            return
-        }
-        const name = chapter ? `「${chapter}」` : '当前内容页'
-        Modal.confirm({
-            title: '删除当前页？',
-            content: `将从 EPUB 中移除${name}（可用于删除广告页/无关页面）。此操作会修改原书文件，并重置阅读进度和阅读位置，无法撤销。`,
-            okText: '删除',
-            okButtonProps: {danger: true},
-            cancelText: '取消',
-            autoFocusButton: 'cancel',
-            onOk: async () => {
-                try {
-                    await HttpClient.post(`admin/book/removeSection/${id}`, {href, index})
-                    message.success('已删除，正在重新加载')
-                    window.setTimeout(() => window.location.reload(), 400)
-                } catch {
-                    // HttpClient 默认提示错误
-                }
-            },
-        })
-    }
-
-
     /* ---------- 渲染 ---------- */
 
     const rootStyle = {
@@ -917,21 +797,11 @@ export default function BookReader({params}) {
         content: {background: theme.panel},
     }
 
-    const moreItems = [
-        {key: 'immersive', icon: <CompressOutlined/>, label: '沉浸阅读'},
-        ...(ready ? [{type: 'divider'}, {key: 'remove-page', icon: <DeleteOutlined/>, label: '删除当前页', danger: true}] : []),
-    ]
-
-    const onMoreClick = ({key}) => {
-        if (key === 'immersive') setImmersive(true)
-        else if (key === 'remove-page') removeCurrentPage()
-    }
-
     const title = book?.title || book?.filename || '阅读'
     const subtitle = [book?.author, chapter].filter(Boolean).join(' · ')
 
     return <div className='reader-root' style={rootStyle}>
-        {!immersive && <header className='reader-topbar'>
+        <header className='reader-topbar'>
             <div className='reader-topbar-left'>
                 <Tooltip title='返回书架'>
                     <Button type='text' icon={<ArrowLeftOutlined/>} onClick={() => history.push('/book')}/>
@@ -954,33 +824,8 @@ export default function BookReader({params}) {
                 <Tooltip title='切换背景'>
                     <Button type='text' icon={<BgColorsOutlined/>} onClick={cycleTheme}/>
                 </Tooltip>
-                <Dropdown menu={{items: moreItems, onClick: onMoreClick}} trigger={['click']}>
-                    <Button type='text' icon={<MoreOutlined/>}/>
-                </Dropdown>
             </div>
-        </header>}
-
-        {immersive && <>
-            <div className='reader-immersive-hint'>
-                {pageInfo.total > 0 ? `${pageInfo.page} / ${pageInfo.total} 页 · ` : ''}点屏幕中间恢复工具栏
-            </div>
-            <div className='reader-fabs'>
-                <Tooltip title='目录' placement='left'>
-                    <button className='reader-fab' type='button' onClick={() => setTocOpen(true)}><MenuOutlined/></button>
-                </Tooltip>
-                <Tooltip title='阅读设置' placement='left'>
-                    <button className='reader-fab' type='button' onClick={() => setSettingsOpen(true)}><FontSizeOutlined/>
-                    </button>
-                </Tooltip>
-                <Tooltip title='切换背景' placement='left'>
-                    <button className='reader-fab' type='button' onClick={cycleTheme}><BgColorsOutlined/></button>
-                </Tooltip>
-                <Tooltip title='退出沉浸' placement='left'>
-                    <button className='reader-fab' type='button' onClick={() => setImmersive(false)}><ExpandOutlined/>
-                    </button>
-                </Tooltip>
-            </div>
-        </>}
+        </header>
 
         <div className='reader-stage'>
             <div className='reader-view' ref={viewRef}/>
@@ -1055,14 +900,8 @@ export default function BookReader({params}) {
                 <Select size='small' style={{width: 120}} value={autoSec} options={AUTO_OPTIONS}
                         onChange={v => setAutoSec(v)}/>
             </SettingRow>
-            <SettingRow label='显示'>
-                <Button size='small' icon={<CompressOutlined/>} onClick={() => {
-                    setSettingsOpen(false)
-                    setImmersive(true)
-                }}>沉浸</Button>
-            </SettingRow>
             <p className='reader-tip' style={{marginTop: 16}}>
-                上下滚动阅读：滚轮 / 触控板 / 触摸滑动，方向键上下或翻页键滚动一屏；点屏幕中间进入沉浸阅读。<br/>
+                上下滚动阅读：滚轮 / 触控板 / 触摸滑动，方向键上下或翻页键滚动一屏。<br/>
                 阅读进度与位置会自动保存，换设备可继续读。
             </p>
         </Drawer>
