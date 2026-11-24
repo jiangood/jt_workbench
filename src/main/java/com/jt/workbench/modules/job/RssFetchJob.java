@@ -3,7 +3,7 @@ package com.jt.workbench.modules.job;
 import com.jt.workbench.modules.job.service.RssFetchService;
 import io.github.jiangood.openadmin.modules.job.BaseJob;
 import io.github.jiangood.openadmin.modules.job.JobDescription;
-import io.github.jiangood.openadmin.modules.job.entity.JobLogAggregation;
+import io.github.jiangood.openadmin.modules.job.JobResult;
 import jakarta.annotation.Resource;
 import org.quartz.JobDataMap;
 import org.springframework.stereotype.Component;
@@ -15,8 +15,7 @@ import org.slf4j.Logger;
         key = "jt.rssFetch",
         label = "RSS 抓取",
         defaultCron = "0 0/20 * * * ?",
-        defaultEnabled = true,
-        logAggregation = JobLogAggregation.PER_RUN
+        defaultEnabled = true
 )
 public class RssFetchJob extends BaseJob {
 
@@ -24,7 +23,7 @@ public class RssFetchJob extends BaseJob {
     private RssFetchService service;
 
     @Override
-    public String execute(JobDataMap data, Logger logger) {
+    public JobResult execute(JobDataMap data, Logger logger) {
         return service.fetchAll(logger, this::progress);
     }
     /** 兼容当前框架版本缺失 BaseJob#progress(String) 的情况。 */

@@ -3,7 +3,7 @@ package com.jt.workbench.modules.job;
 import com.jt.workbench.modules.job.service.ZsxqSyncService;
 import io.github.jiangood.openadmin.modules.job.BaseJob;
 import io.github.jiangood.openadmin.modules.job.JobDescription;
-import io.github.jiangood.openadmin.modules.job.entity.JobLogAggregation;
+import io.github.jiangood.openadmin.modules.job.JobResult;
 import jakarta.annotation.Resource;
 import org.quartz.JobDataMap;
 import org.springframework.stereotype.Component;
@@ -19,8 +19,7 @@ import org.slf4j.Logger;
         key = "jt.zsxqSync",
         label = "知识星球同步",
         defaultCron = "0 0 0/3 * * ?",
-        defaultEnabled = true,
-        logAggregation = JobLogAggregation.PER_RUN
+        defaultEnabled = true
 )
 public class ZsxqSyncJob extends BaseJob {
 
@@ -28,7 +27,7 @@ public class ZsxqSyncJob extends BaseJob {
     private ZsxqSyncService service;
 
     @Override
-    public String execute(JobDataMap data, Logger logger) {
+    public JobResult execute(JobDataMap data, Logger logger) {
         return service.syncAll(logger, this::progress);
     }
     /** 兼容当前框架版本缺失 BaseJob#progress(String) 的情况。 */

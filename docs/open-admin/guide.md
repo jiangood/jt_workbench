@@ -148,7 +148,7 @@ public class CvsMenuCustomizer implements MenuCustomizer {
 | 功能 | 说明 |
 |------|------|
 | 系统参数 | 运行时可改的全局配置：数据库只存覆盖值，`application.yml` 与代码默认值兜底；页面顶部只读展示最大并发会话数、会话超时、文件存储等启动期配置；业务模块实现 `ConfigProvider` 即可在通用配置页维护自己的参数 |
-| 定时任务 | 基于 Quartz，动态创建/暂停/恢复，继承 `BaseJob` + `@JobDescription`；执行记录方式（每次/每小时/每天各一份记录）与保留期清理 |
+| 定时任务 | 基于 Quartz，动态创建/暂停/恢复，继承 `BaseJob` + `@JobDescription`；返回 `JobResult`（成功/部分成功/跳过/失败/异常/取消），保留期清理与僵死对账 |
 | 文件管理 | `sys.file.store-type` 配置（`LOCAL` / `S3`），统一上传下载预览；临时文件自动清理（TTL 可配置） |
 | 操作日志 | `@Log` 注解 + AOP 切面，异步记录（独立线程池 `operationLogExecutor`）；`@Log.detail` 或 `OperationLogContext` 记录人类可读详情，日志页支持详情列与行详情抽屉；每条日志记录 IP 与浏览器指纹（前端 `HttpClient` 自动附加请求头 `X-Browser-Fingerprint`），日志页可给指纹加备注名（如「张三的办公电脑」）并按备注筛选、可取消标记，便于判断是否为同一浏览器；只有主动标注过的指纹才写入指纹备注表，未标注的指纹不会自动入库；登录/登出及失败登录由框架自动记录 |
 | 在线用户 | 一个登录会话一行，展示账号/姓名/机构/IP/登录时间、最后活跃与最近操作（取自操作日志，按用户 + IP 匹配，可跳转日志），支持强制下线；在线记录在内存，仅单实例部署准确；登录会话默认落盘，正常重启后免登录，在线记录随用户请求自动恢复 |
@@ -181,7 +181,7 @@ public class CvsMenuCustomizer implements MenuCustomizer {
 
 **种子数据如何管理？** 框架内置的种子数据（默认字典类型、机构、管理员用户/角色、默认文章、清理任务）在首次启动、JPA 建表完成后由 `SeedDataInitializer`（`framework/config/SeedDataInitializer.java`）写入：每条记录先按 id 判断是否已存在，存在则跳过，不覆盖后续修改，因此可重复启动、幂等执行，且不依赖数据库方言（H2 / MySQL 均可）。
 
-**管理员初始密码是什么？** 首次启动创建 `admin` 时，初始密码随机生成并打印在启动日志中（`WARN` 级别，含「初始密码为」字样，Docker 部署用 `docker logs` 查看），且 `lastPasswordChangeTime` 置空——首次登录成功即被引导强制修改密码（与「管理员重置密码」同一机制）。框架不提供固定默认密码，也不提供配置项固定初始密码。若存量项目升级后启动日志出现「检测到管理员仍使用旧版内置默认密码」，说明 admin 密码从未改过，下次登录须修改。
+**管理员初始密码是什么？** 首次启动创建 `admin` 时，初始密码随机生成（以 `GEN-` 开头）并打印在启动日志中（`WARN` 级别，英文 ASCII 横幅，标记 `[INITIAL-ADMIN-PASSWORD]`，Docker 部署用 `docker logs` 查看），且 `lastPasswordChangeTime` 置空——首次登录成功即被引导强制修改密码（与「管理员重置密码」同一机制）。在密码被修改前，每次启动都会打印 `[ADMIN-PASSWORD-CHECK] ADMIN PASSWORD HAS NOT BEEN CHANGED` 英文横幅提醒（只提醒、不重复输出密码）。用户自行设置的密码不允许以 `GEN-` 开头，因此密码带 `GEN-` 前缀即表示仍是系统生成密码。框架不提供固定默认密码，也不提供配置项固定初始密码。若存量项目升级后启动日志出现 `[ADMIN-PASSWORD-CHECK] LEGACY DEFAULT ADMIN PASSWORD DETECTED`，说明 admin 密码从未改过，下次登录须修改。
 
 **管理员忘记密码如何重置？**
 - **有其他可登录的管理员/有权限用户**：进入「系统管理 → 用户管理」对管理员账号执行「重置密码」（权限 `sys-user:reset-password`），重置后下次登录需强制修改密码。
@@ -191,7 +191,7 @@ public class CvsMenuCustomizer implements MenuCustomizer {
     - Docker 一次性容器：`docker run --rm -v <data卷>:/data <image> --spring.main.web-application-type=none --reset-admin-password`
     - Docker Compose：`docker compose run --rm open-admin --spring.main.web-application-type=none --reset-admin-password`
     - Kubernetes：一次性 `Job`，容器 `args: ["--spring.main.web-application-type=none", "--reset-admin-password"]`
-  - **取回密码**：新密码**仅输出到控制台（stdout）**，不会写入应用日志文件；可从终端输出或容器/任务日志中查找 `[ADMIN-PASSWORD-RESET]` 获取。应用日志仅记录“已重置”审计信息（不含密码）。取回后请及时登录并完成强制改密。
+  - **取回密码**：新密码（以 `GEN-` 开头）**仅输出到控制台（stdout）**，不会写入应用日志文件；可从终端输出或容器/任务日志中查找英文横幅 `[ADMIN-PASSWORD-RESET] SUCCESS` 获取。应用日志仅记录“已重置”审计信息（不含密码）。重置后若一直未修改密码，每次启动都会打印 `[ADMIN-PASSWORD-CHECK]` 提醒横幅（不含密码），需要新密码时再次执行重置即可。取回后请及时登录并完成强制改密。
   - **数据库与停机**：默认 **H2 文件库**（`jdbc:h2:file:...`）同一时间仅允许一个进程访问，执行前必须先停止正在运行的业务服务/容器，避免文件锁导致重置失败；重置完成后再正常启动服务。使用 **MySQL 等外部数据库** 无文件锁限制，一般无需停机，但仍需使用相同数据源配置并关闭 Web（避免端口冲突）。
   - **注意**：执行前建议备份数据库/数据卷；不要将 `--reset-admin-password` 保留在常驻服务启动参数中（否则每次启动都会重置并退出）。若管理员账号被禁用，重置后仍需先启用账号才能登录。已有登录会话不会因改密立即失效。
 

@@ -1,6 +1,7 @@
 package com.jt.workbench.modules.job.service;
 
 import io.github.jiangood.openadmin.framework.spi.FileOperator;
+import io.github.jiangood.openadmin.modules.job.JobResult;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -30,13 +31,13 @@ public class DbBackupService {
     private final JdbcTemplate jdbc;
     private final FileOperator fileOperator;
 
-    public String backup(Logger logger, Consumer<String> progress) {
+    public JobResult backup(Logger logger, Consumer<String> progress) {
         progress.accept("检查数据源");
         String url = jdbcUrl();
         if (url == null || !url.startsWith("jdbc:h2:")) {
             String msg = "当前数据源不是 H2（" + (url == null ? "unknown" : url) + "），暂不支持自动备份";
             logger.warn(msg);
-            return msg;
+            return JobResult.skip(msg);
         }
 
         String ts = LocalDateTime.now().format(TS);
@@ -59,7 +60,7 @@ public class DbBackupService {
 
             String sizeText = formatSize(size);
             logger.info("数据库备份完成：{} ({})", key, sizeText);
-            return "备份完成：" + key + "（" + sizeText + "）";
+            return JobResult.ok("备份完成：" + key + "（" + sizeText + "）");
         } catch (Exception e) {
             logger.error("数据库备份失败", e);
             throw new RuntimeException("数据库备份失败：" + e.getMessage(), e);

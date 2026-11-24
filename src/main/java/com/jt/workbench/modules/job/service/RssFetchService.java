@@ -1,5 +1,6 @@
 package com.jt.workbench.modules.job.service;
 
+import io.github.jiangood.openadmin.modules.job.JobResult;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.Logger;
@@ -61,10 +62,10 @@ public class RssFetchService {
                             String author, Long publishedAt, String contentHtml, int contentLen) {}
 
     /** 抓取全部启用数据源，返回执行摘要（异常由 Quartz 记为失败）。 */
-    public String fetchAll(Logger logger, java.util.function.Consumer<String> progress) {
+    public JobResult fetchAll(Logger logger, java.util.function.Consumer<String> progress) {
         List<java.util.Map<String, Object>> sources = jdbc.queryForList(
                 "SELECT id, url, name FROM news_source WHERE enabled = 1 ORDER BY name, id");
-        if (sources.isEmpty()) return "没有启用的 RSS 数据源";
+        if (sources.isEmpty()) return JobResult.skip("没有启用的 RSS 数据源");
 
         ensureSchema();
         Set<String> blockWords = loadBlockWords();
@@ -155,14 +156,18 @@ public class RssFetchService {
         if (succeeded == 0) {
             throw new IllegalStateException("全部 RSS 数据源抓取失败：" + String.join("; ", errors.subList(0, Math.min(3, errors.size()))));
         }
-        return "成功 " + succeeded + "/" + sources.size() + " 个数据源"
+        String summary = "成功 " + succeeded + "/" + sources.size() + " 个数据源"
                 + "，新入暂存 " + inserted + " 条"
                 + (reported > 0 ? "，入库 " + reported + " 条" : "")
                 + (deduped > 0 ? "，标题去重 " + deduped + " 条" : "")
                 + (blocked > 0 ? "，屏蔽 " + blocked + " 条" : "")
                 + (skipped > 0 ? "，跳过已采集 " + skipped + " 条" : "")
-                + (pruned > 0 ? "，清理过期 " + pruned + " 条" : "")
-                + (errors.isEmpty() ? "" : "；失败 " + errors.size() + " 个：" + String.join("; ", errors.subList(0, Math.min(3, errors.size()))));
+                + (pruned > 0 ? "，清理过期 " + pruned + " 条" : "");
+        if (errors.isEmpty()) {
+            return JobResult.ok(summary);
+        }
+        return JobResult.partial(summary + "；失败 " + errors.size() + " 个："
+                + String.join("; ", errors.subList(0, Math.min(3, errors.size()))));
     }
 
     // ---------- 抓取与解析 ----------

@@ -16,7 +16,7 @@
 
     <properties>
         <java.version>21</java.version>
-        <!-- 预览版：框架快照通道（Maven 3.3.4-SNAPSHOT / npm 3.3.4-SNAPSHOT.1） -->
+        <!-- 预览版：框架快照通道（Maven 3.3.4-SNAPSHOT / npm 3.3.4-SNAPSHOT.<build>） -->
         <open-admin.version>3.3.4-SNAPSHOT</open-admin.version>
     </properties>
 

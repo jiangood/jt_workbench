@@ -2,6 +2,7 @@ package com.jt.workbench.modules.reminder.service;
 
 import com.jt.workbench.modules.reminder.entity.Reminder;
 import com.jt.workbench.modules.reminder.repo.ReminderRepository;
+import io.github.jiangood.openadmin.modules.job.JobResult;
 import io.github.jiangood.openadmin.modules.mail.MailMessage;
 import io.github.jiangood.openadmin.modules.mail.MailSendResult;
 import io.github.jiangood.openadmin.modules.mail.service.MailService;
@@ -72,16 +73,16 @@ public class ReminderScanService {
     /** 供定时作业 / 手动按钮调用；返回可直接展示的统计文案。 */
     public String scan() {
         return scan(log, ignored -> {
-        });
+        }).message();
     }
 
-    public String scan(Logger logger, Consumer<String> progress) {
+    public JobResult scan(Logger logger, Consumer<String> progress) {
         if (!running.compareAndSet(false, true)) {
-            return "扫描正在进行，请稍后";
+            return JobResult.skip("扫描正在进行，请稍后");
         }
         try {
             List<Reminder> reminders = repository.findByEnabledTrue();
-            if (reminders.isEmpty()) return "没有启用的提醒";
+            if (reminders.isEmpty()) return JobResult.skip("没有启用的提醒");
 
             LocalDate today = LocalDate.now();
             LocalTime now = LocalTime.now();
@@ -99,8 +100,9 @@ public class ReminderScanService {
                 }
             }
 
-            return "扫描 " + reminders.size() + " 条，发送 " + sent + " 封，失败 " + failed
+            String message = "扫描 " + reminders.size() + " 条，发送 " + sent + " 封，失败 " + failed
                     + " 封，跳过 " + skipped + " 条";
+            return failed > 0 ? JobResult.partial(message) : JobResult.ok(message);
         } finally {
             running.set(false);
         }

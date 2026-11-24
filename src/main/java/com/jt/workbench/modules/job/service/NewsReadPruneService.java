@@ -1,5 +1,6 @@
 package com.jt.workbench.modules.job.service;
 
+import io.github.jiangood.openadmin.modules.job.JobResult;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.Logger;
@@ -22,12 +23,12 @@ public class NewsReadPruneService {
 
     private final JdbcTemplate jdbc;
 
-    public String run(Logger logger, java.util.function.Consumer<String> progress) {
+    public JobResult run(Logger logger, java.util.function.Consumer<String> progress) {
         long now = System.currentTimeMillis();
         int deleted = jdbc.update(
                 "DELETE FROM news_item WHERE status = 'read' AND create_time < ?",
                 Timestamp.from(Instant.ofEpochMilli(now - READ_RETENTION_MS)));
         logger.info("资讯清理：已读 {} 条", deleted);
-        return "清理已读 " + deleted + " 条";
+        return JobResult.ok("清理已读 " + deleted + " 条");
     }
 }

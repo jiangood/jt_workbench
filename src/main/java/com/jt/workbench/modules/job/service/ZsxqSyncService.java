@@ -20,6 +20,7 @@ import com.zsxq.sdk.model.Topic;
 import com.zsxq.sdk.request.TopicsRequest.ListCommentsOptions;
 import com.zsxq.sdk.request.TopicsRequest.ListTopicsOptions;
 import io.github.jiangood.openadmin.modules.config.service.SysConfigService;
+import io.github.jiangood.openadmin.modules.job.JobResult;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.Logger;
@@ -106,14 +107,14 @@ public class ZsxqSyncService {
      * <p>先用星球列表接口校验 token，再依次执行话题、专栏（按间隔）、历史图片回填。
      * 任一步触发风控（1059）或限流（40001）会立即中止本轮并进入冷却，避免持续请求加重风控。</p>
      */
-    public String syncAll(Logger logger, java.util.function.Consumer<String> progress) {
+    public JobResult syncAll(Logger logger, java.util.function.Consumer<String> progress) {
         String token = configService.getString("zsxq.token");
-        if (token == null || token.isBlank()) return "未配置知识星球 token，跳过";
+        if (token == null || token.isBlank()) return JobResult.skip("未配置知识星球 token，跳过");
         ensureTables();
         resetCooldownOnTokenChange(token);
 
         String cooling = cooldownMessage();
-        if (cooling != null) return cooling;
+        if (cooling != null) return JobResult.skip(cooling);
 
         ZsxqClient client = buildClient(token);
         progress.accept("校验 token");
@@ -124,7 +125,7 @@ public class ZsxqSyncService {
             } catch (Exception e) {
                 if (isRiskControl(e)) throw new RiskControlException(e);
                 logger.warn("知识星球 token 校验失败：{}", e.getMessage());
-                return tokenErrorText(e);
+                return JobResult.fail(tokenErrorText(e));
             }
 
             List<String> groupIds = resolveGroupIds(remoteGroups);
@@ -138,9 +139,9 @@ public class ZsxqSyncService {
             setState(STATE_RISK_STRIKES, 0);
             String overview = String.join("；", parts);
             log.info("[知识星球] 本轮概览：{}", overview);
-            return overview;
+            return JobResult.ok(overview);
         } catch (RiskControlException e) {
-            return enterRiskCooldown(logger, e);
+            return JobResult.fail(enterRiskCooldown(logger, e));
         }
     }
 
