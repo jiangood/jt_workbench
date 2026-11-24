@@ -232,6 +232,7 @@ export default function BookReader({params}) {
     const [prefs, setPrefs] = React.useState(loadPrefs)
     const [chapter, setChapter] = React.useState('')
     const [progress, setProgress] = React.useState(0)
+    const [pageInfo, setPageInfo] = React.useState({page: 0, total: 0})
     const [toc, setToc] = React.useState([])
     const [tocCurrent, setTocCurrent] = React.useState(-1)
     const [tocOpen, setTocOpen] = React.useState(false)
@@ -382,6 +383,7 @@ export default function BookReader({params}) {
             try {
                 setLoading(true)
                 setLoadPct(0)
+                setPageInfo({page: 0, total: 0})
                 setLoadingText('正在准备阅读…')
 
                 // 服务端确保 EPUB 已解包并返回入口 OPF 路径（首次会下载+解压，之后命中本地缓存）
@@ -419,10 +421,27 @@ export default function BookReader({params}) {
                     return 0
                 }
 
+                // 页码：按 epub.js 的整本位置统计（约每 1200 字一个位置）折算已读页 / 总页
+                const paintPages = loc => {
+                    try {
+                        const locations = epubRef.current?.locations
+                        const cfi = loc?.start?.cfi
+                        if (!locationsReadyRef.current || !locations || !cfi) return
+                        const total = locations.length()
+                        if (!total) return
+                        const index = locations.locationFromCfi(cfi)
+                        if (index < 0) return
+                        setPageInfo({page: Math.min(index + 1, total), total})
+                    } catch {
+                        /* 位置统计未就绪 */
+                    }
+                }
+
                 const paintProgress = () => {
                     const ratio = rateLocation(lastLocRef.current)
                     setProgress(Math.round(ratio * 100))
                     progressReporter.report(Math.round(ratio * 100))
+                    paintPages(lastLocRef.current)
                 }
 
                 const opfUrl = UrlUtils.contextPath(
@@ -923,7 +942,9 @@ export default function BookReader({params}) {
                 </div>
             </div>
             <div className='reader-topbar-right'>
-                <span className='reader-percent'>{progress}%</span>
+                <span className='reader-percent' title='已读页数 / 总页数'>
+                    {pageInfo.total > 0 ? `${pageInfo.page} / ${pageInfo.total} 页` : `${progress}%`}
+                </span>
                 <Tooltip title='目录'>
                     <Button type='text' icon={<MenuOutlined/>} onClick={() => setTocOpen(true)}/>
                 </Tooltip>
@@ -940,7 +961,9 @@ export default function BookReader({params}) {
         </header>}
 
         {immersive && <>
-            <div className='reader-immersive-hint'>点屏幕中间恢复工具栏</div>
+            <div className='reader-immersive-hint'>
+                {pageInfo.total > 0 ? `${pageInfo.page} / ${pageInfo.total} 页 · ` : ''}点屏幕中间恢复工具栏
+            </div>
             <div className='reader-fabs'>
                 <Tooltip title='目录' placement='left'>
                     <button className='reader-fab' type='button' onClick={() => setTocOpen(true)}><MenuOutlined/></button>

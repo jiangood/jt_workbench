@@ -71,6 +71,7 @@
     font-size: 13px;
     color: var(--rd-sub);
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
     margin-right: 6px;
 }
 
@@ -91,6 +92,18 @@
 
 .reader-view iframe {
     border: 0 !important;
+}
+
+/* 上下滚动阅读不显示滚动条（各浏览器分别处理） */
+.reader-view .epub-container {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+.reader-view .epub-container::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
 }
 
 .reader-mask {
@@ -337,7 +350,9 @@
     }
 
     .reader-percent {
-        display: none;
+        display: block;
+        font-size: 11px;
+        margin-right: 2px;
     }
 
     .reader-fabs {
