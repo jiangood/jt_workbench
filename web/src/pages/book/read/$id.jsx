@@ -58,11 +58,6 @@ const WIDTH_OPTIONS = [
     {value: 1000, label: '宽'},
 ]
 
-const MODE_OPTIONS = [
-    {value: 'paged', label: '分页'},
-    {value: 'scroll', label: '滚动'},
-]
-
 const AUTO_OPTIONS = [
     {value: 0, label: '关闭'},
     {value: 10, label: '10 秒'},
@@ -83,7 +78,6 @@ const DEFAULT_PREFS = {
     family: 'default',
     weight: 400,
     width: 800,
-    mode: 'paged',
 }
 
 function readStorage(key) {
@@ -113,7 +107,6 @@ function loadPrefs() {
             size: Math.max(14, Math.min(28, Number(raw.size) || DEFAULT_PREFS.size)),
             weight: [400, 500, 600].includes(Number(raw.weight)) ? Number(raw.weight) : 400,
             width: [640, 800, 1000].includes(Number(raw.width)) ? Number(raw.width) : 800,
-            mode: raw.mode === 'scroll' ? 'scroll' : 'paged',
         }
     } catch {
         return {...DEFAULT_PREFS}
@@ -379,7 +372,6 @@ export default function BookReader({params}) {
         let saveTimer = 0
         let paintTimer = 0
         let themeTimer = 0
-        const wheelDocs = []
         const cleanupFns = []
 
         // 打开即记一次「最近阅读」，待读 → 阅读中；失败不影响阅读
@@ -443,10 +435,13 @@ export default function BookReader({params}) {
                     epub.on('openFailed', err => reject(err instanceof Error ? err : new Error('这本书解析失败（不是有效的 EPUB 文件）')))
                 })
 
-                const mode = prefsRef.current.mode
-                const rendition = epub.renderTo(viewRef.current, mode === 'scroll'
-                    ? {width: '100%', height: '100%', spread: 'none', flow: 'scrolled-doc', manager: 'continuous'}
-                    : {width: '100%', height: '100%', spread: 'none'})
+                const rendition = epub.renderTo(viewRef.current, {
+                    width: '100%',
+                    height: '100%',
+                    spread: 'none',
+                    flow: 'scrolled-doc',
+                    manager: 'continuous',
+                })
                 renditionRef.current = rendition
                 applyEpubStyle(rendition)
 
@@ -464,30 +459,7 @@ export default function BookReader({params}) {
 
                 const toggleImmersive = () => setImmersive(v => !v)
 
-                // 滚轮翻页：分页模式没有可滚动内容，滚轮就是翻页；滚动模式交给浏览器
-                let wheelAcc = 0
-                let wheelAt = 0
-                let wheelLock = 0
-                const onWheel = e => {
-                    if (prefsRef.current.mode === 'scroll' || e.ctrlKey || e.metaKey) return
-                    if (uiOpenRef.current) return
-                    const now = Date.now()
-                    if (now - wheelAt > 300) wheelAcc = 0
-                    wheelAt = now
-                    wheelAcc += e.deltaY
-                    if (now < wheelLock) {
-                        e.preventDefault()
-                        return
-                    }
-                    if (Math.abs(wheelAcc) < 24) return
-                    const dir = wheelAcc > 0 ? 'next' : 'prev'
-                    wheelAcc = 0
-                    wheelLock = now + 400
-                    e.preventDefault()
-                    go(dir)
-                }
-
-                // 左右滑动翻页；点击不再翻页，点击中间区域进入沉浸
+                // 点击屏幕中间进入 / 退出沉浸阅读；上下滚动交给浏览器原生处理
                 const wirePointer = target => {
                     if (!target?.addEventListener) return
                     let startX = 0
@@ -522,19 +494,14 @@ export default function BookReader({params}) {
                         const dx = p.clientX - startX
                         const dy = p.clientY - startY
                         const dt = Date.now() - startAt
-                        if (Math.abs(dx) > 48 && Math.abs(dx) > Math.abs(dy) * 1.2 && dt < 900) {
-                            if (dx < 0) go('next')
-                            else go('prev')
-                            return
-                        }
-                        if (moved || dt > 500) return
+                        // 滚动过程中不响应点击（触屏滑动 / 鼠标拖选）
+                        if (moved || Math.abs(dx) > 10 || Math.abs(dy) > 10 || dt > 500) return
                         try {
                             const sel = target.getSelection?.() || target.ownerDocument?.getSelection?.()
                             if (sel && !sel.isCollapsed) return
                         } catch {
                             /* 跨域 / 异常忽略 */
                         }
-                        // 翻页用左右滑动，点击左/右区域不再翻页：点击中间区域切换沉浸阅读
                         const width = target.defaultView?.innerWidth
                             || (target === viewRef.current ? viewRef.current?.clientWidth : 0)
                             || 1
@@ -656,16 +623,11 @@ export default function BookReader({params}) {
                     } catch {
                         /* 跨域 / 异常：指针事件仍由 wirePointer 处理，这里兜底忽略 */
                     }
-                    doc.addEventListener('wheel', onWheel, {passive: false})
-                    wheelDocs.push(doc)
                     applyContentStyle(contents)
                     fixContentImages(contents)
                     wirePointer(doc)
                 })
 
-                viewRef.current?.addEventListener('wheel', onWheel, {passive: false})
-                cleanupFns.push(() => viewRef.current?.removeEventListener('wheel', onWheel))
-                cleanupFns.push(() => wheelDocs.forEach(doc => doc.removeEventListener('wheel', onWheel)))
                 cleanupFns.push(wirePointer(viewRef.current))
 
                 /* ---- 目录：把 href 映射到 spine 序号，用于高亮当前章 ---- */
@@ -742,10 +704,12 @@ export default function BookReader({params}) {
                     if (uiOpenRef.current) return
                     const tag = e.target?.tagName?.toLowerCase()
                     if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target?.isContentEditable) return
-                    if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+                    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp' || e.key === 'PageUp'
+                        || (e.key === ' ' && e.shiftKey)) {
                         e.preventDefault()
                         go('prev')
-                    } else if (e.key === 'ArrowRight' || e.key === 'PageDown') {
+                    } else if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === 'PageDown'
+                        || e.key === ' ') {
                         e.preventDefault()
                         go('next')
                     } else if (e.key === 'Escape') {
@@ -756,8 +720,10 @@ export default function BookReader({params}) {
                 cleanupFns.push(() => window.removeEventListener('keydown', onKey))
                 rendition.on('keydown', e => {
                     if (uiOpenRef.current) return
-                    if (e.key === 'ArrowLeft') go('prev')
-                    if (e.key === 'ArrowRight') go('next')
+                    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp' || e.key === 'PageUp'
+                        || (e.key === ' ' && e.shiftKey)) go('prev')
+                    if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === 'PageDown'
+                        || e.key === ' ') go('next')
                 })
 
                 /* ---- 恢复上次阅读位置（云端优先，本地兜底） ---- */
@@ -833,7 +799,6 @@ export default function BookReader({params}) {
                     /* 已销毁 */
                 }
             })
-            wheelDocs.length = 0
             try {
                 renditionRef.current?.destroy()
             } catch {
@@ -866,6 +831,7 @@ export default function BookReader({params}) {
 
     const changePrefs = patch => setPrefs(prev => ({...prev, ...patch}))
 
+    /** 修改阅读宽度：重排后位置由 epub.js 自行保持 */
     const changeWidth = width => {
         changePrefs({width})
         window.setTimeout(() => {
@@ -876,40 +842,6 @@ export default function BookReader({params}) {
             }
         }, 120)
     }
-
-    /** 切换分页 / 滚动：epub.js 换 manager 要重建实例，先存位置再刷新页面最稳 */
-    const changeMode = mode => {
-        if (mode === prefs.mode) return
-        const cfi = lastLocRef.current?.start?.cfi
-        if (cfi && id) writeLocalPosition(id, {v: fileVersion(book), cfi})
-        try {
-            reportersRef.current?.position.flush()
-            reportersRef.current?.progress.flush()
-        } catch {
-            /* 忽略 */
-        }
-        changePrefs({mode})
-        window.setTimeout(() => window.location.reload(), 200)
-    }
-
-    const goPrev = () => {
-        try {
-            renditionRef.current?.prev()?.catch?.(() => {
-            })
-        } catch {
-            /* 书首 */
-        }
-    }
-
-    const goNext = () => {
-        try {
-            renditionRef.current?.next()?.catch?.(() => {
-            })
-        } catch {
-            /* 书末 */
-        }
-    }
-
 
     const cycleTheme = () => {
         const order = Object.keys(THEMES)
@@ -1056,7 +988,7 @@ export default function BookReader({params}) {
         <Drawer title='目录' placement='left' width={Math.min(window.innerWidth * 0.9, 380)}
                 open={tocOpen} onClose={() => setTocOpen(false)} styles={drawerStyles}>
             {toc.length === 0
-                ? <Empty description='这本书没有目录信息，可按方向键、滚轮或左右滑动翻页' image={Empty.PRESENTED_IMAGE_SIMPLE}/>
+                ? <Empty description='这本书没有目录信息，向上/向下滚动即可继续阅读' image={Empty.PRESENTED_IMAGE_SIMPLE}/>
                 : <ol className='reader-toc-list'>
                     {toc.map((item, index) => <li key={`${item.href}-${index}`}>
                         <button type='button' className='reader-toc-btn'
@@ -1096,11 +1028,7 @@ export default function BookReader({params}) {
                 <Segmented size='small' value={prefs.width} options={WIDTH_OPTIONS}
                            onChange={changeWidth}/>
             </SettingRow>
-            <SettingRow label='模式'>
-                <Segmented size='small' value={prefs.mode} options={MODE_OPTIONS}
-                           onChange={changeMode}/>
-            </SettingRow>
-            <SettingRow label='自动翻页'>
+            <SettingRow label='自动滚动'>
                 <Select size='small' style={{width: 120}} value={autoSec} options={AUTO_OPTIONS}
                         onChange={v => setAutoSec(v)}/>
             </SettingRow>
@@ -1111,7 +1039,7 @@ export default function BookReader({params}) {
                 }}>沉浸</Button>
             </SettingRow>
             <p className='reader-tip' style={{marginTop: 16}}>
-                分页模式：方向键 / 滚轮 / 左右滑动翻页；点屏幕中间进入沉浸阅读。<br/>
+                上下滚动阅读：滚轮 / 触控板 / 触摸滑动，方向键上下或翻页键滚动一屏；点屏幕中间进入沉浸阅读。<br/>
                 阅读进度与位置会自动保存，换设备可继续读。
             </p>
         </Drawer>
