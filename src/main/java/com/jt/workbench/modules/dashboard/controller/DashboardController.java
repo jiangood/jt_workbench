@@ -258,8 +258,10 @@ public class DashboardController {
     }
 
     private Map<String, Object> buildZsxq() {
-        List<ZsxqTopic> list = zsxqTopicRepository.findAll(
-                PageRequest.of(0, 3, Sort.by(Sort.Direction.DESC, "lastCommentTime"))).getContent();
+        // 只取星球话题：专栏文章只在专栏页展示，避免首页出现空壳条目
+        List<ZsxqTopic> list = zsxqTopicRepository.findMainTopics(
+                PageRequest.of(0, 3, Sort.by(Sort.Order.desc("lastCommentTime"),
+                        Sort.Order.desc("sourceCreateTime")))).getContent();
         List<Map<String, Object>> latest = new ArrayList<>();
         for (ZsxqTopic t : list) {
             Map<String, Object> m = new LinkedHashMap<>();
@@ -272,7 +274,7 @@ public class DashboardController {
         }
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("latest", latest);
-        out.put("total", zsxqTopicRepository.count());
+        out.put("total", zsxqTopicRepository.countMainTopics());
         return out;
     }
 

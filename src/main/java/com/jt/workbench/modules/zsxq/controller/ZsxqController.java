@@ -176,12 +176,12 @@ public class ZsxqController {
         return value == null ? "" : String.valueOf(value).trim();
     }
 
-    /** 统计：帖子总数 / 星球数 / 专栏数 */
+    /** 统计：帖子总数（不含专栏文章）/ 星球数 / 专栏数 */
     @HasPermission("zsxq:read")
     @GetMapping("stats")
     public AjaxResult stats() {
         Map<String, Object> map = new LinkedHashMap<>();
-        map.put("topics", topicRepository.count());
+        map.put("topics", topicRepository.countMainTopics());
         map.put("groups", groupRepository.count());
         map.put("columns", columnRepository.countByVisibleTrue());
         return new AjaxResult().ok().data(map);
