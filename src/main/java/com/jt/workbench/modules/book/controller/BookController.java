@@ -95,6 +95,14 @@ public class BookController {
         return new AjaxResult().ok().data(data);
     }
 
+    /** 读书入口：返回最近阅读且已有 EPUB 的书，没有记录时返回空 */
+    @HasPermission("book:read")
+    @GetMapping("latest")
+    public AjaxResult latest() {
+        Page<Book> page = bookRepository.findLatestRead(org.springframework.data.domain.PageRequest.of(0, 1));
+        return new AjaxResult().ok().data(page.hasContent() ? page.getContent().getFirst() : null);
+    }
+
     @HasPermission("book:read")
     @GetMapping("info/{id}")
     public AjaxResult info(@PathVariable String id) {

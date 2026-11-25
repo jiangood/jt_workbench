@@ -804,7 +804,7 @@ export default function BookReader({params}) {
         <header className='reader-topbar'>
             <div className='reader-topbar-left'>
                 <Tooltip title='返回书架'>
-                    <Button type='text' icon={<ArrowLeftOutlined/>} onClick={() => history.push('/book')}/>
+                    <Button type='text' icon={<ArrowLeftOutlined/>} onClick={() => history.push('/book/shelf')}/>
                 </Tooltip>
                 <div className='reader-book-meta'>
                     <div className='reader-book-title'>{title}</div>
@@ -843,7 +843,7 @@ export default function BookReader({params}) {
                 <div className='reader-error-box'>
                     <h2>无法打开这本书</h2>
                     <p>{error}</p>
-                    <Button type='primary' onClick={() => history.push('/book')}>返回书架</Button>
+                    <Button type='primary' onClick={() => history.push('/book/shelf')}>返回书架</Button>
                     <Button style={{marginLeft: 8}} onClick={() => window.location.reload()}>重试</Button>
                 </div>
             </div>}

@@ -30,6 +30,15 @@ public interface BookRepository extends JpaRepository<Book, String> {
     @Query("select distinct b.category from Book b where b.category is not null and b.category <> '' order by b.category")
     java.util.List<String> findCategories();
 
+    /** 读书入口：最近阅读且已上传 EPUB 的书 */
+    @Query("""
+            select b from Book b
+            where b.r2Key is not null and b.r2Key <> ''
+              and b.lastReadAt is not null
+            order by b.lastReadAt desc, b.updateTime desc
+            """)
+    Page<Book> findLatestRead(Pageable pageable);
+
     /** 书架顶部统计：按阅读状态计数（null 视为待读） */
     long countByStatus(String status);
 

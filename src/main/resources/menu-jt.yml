@@ -32,7 +32,7 @@ menus:
       - {name: 读取, code: music:read}
       - {name: 编辑, code: music:edit}
   jt-book:
-    name: 书架
+    name: 读书
     icon: BookOutlined
     path: /book
     perms:
