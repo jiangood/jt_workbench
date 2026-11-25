@@ -91,9 +91,9 @@ export default class TopicPost extends React.Component {
                             open: previewIndex === idx,
                             onOpenChange: open => this.togglePreview(idx, open),
                             // 预览态下再次点击图片即关闭，回到信息流中的缩略图
-                            imageRender: (node, info) => React.cloneElement(node, {
+                            imageRender: node => React.cloneElement(node, {
                                 className: `${node.props.className || ''} zsxq-post-preview-img`,
-                                onClick: info.actions.onClose,
+                                onClick: () => this.togglePreview(idx, false),
                             }),
                         }}
                     />
