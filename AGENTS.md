@@ -35,5 +35,6 @@
 - **版本号同步**：每次发布新版本时，必须同步修改后端 `pom.xml` 的项目 `<version>` 和前端 `web/package.json` 的 `version`，确保前后端版本号一致，并将其作为发布前检查项。
 - `latest` 镜像：当前 **push 到 `main` 不会自动构建/推送镜像**。`release.yml` 在 push `v*` tag（或手动 `workflow_dispatch`）时执行 Docker 构建（内含后端测试/校验与前端构建），仅推送 `:latest` 至 GitHub Container Registry（GHCR，仅 amd64，`provenance: false`）。
 - 版本发布：`release.yml` 在 push `vX.Y.Z` tag（或手动指定 tag）时构建并创建 GitHub Release；不推送版本或 `sha-*` 镜像标签。
-- 部署 compose 使用 GHCR 地址 `ghcr.io/jiangood/jt_workbench:latest`，`docker compose pull && docker compose up -d` 更新（包为私有时目标机需先 `docker login ghcr.io`；详见 `deploy/README.md`）。
-- **禁止直操作生产**：本地不对线上资源做写操作；线上变更走既定发布流程。
+- **线上自动更新**：目标机由 Watchtower 监控 `ghcr.io/jiangood/jt_workbench:latest`，约每 5 分钟检查一次；发现新镜像后自动拉取、按 60 秒优雅停止旧容器、启动新容器并清理旧镜像。tag 发布成功后即进入自动部署队列，**不要默认要求手工 `docker compose pull && up -d`**；发布后应监控 Watchtower 日志和线上健康状态直至恢复。
+- 部署 compose 使用 GHCR 地址 `ghcr.io/jiangood/jt_workbench:latest`；`docker compose pull && docker compose up -d` 仅作为无 Watchtower 环境或应急恢复的手动方式（包为私有时目标机需先 `docker login ghcr.io`；详见 `deploy/README.md`）。
+- **禁止直操作生产**：本地不对线上资源做写操作；线上变更走既定发布流程，由 Watchtower 执行自动更新。

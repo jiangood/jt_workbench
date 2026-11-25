@@ -36,5 +36,5 @@ cd web && npm ci --registry=https://registry.npmmirror.com && npm run build
 ## 发布与运维
 
 - **最新镜像**：`release.yml` 在 push `v*` tag 且校验通过后构建并仅推送 `:latest` 镜像至 GHCR（仅 amd64）。
-- **版本发布**：`release.yml` 在 push `vX.Y.Z` tag（或手动指定 tag）时创建 GitHub Release；目标机 `docker compose pull && docker compose up -d` 手动部署（详见 `deploy/README.md`）。
+- **版本发布与自动部署**：`release.yml` 在 push `vX.Y.Z` tag（或手动指定 tag）时创建 GitHub Release；线上目标机的 Watchtower 约每 5 分钟检查一次 `:latest`，发现新镜像后自动拉取并重建应用容器。手动 `docker compose pull && docker compose up -d` 仅用于无 Watchtower 环境或应急恢复（详见 `deploy/README.md`）。
 - **禁止直操作生产**：本地不对线上资源做写操作；线上变更走既定发布流程।
