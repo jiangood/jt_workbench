@@ -82,7 +82,7 @@
     pointer-events: none;
 }
 
-/* 先记录正文读完，标题离开视口后再提交已读；折叠时末尾被裁切，不会提前记录 */
+/* 先记录正文末尾已出现，再滑过阅读区中心线才提交已读；折叠时末尾被裁切，不会提前记录 */
 .news-post-read-marker {
     height: 1px;
     clear: both;

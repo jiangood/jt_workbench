@@ -31,6 +31,9 @@ export const pageMeta = {title: '资讯'}
 
 const PAGE_SIZE = 20
 
+/** 正文末尾滑过阅读区中心线后，才提交自动已读 */
+const READ_COMMIT_RATIO = 0.5
+
 /** 正文纯文本超过该长度时默认折叠 */
 const CLAMP_TEXT_LENGTH = 600
 
@@ -80,70 +83,80 @@ export default class NewsReaderPage extends React.Component {
     loadSeq = 0
     loadMoreLock = false
     markingReadIds = new Set()
+    feedRef = React.createRef()
+    scrollRoot = null
     readMarkers = new Map()
-    titleNodes = new Map()
     readCompleteIds = new Set()
-    titleSeenIds = new Set()
-    titleVisibleIds = new Set()
-    newsObserver = null
+    readObserver = null
+    readRaf = null
+    hasScrolled = false
 
     componentDidMount() {
+        this.scrollRoot = this.feedRef.current?.closest('.oa-page') || null
         if (typeof IntersectionObserver !== 'undefined') {
-            this.newsObserver = new IntersectionObserver(this.handleNewsIntersection, {threshold: [0, 1]})
+            this.readObserver = new IntersectionObserver(this.handleReadMarkerIntersection, {
+                root: this.scrollRoot,
+                threshold: 1,
+            })
         }
+        this.scrollRoot?.addEventListener('scroll', this.handleScroll, {passive: true})
+        window.addEventListener('resize', this.scheduleReadCheck)
         this.loadBase()
         this.reloadList(true)
     }
 
     componentWillUnmount() {
-        this.newsObserver?.disconnect()
+        this.readObserver?.disconnect()
+        this.scrollRoot?.removeEventListener('scroll', this.handleScroll)
+        window.removeEventListener('resize', this.scheduleReadCheck)
+        if (this.readRaf != null) cancelAnimationFrame(this.readRaf)
         this.readMarkers.clear()
-        this.titleNodes.clear()
         this.readCompleteIds.clear()
-        this.titleSeenIds.clear()
-        this.titleVisibleIds.clear()
     }
 
-    setObservedRef = (nodes, key, node) => {
-        const previous = nodes.get(key)
+    setReadMarkerRef = (key, node) => {
+        const previous = this.readMarkers.get(key)
         if (previous === node) return
-        if (previous) this.newsObserver?.unobserve(previous)
+        if (previous) this.readObserver?.unobserve(previous)
         if (node) {
-            nodes.set(key, node)
-            this.newsObserver?.observe(node)
+            this.readMarkers.set(key, node)
+            this.readObserver?.observe(node)
         } else {
-            nodes.delete(key)
+            this.readMarkers.delete(key)
         }
     }
 
-    setReadMarkerRef = (key, node) => this.setObservedRef(this.readMarkers, key, node)
-    setTitleRef = (key, node) => this.setObservedRef(this.titleNodes, key, node)
-
-    handleNewsIntersection = entries => {
+    handleReadMarkerIntersection = entries => {
         if (this.state.tab !== 'unread') return
         for (const entry of entries) {
             const id = entry.target.dataset.newsId
-            if (this.titleNodes.get(id) === entry.target) {
-                if (entry.isIntersecting) {
-                    this.titleSeenIds.add(id)
-                    this.titleVisibleIds.add(id)
-                } else {
-                    this.titleVisibleIds.delete(id)
-                }
-            } else if (this.readMarkers.get(id) === entry.target) {
-                if (entry.isIntersecting && entry.intersectionRatio >= 1) this.readCompleteIds.add(id)
-            } else {
-                continue
-            }
-            this.markReadIfFinished(id)
+            if (this.readMarkers.get(id) !== entry.target) continue
+            if (entry.isIntersecting && entry.intersectionRatio >= 1) this.readCompleteIds.add(id)
         }
+        if (this.hasScrolled) this.scheduleReadCheck()
     }
 
-    markReadIfFinished = id => {
-        if (this.state.tab !== 'unread') return
-        if (!this.readCompleteIds.has(id) || !this.titleSeenIds.has(id) || this.titleVisibleIds.has(id)) return
-        const item = this.state.items.find(it => String(it.id) === id)
-        if (item?.status === 'unread') this.markRead(item, {remove: false})
+    handleScroll = () => {
+        this.hasScrolled = true
+        this.scheduleReadCheck()
+    }
+
+    scheduleReadCheck = () => {
+        if (this.readRaf != null) return
+        this.readRaf = requestAnimationFrame(this.checkReadPositions)
+    }
+
+    checkReadPositions = () => {
+        this.readRaf = null
+        if (!this.hasScrolled || this.state.tab !== 'unread' || !this.scrollRoot) return
+        const rootRect = this.scrollRoot.getBoundingClientRect()
+        const centerY = rootRect.top + rootRect.height * READ_COMMIT_RATIO
+        for (const [id, marker] of this.readMarkers) {
+            if (!this.readCompleteIds.has(id) || marker.getBoundingClientRect().bottom > centerY) continue
+            this.readCompleteIds.delete(id)
+            const item = this.state.items.find(it => String(it.id) === id)
+            if (item?.status === 'unread') this.markRead(item, {remove: false})
+        }
     }
 
     loadBase = async () => {
@@ -175,9 +188,8 @@ export default class NewsReaderPage extends React.Component {
     reloadList = (initial = false) => {
         this.loadSeq += 1
         this.loadMoreLock = false
+        this.hasScrolled = false
         this.readCompleteIds.clear()
-        this.titleSeenIds.clear()
-        this.titleVisibleIds.clear()
         this.setState({
             items: [],
             page: 1,
@@ -399,8 +411,7 @@ export default class NewsReaderPage extends React.Component {
                 <span>{[src?.name, item.author, fmtTime(item.pubTime)].filter(Boolean).join(' · ')}</span>
                 {isFav ? <Tag color='gold' bordered={false}>已收藏</Tag> : null}
             </div>
-            <h2 ref={node => this.setTitleRef(key, node)} data-news-id={key}
-                className='news-post-title'>{item.title || '(无标题)'}</h2>
+            <h2 className='news-post-title'>{item.title || '(无标题)'}</h2>
             {item.tags ? <div className='news-post-tags'><Tag>{item.tags}</Tag></div> : null}
             <div className={`news-post-content${longText && !expanded ? ' is-clamped' : ''}`}>
                 {safe.trim()
@@ -462,7 +473,7 @@ export default class NewsReaderPage extends React.Component {
         }
 
         return <Page>
-            <div className='news-feed'>
+            <div className='news-feed' ref={this.feedRef}>
                 <div className='news-feed-toolbar'>
                     <Segmented value={tab} onChange={this.onTabChange} options={[
                         {label: `未读${stats.unread ? ` (${stats.unread})` : ''}`, value: 'unread'},
