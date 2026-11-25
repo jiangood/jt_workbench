@@ -154,6 +154,24 @@
     overflow: hidden;
 }
 
+.zsxq-post-text .zsxq-rich-link,
+.zsxq-comment-text .zsxq-rich-link {
+    color: #eb2f96;
+    text-decoration: none;
+}
+
+.zsxq-post-text .zsxq-rich-link:hover,
+.zsxq-comment-text .zsxq-rich-link:hover {
+    text-decoration: underline;
+}
+
+.zsxq-post-text .zsxq-rich-link:focus-visible,
+.zsxq-comment-text .zsxq-rich-link:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: 2px;
+    border-radius: 2px;
+}
+
 .zsxq-post-toggle {
     margin-top: 6px;
     padding: 0;

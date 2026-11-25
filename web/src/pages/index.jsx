@@ -24,6 +24,7 @@ import {
     TeamOutlined,
 } from '@ant-design/icons';
 import {HttpClient, Page} from '@jiangood/open-admin';
+import {zsxqPlainText} from './zsxq/richText';
 
 const {Text, Title, Paragraph} = Typography;
 
@@ -329,7 +330,7 @@ export default class HomePage extends React.Component {
                         {items.map((t) => (
                             <a key={t.id} href="#/zsxq" style={{display: 'flex', justifyContent: 'space-between', gap: 12, padding: '10px 0', borderBottom: '1px solid #f5f5f5', color: 'inherit'}}>
                                 <div style={{minWidth: 0, fontSize: 14, color: '#222', lineHeight: 1.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>
-                                    {t.preview || '(无内容)'}
+                                    {zsxqPlainText(t.preview) || '(无内容)'}
                                 </div>
                                 <div style={{flex: 'none', fontSize: 12, color: '#999', paddingTop: 2}}>
                                     {fmtDateTime(t.time)}

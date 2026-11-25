@@ -1,6 +1,7 @@
 import React from 'react'
 import {Image, Switch, Tag} from 'antd'
 import {fmtTime, imageSrc, topicImages} from './media'
+import {parseZsxqText} from './richText'
 
 /** 摘要超过该长度时默认折叠，避免单条帖子占满整屏 */
 const CLAMP_THRESHOLD = 600
@@ -19,13 +20,22 @@ export default class TopicPost extends React.Component {
 
     togglePreview = (index, open) => this.setState({previewIndex: open ? index : -1})
 
+    renderTextParts = (parts) => parts.map((part, index) => part.href
+        ? <a key={index} className='zsxq-rich-link' href={part.href} target='_blank' rel='noreferrer'>
+            {part.value}
+        </a>
+        : <React.Fragment key={index}>{part.value}</React.Fragment>)
+
+    renderRichText = (raw) => this.renderTextParts(parseZsxqText(raw))
+
     render() {
         const {item, comments = [], isOwner = false, meta = null} = this.props
         const {expanded, ownerCommentOnly, previewIndex} = this.state
         const images = topicImages(item)
         const ownerComments = comments.filter(c => c.owner)
         const shownComments = ownerCommentOnly ? ownerComments : comments
-        const text = item.digest || ''
+        const textParts = parseZsxqText(item.digest || '')
+        const text = textParts.map(part => part.value).join('')
         const longText = text.length > CLAMP_THRESHOLD
         // 专栏文章：优先用同步到的原文地址；没有时回退到星球话题详情页
         const sourceUrl = item.articleUrl
@@ -52,7 +62,7 @@ export default class TopicPost extends React.Component {
             </div>
 
             {text ? <>
-                <div className={`zsxq-post-text${longText && !expanded ? ' is-clamped' : ''}`}>{text}</div>
+                <div className={`zsxq-post-text${longText && !expanded ? ' is-clamped' : ''}`}>{this.renderTextParts(textParts)}</div>
                 {longText ? <button type='button' className='zsxq-post-toggle' onClick={this.toggleExpanded}>
                     {expanded ? '收起' : '展开全文'}
                 </button> : null}
@@ -101,7 +111,7 @@ export default class TopicPost extends React.Component {
                                 </span>
                                 {c.time ? <span className='zsxq-comment-time'>{fmtTime(c.time)}</span> : null}
                             </div>
-                            <div className='zsxq-comment-text'>{c.text || ''}</div>
+                            <div className='zsxq-comment-text'>{this.renderRichText(c.text || '')}</div>
                         </li>
                     ))}
                 </ul>
