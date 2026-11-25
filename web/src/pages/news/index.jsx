@@ -31,11 +31,11 @@ export const pageMeta = {title: '资讯'}
 
 const PAGE_SIZE = 20
 
-/** 正文末尾滑过阅读区中心线后，才提交自动已读 */
-const READ_COMMIT_RATIO = 0.5
-
-/** 自动已读的最短可见停留，避免快速划过或最后一条立刻被标记 */
+/** 正文末尾完整可见并停留后提交自动已读，避免快速划过误标记 */
 const AUTO_READ_DWELL_MS = 800
+
+/** 兼容手机端亚像素布局，避免 1px 标记因 intersectionRatio 略小于 1 而不触发 */
+const READ_MARKER_THRESHOLD = 0.99
 
 /** 正文纯文本超过该长度时默认折叠 */
 const CLAMP_TEXT_LENGTH = 600
@@ -90,18 +90,17 @@ export default class NewsReaderPage extends React.Component {
     scrollRoot = null
     readMarkers = new Map()
     readMarkerRefs = new Map()
-    readCompleteAt = new Map()
+    readVisibleIds = new Set()
     readTimers = new Map()
     readObserver = null
     readRaf = null
-    hasScrolled = false
 
     componentDidMount() {
         this.scrollRoot = this.feedRef.current?.closest('.oa-page') || null
         if (typeof IntersectionObserver !== 'undefined') {
             this.readObserver = new IntersectionObserver(this.handleReadMarkerIntersection, {
                 root: this.scrollRoot,
-                threshold: 1,
+                threshold: READ_MARKER_THRESHOLD,
             })
         }
         this.scrollRoot?.addEventListener('scroll', this.handleScroll, {passive: true})
@@ -115,17 +114,26 @@ export default class NewsReaderPage extends React.Component {
         this.scrollRoot?.removeEventListener('scroll', this.handleScroll)
         window.removeEventListener('resize', this.scheduleReadCheck)
         if (this.readRaf != null) cancelAnimationFrame(this.readRaf)
-        for (const timer of this.readTimers.values()) clearTimeout(timer)
-        this.readTimers.clear()
+        this.clearReadDwells()
         this.readMarkers.clear()
         this.readMarkerRefs.clear()
-        this.readCompleteAt.clear()
     }
 
     clearReadTimer = id => {
         const timer = this.readTimers.get(id)
         if (timer != null) clearTimeout(timer)
         this.readTimers.delete(id)
+    }
+
+    stopReadDwell = id => {
+        this.readVisibleIds.delete(id)
+        this.clearReadTimer(id)
+    }
+
+    clearReadDwells = () => {
+        for (const timer of this.readTimers.values()) clearTimeout(timer)
+        this.readTimers.clear()
+        this.readVisibleIds.clear()
     }
 
     getReadMarkerRef = key => {
@@ -147,9 +155,14 @@ export default class NewsReaderPage extends React.Component {
         } else {
             this.readMarkers.delete(key)
             this.readMarkerRefs.delete(key)
-            this.readCompleteAt.delete(key)
-            this.clearReadTimer(key)
+            this.stopReadDwell(key)
         }
+    }
+
+    startReadDwell = id => {
+        if (this.readVisibleIds.has(id)) return
+        this.readVisibleIds.add(id)
+        this.scheduleReadCommit(id, AUTO_READ_DWELL_MS)
     }
 
     handleReadMarkerIntersection = entries => {
@@ -157,15 +170,16 @@ export default class NewsReaderPage extends React.Component {
         for (const entry of entries) {
             const id = entry.target.dataset.newsId
             if (this.readMarkers.get(id) !== entry.target) continue
-            if (entry.isIntersecting && entry.intersectionRatio >= 1 && !this.readCompleteAt.has(id)) {
-                this.readCompleteAt.set(id, Date.now())
-            }
+            const item = this.state.items.find(it => String(it.id) === id)
+            const visible = item?.status === 'unread'
+                && entry.isIntersecting
+                && entry.intersectionRatio >= READ_MARKER_THRESHOLD
+            if (visible) this.startReadDwell(id)
+            else this.stopReadDwell(id)
         }
-        this.scheduleReadCheck()
     }
 
     handleScroll = () => {
-        this.hasScrolled = true
         this.scheduleReadCheck()
     }
 
@@ -178,35 +192,39 @@ export default class NewsReaderPage extends React.Component {
         if (this.readTimers.has(id)) return
         const timer = setTimeout(() => {
             this.readTimers.delete(id)
-            this.scheduleReadCheck()
+            this.commitRead(id)
         }, delay)
         this.readTimers.set(id, timer)
     }
 
+    commitRead = id => {
+        if (!this.readVisibleIds.delete(id)) return
+        this.clearReadTimer(id)
+        const item = this.state.items.find(it => String(it.id) === id)
+        if (item?.status === 'unread') this.markRead(item, {remove: false})
+    }
+
+    isReadMarkerVisible = (marker, rootRect) => {
+        const rect = marker.getBoundingClientRect()
+        return rect.height > 0
+            && rect.top >= rootRect.top
+            && rect.bottom <= rootRect.bottom
+            && rect.left >= rootRect.left
+            && rect.right <= rootRect.right
+    }
+
     checkReadPositions = () => {
         this.readRaf = null
-        if (this.state.tab !== 'unread' || !this.scrollRoot) return
+        // 支持 IntersectionObserver 时由观察器负责可见性；下面仅作为旧浏览器回退。
+        if (this.readObserver || this.state.tab !== 'unread' || !this.scrollRoot) return
         const rootRect = this.scrollRoot.getBoundingClientRect()
-        const canScroll = this.scrollRoot.scrollHeight - this.scrollRoot.clientHeight > 2
-        if (!this.hasScrolled && canScroll) return
-        const atBottom = this.scrollRoot.scrollHeight - this.scrollRoot.scrollTop - this.scrollRoot.clientHeight <= 2
-        const centerY = rootRect.top + rootRect.height * READ_COMMIT_RATIO
         for (const [id, marker] of this.readMarkers) {
-            const seenAt = this.readCompleteAt.get(id)
-            if (seenAt == null) continue
-            const markerRect = marker.getBoundingClientRect()
-            const passedCenter = this.hasScrolled && markerRect.bottom <= centerY
-            const visibleAtBottom = atBottom && markerRect.bottom <= rootRect.bottom && markerRect.bottom >= rootRect.top
-            if (!passedCenter && !visibleAtBottom) continue
-            const remaining = AUTO_READ_DWELL_MS - (Date.now() - seenAt)
-            if (remaining > 0) {
-                this.scheduleReadCommit(id, remaining)
-                continue
-            }
-            this.readCompleteAt.delete(id)
-            this.clearReadTimer(id)
             const item = this.state.items.find(it => String(it.id) === id)
-            if (item?.status === 'unread') this.markRead(item, {remove: false})
+            if (item?.status === 'unread' && this.isReadMarkerVisible(marker, rootRect)) {
+                this.startReadDwell(id)
+            } else {
+                this.stopReadDwell(id)
+            }
         }
     }
 
@@ -239,10 +257,7 @@ export default class NewsReaderPage extends React.Component {
     reloadList = (initial = false) => {
         this.loadSeq += 1
         this.loadMoreLock = false
-        this.hasScrolled = false
-        for (const timer of this.readTimers.values()) clearTimeout(timer)
-        this.readTimers.clear()
-        this.readCompleteAt.clear()
+        this.clearReadDwells()
         this.setState({
             items: [],
             page: 1,
@@ -306,6 +321,7 @@ export default class NewsReaderPage extends React.Component {
         const current = this.state.items.find(it => String(it.id) === key) || record
         if (current.status !== 'unread') return
         if (this.markingReadIds.has(key)) return
+        this.stopReadDwell(key)
         this.markingReadIds.add(key)
         try {
             await HttpClient.post(`admin/news/${record.id}/read`, null, null, {toastError: false})
@@ -384,7 +400,7 @@ export default class NewsReaderPage extends React.Component {
     toggleExpanded = (key) => {
         this.setState(prev => ({
             expandedById: {...prev.expandedById, [key]: !prev.expandedById[key]},
-        }))
+        }), this.scheduleReadCheck)
     }
 
     // ---- 订阅源 ----
@@ -470,9 +486,9 @@ export default class NewsReaderPage extends React.Component {
                 {safe.trim()
                     ? <div className='jt-news-content' dangerouslySetInnerHTML={{__html: safe}} />
                     : <Typography.Text type='secondary'>（无正文）</Typography.Text>}
-                <div ref={this.getReadMarkerRef(key)} data-news-id={key}
-                     className='news-post-read-marker' aria-hidden='true'/>
             </div>
+            {(!longText || expanded) ? <div ref={this.getReadMarkerRef(key)} data-news-id={key}
+                 className='news-post-read-marker' aria-hidden='true'/> : null}
             {longText ? <button type='button' className='news-post-toggle' onClick={() => this.toggleExpanded(key)}>
                 {expanded ? '收起' : '展开全文'}
             </button> : null}
