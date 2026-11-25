@@ -81,41 +81,69 @@ export default class NewsReaderPage extends React.Component {
     loadMoreLock = false
     markingReadIds = new Set()
     readMarkers = new Map()
-    readObserver = null
+    titleNodes = new Map()
+    readCompleteIds = new Set()
+    titleSeenIds = new Set()
+    titleVisibleIds = new Set()
+    newsObserver = null
 
     componentDidMount() {
         if (typeof IntersectionObserver !== 'undefined') {
-            this.readObserver = new IntersectionObserver(this.handleReadMarkerIntersection, {threshold: 1})
+            this.newsObserver = new IntersectionObserver(this.handleNewsIntersection, {threshold: [0, 1]})
         }
         this.loadBase()
         this.reloadList(true)
     }
 
     componentWillUnmount() {
-        this.readObserver?.disconnect()
+        this.newsObserver?.disconnect()
         this.readMarkers.clear()
+        this.titleNodes.clear()
+        this.readCompleteIds.clear()
+        this.titleSeenIds.clear()
+        this.titleVisibleIds.clear()
     }
 
-    setReadMarkerRef = (key, node) => {
-        const previous = this.readMarkers.get(key)
+    setObservedRef = (nodes, key, node) => {
+        const previous = nodes.get(key)
         if (previous === node) return
-        if (previous) this.readObserver?.unobserve(previous)
+        if (previous) this.newsObserver?.unobserve(previous)
         if (node) {
-            this.readMarkers.set(key, node)
-            this.readObserver?.observe(node)
+            nodes.set(key, node)
+            this.newsObserver?.observe(node)
         } else {
-            this.readMarkers.delete(key)
+            nodes.delete(key)
         }
     }
 
-    handleReadMarkerIntersection = entries => {
+    setReadMarkerRef = (key, node) => this.setObservedRef(this.readMarkers, key, node)
+    setTitleRef = (key, node) => this.setObservedRef(this.titleNodes, key, node)
+
+    handleNewsIntersection = entries => {
         if (this.state.tab !== 'unread') return
         for (const entry of entries) {
-            if (!entry.isIntersecting || entry.intersectionRatio < 1) continue
             const id = entry.target.dataset.newsId
-            const item = this.state.items.find(it => String(it.id) === id)
-            if (item?.status === 'unread') this.markRead(item, {remove: false})
+            if (this.titleNodes.get(id) === entry.target) {
+                if (entry.isIntersecting) {
+                    this.titleSeenIds.add(id)
+                    this.titleVisibleIds.add(id)
+                } else {
+                    this.titleVisibleIds.delete(id)
+                }
+            } else if (this.readMarkers.get(id) === entry.target) {
+                if (entry.isIntersecting && entry.intersectionRatio >= 1) this.readCompleteIds.add(id)
+            } else {
+                continue
+            }
+            this.markReadIfFinished(id)
         }
+    }
+
+    markReadIfFinished = id => {
+        if (this.state.tab !== 'unread') return
+        if (!this.readCompleteIds.has(id) || !this.titleSeenIds.has(id) || this.titleVisibleIds.has(id)) return
+        const item = this.state.items.find(it => String(it.id) === id)
+        if (item?.status === 'unread') this.markRead(item, {remove: false})
     }
 
     loadBase = async () => {
@@ -147,6 +175,9 @@ export default class NewsReaderPage extends React.Component {
     reloadList = (initial = false) => {
         this.loadSeq += 1
         this.loadMoreLock = false
+        this.readCompleteIds.clear()
+        this.titleSeenIds.clear()
+        this.titleVisibleIds.clear()
         this.setState({
             items: [],
             page: 1,
@@ -368,7 +399,8 @@ export default class NewsReaderPage extends React.Component {
                 <span>{[src?.name, item.author, fmtTime(item.pubTime)].filter(Boolean).join(' · ')}</span>
                 {isFav ? <Tag color='gold' bordered={false}>已收藏</Tag> : null}
             </div>
-            <h2 className='news-post-title'>{item.title || '(无标题)'}</h2>
+            <h2 ref={node => this.setTitleRef(key, node)} data-news-id={key}
+                className='news-post-title'>{item.title || '(无标题)'}</h2>
             {item.tags ? <div className='news-post-tags'><Tag>{item.tags}</Tag></div> : null}
             <div className={`news-post-content${longText && !expanded ? ' is-clamped' : ''}`}>
                 {safe.trim()
