@@ -12,12 +12,15 @@ export default class TopicPost extends React.Component {
     state = {
         expanded: false,
         ownerCommentOnly: false,
+        commentsExpanded: false,
         previewIndex: -1,
     }
 
     toggleExpanded = () => this.setState(prev => ({expanded: !prev.expanded}))
 
     toggleOwnerComments = () => this.setState(prev => ({ownerCommentOnly: !prev.ownerCommentOnly}))
+
+    toggleCommentsExpanded = () => this.setState(prev => ({commentsExpanded: !prev.commentsExpanded}))
 
     togglePreview = (index, open) => this.setState({previewIndex: open ? index : -1})
 
@@ -30,14 +33,26 @@ export default class TopicPost extends React.Component {
     renderRichText = (raw) => this.renderTextParts(parseZsxqText(raw))
 
     render() {
-        const {item, comments = [], isOwner = false, meta = null, distinguishOwner = true, showSourceLink = true} = this.props
-        const {expanded, ownerCommentOnly, previewIndex} = this.state
+        const {
+            item,
+            comments = [],
+            isOwner = false,
+            meta = null,
+            distinguishOwner = true,
+            showSourceLink = true,
+            collapseCommentsWithoutOwner = false,
+        } = this.props
+        const {expanded, ownerCommentOnly, commentsExpanded, previewIndex} = this.state
         const markedIsOwner = distinguishOwner && isOwner
         const articleHtml = sanitizeArticleHtml(item.articleContent, item.articleTitle)
         const hasArticleContent = !!articleHtml.trim()
         const images = hasArticleContent ? [] : topicImages(item)
         const ownerComments = distinguishOwner ? comments.filter(c => c.owner) : []
         const shownComments = distinguishOwner && ownerCommentOnly ? ownerComments : comments
+        const shouldCollapseComments = distinguishOwner && collapseCommentsWithoutOwner
+            && comments.length > 0 && ownerComments.length === 0
+        const commentsCollapsed = shouldCollapseComments && !commentsExpanded
+        const commentsListId = `zsxq-comments-${String(item.topicId || item.id || 'post').replace(/[^a-zA-Z0-9_-]/g, '-')}`
         const textParts = parseZsxqText(item.digest || '')
         const text = textParts.map(part => part.value).join('')
         const longText = text.length > CLAMP_THRESHOLD
@@ -103,12 +118,16 @@ export default class TopicPost extends React.Component {
             {comments.length ? <div className='zsxq-post-comments'>
                 <div className='zsxq-comments-head'>
                     <span>评论 {shownComments.length}{distinguishOwner && ownerCommentOnly ? ` / ${comments.length}` : ''}</span>
-                    {ownerComments.length ? <label className='zsxq-comments-filter'>
+                    {shouldCollapseComments ? <button type='button' className='zsxq-comments-toggle'
+                                                     aria-expanded={!commentsCollapsed} aria-controls={commentsListId}
+                                                     onClick={this.toggleCommentsExpanded}>
+                        {commentsCollapsed ? '展开评论' : '收起评论'}
+                    </button> : ownerComments.length ? <label className='zsxq-comments-filter'>
                         <Switch size='small' checked={ownerCommentOnly} onChange={this.toggleOwnerComments}/>
                         <span>只看星主（{ownerComments.length}）</span>
                     </label> : null}
                 </div>
-                <ul className='zsxq-comments-list'>
+                <ul id={commentsListId} className='zsxq-comments-list' hidden={commentsCollapsed}>
                     {shownComments.map((c, i) => (
                         <li key={`${c.author}-${i}`} className={`zsxq-comment${distinguishOwner && c.owner ? ' is-owner' : ''}`}>
                             <div className='zsxq-comment-head'>

@@ -143,7 +143,8 @@ export default class ZsxqReaderPage extends React.Component {
         const isOwner = !!author && !!group?.owner && author === group.owner
         const comments = this.state.commentsByTopicId[String(item.topicId)] || []
 
-        return <TopicPost key={item.id} item={item} comments={comments} isOwner={isOwner}/>
+        return <TopicPost key={item.id} item={item} comments={comments} isOwner={isOwner}
+                          collapseCommentsWithoutOwner={this.state.ownerOnly}/>
     }
 
     renderList() {
