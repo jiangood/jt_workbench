@@ -32,6 +32,7 @@
 
 ## 发布与运维
 
+- **版本号同步**：每次发布新版本时，必须同步修改后端 `pom.xml` 的项目 `<version>` 和前端 `web/package.json` 的 `version`，确保前后端版本号一致，并将其作为发布前检查项。
 - `latest` 镜像：当前 **push 到 `main` 不会自动构建/推送镜像**。`ci.yml`/`release.yml` 在 push `v*` tag（或手动 `workflow_dispatch`）时执行 Docker 构建（内含后端测试/校验与前端构建）；tag push 时推送 `:latest`（及 `:sha-<commit>`/版本 tag，按工作流定义）至 GitHub Container Registry（GHCR，仅 amd64，`provenance: false`）。
 - 版本发布：`release.yml` 在 push `vX.Y.Z` tag（或手动指定 tag）时构建并推送版本镜像（含 `:latest` 与 `:<tag>`）至 GHCR，并创建 GitHub Release。
 - 部署 compose 使用 GHCR 地址 `ghcr.io/jiangood/jt_workbench:latest`，`docker compose pull && up -d` 更新（包为私有时目标机需先 `docker login ghcr.io`；详见 `deploy/README.md`）。
