@@ -15,14 +15,14 @@
 
 每轮分两段，互不干扰：
 
-| 阶段 | 方向 | 上限 | 作用 |
+| 阶段 | 方向 | 默认上限 | 作用 |
 |---|---|---|---|
-| 头部增量 | 从最新往回 | 10 页（200 条） | 抓新帖；碰到上一轮已存在的帖子即停，停机多天也能补齐 |
-| 历史回填 | 从游标向更早 | 5 页（100 条/星球） | 逐步覆盖存量历史 |
+| 头部增量 | 从最新往回 | 2 页（40 条） | 抓新帖；碰到上一轮已存在的帖子即停，停机多天也能补齐 |
+| 历史回填 | 从游标向更早 | 1 页（20 条/星球） | 逐步覆盖存量历史，可用 `zsxq.backfill-pages=0` 暂停 |
 
 - 首次同步时，头部抓到的最旧时间会作为历史游标起点，避免重复抓取
-- 每轮容量 ≈ 5 页 × 8 轮 = 800 条/天（另有头部增量）
-- 以当前账号为例：星球共 **10,525** 条话题，按此速度约 **2 周** 追平存量；之后每轮只抓新增（约 50 条/天，远低于容量）
+- 每轮还有**请求预算**（默认 40 次星球接口调用，不含图片下载），用完即提前结束，下轮从游标继续
+- 以当前账号为例：星球共 **10,525** 条话题；按默认回填速度（约 160 条/天）追平存量约需 **2 个月**。需要更快可调大 `zsxq.head-pages` / `zsxq.backfill-pages`，但请求量上升会明显增加风控概率
 - 已在星球侧删除的帖子接口不再返回，无法抓取；评论接口报「主题已删除」会软删除（`visible=false`）保留历史内容
 
 ### 专栏
@@ -51,10 +51,11 @@
 | 措施 | 实现 |
 |---|---|
 | 复用请求 | token 校验与星球发现合并为一次 `/v2/groups`，不再额外请求 |
-| 固定间隔 + 随机抖动 | 分页请求 4～6 秒、话题/评论之间 2～4 秒（固定值 + 0～2 秒随机） |
-| 降低请求量 | 专栏默认 24 小时同步一次；话题每轮头部 10 页 + 回填 5 页；图片每轮默认 100 条 |
-| 设备号稳定 | token 形如 `<deviceId>_<accessToken>`，请求沿用其中的设备号，避免每次都被当作新设备 |
-| 避开高峰 | 作业每 3 小时一次，不并发（框架 `@DisallowConcurrentExecution`） |
+| 固定间隔 + 随机抖动 | 分页请求 8～10 秒、话题/评论之间 3～5 秒（固定值 + 0～2 秒随机），可用 `zsxq.page-pause-seconds` / `zsxq.topic-pause-seconds` 调整 |
+| 降低请求量 | 专栏默认 24 小时同步一次；话题每轮头部 2 页 + 回填 1 页；图片每轮 10 条；老帖新增评论默认不补抓 |
+| 单轮预算 | 每轮最多 40 次星球接口请求（`zsxq.request-budget`），达到即结束，避免一次跑太久 |
+| 设备号稳定 | 优先用 `zsxq.device-id`；其次取 token 的 `<deviceId>_` 前缀；都没有时按 token 派生固定 UUID，不会每轮随机换设备 |
+| 避开高峰 | 作业每 3 小时一次，不并发（`ZsxqSyncJob` 显式标注 `@DisallowConcurrentExecution`） |
 
 ## 四、触发风控后的处理
 
@@ -69,7 +70,8 @@
    - 已同步的游标/幂等键保留，冷却结束后从断点继续
 5. **自动恢复**：完整跑通一轮（未触发风控）后清零连续触发计数；更换 `zsxq.token` 会立即清空冷却
 
-任务结果与任务日志中会记录「触发知识星球风控，本轮中止；冷却 N 分钟后再试（连续第 K 次）」。
+任务结果与任务日志中会记录「触发知识星球风控（code=1059，接口=…，返回=…），本轮中止；冷却 N 分钟后再试（连续第 K 次）」，
+可直接看出被拦的是哪个接口。请求预算用完时本轮正常结束（不进入冷却），结果提示「本轮达到请求预算上限」，下轮从游标继续。
 
 ## 五、人工处置
 
@@ -79,14 +81,23 @@
     ```sql
     DELETE FROM zsxq_job_state WHERE state_key IN ('risk_until', 'risk_strikes');
     ```
-- **频繁触发**：依次调小 `zsxq.image-backfill-batch`、调大 `zsxq.column-sync-interval-hours`；仍频繁出现说明 SDK 通道已被收紧，需要评估迁移到知识星球官方 `zsxq-cli`（`https://garden.zsxq.com/skill/`）。
+- **频繁触发**：先暂停作业几天，再按“`zsxq.request-budget` → `zsxq.head-pages`/`zsxq.backfill-pages` → `zsxq.page-pause-seconds`”逐项收紧，
+  并把 `zsxq.image-backfill-batch`、`zsxq.column-sync-interval-hours` 调到更低频率；仍频繁出现说明 SDK 通道已被收紧，
+  需要评估迁移到知识星球官方 `zsxq-cli`（`https://garden.zsxq.com/skill/`；注意：成员账号需要星主开启 Skill 权限才能读取星球内容）。
 
 ## 六、参数
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `zsxq.token` | 空 | 知识星球网页 Cookie 中的 `zsxq_access_token` |
-| `zsxq.image-backfill-batch` | 100 | 每轮回填的历史帖子数（1～500） |
+| `zsxq.token` | 空 | 知识星球网页 Cookie 中的 `zsxq_access_token`；也可写成 `<deviceId>_<accessToken>` |
+| `zsxq.device-id` | 空 | 设备号（`x-aduid`）；留空时自动取 token 前缀或派生固定值 |
+| `zsxq.head-pages` | 2 | 每轮头部增量翻页数（1～10，每页 20 条） |
+| `zsxq.backfill-pages` | 1 | 每轮历史回填翻页数（0～10，0=暂停回填） |
+| `zsxq.request-budget` | 40 | 单轮星球接口请求上限（10～500，不含图片下载） |
+| `zsxq.page-pause-seconds` | 8 | 翻页间隔秒数（1～120，另加 0～2 秒抖动） |
+| `zsxq.topic-pause-seconds` | 3 | 话题/评论间隔秒数（1～60，另加 0～2 秒抖动） |
+| `zsxq.refresh-old-comments` | false | 是否补抓老帖新增评论（会增加请求量） |
+| `zsxq.image-backfill-batch` | 10 | 每轮回填的历史帖子数（0～500，0=关闭） |
 | `zsxq.column-sync-interval-hours` | 24 | 专栏同步间隔（1～168 小时） |
 | `zsxq.risk-cooldown-minutes` | 240 | 风控冷却基数（30～720 分钟），连续触发翻倍 |
 

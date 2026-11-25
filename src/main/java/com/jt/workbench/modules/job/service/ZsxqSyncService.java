@@ -21,12 +21,14 @@ import com.zsxq.sdk.request.TopicsRequest.ListCommentsOptions;
 import com.zsxq.sdk.request.TopicsRequest.ListTopicsOptions;
 import io.github.jiangood.openadmin.modules.config.service.SysConfigService;
 import io.github.jiangood.openadmin.modules.job.JobResult;
+import io.github.jiangood.openadmin.modules.logviewer.util.TaskLog;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.Logger;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -52,23 +54,25 @@ import java.util.concurrent.ThreadLocalRandom;
 public class ZsxqSyncService {
 
     private static final int MAX_GROUPS = 20;
-    /** 头部增量最多翻页数（从最新往回，遇到已存在帖子即停；用于补抓停机期间的新帖）。 */
-    private static final int MAX_HEAD_PAGES_PER_GROUP = 10;
-    /** 每轮历史回填最多翻页数（从游标继续向更早翻）。 */
-    private static final int MAX_PAGES_PER_GROUP = 5;
-    private static final int MAX_HEAD_PAGES_PER_COLUMN = 5;
-    private static final int MAX_PAGES_PER_COLUMN = 5;
     private static final int TOPICS_PER_PAGE = 20;
     private static final int COMMENTS_PER_TOPIC = 30;
     private static final int COLUMN_NAME_MAX_LENGTH = 512;
     private static final int COLUMN_TEXT_MAX_LENGTH = 2048;
-    private static final int IMAGE_BACKFILL_DEFAULT_BATCH = 100;
-    private static final int IMAGE_BACKFILL_MAX_FAILS = 3;
 
-    /** 抓取间隔（反爬）：每次分页抓取请求前等待几秒。 */
-    private static final long PAUSE_BEFORE_PAGE_FETCH_MS = 4000;
-    /** 抓取间隔（反爬）：每个话题处理、每次评论抓取后等待几秒。 */
-    private static final long PAUSE_BETWEEN_TOPIC_FETCHES_MS = 2000;
+    /**
+     * 降载默认值：头部 2 页（40 条/星球）、历史回填 1 页（20 条/星球）。
+     * 触发过风控后优先保住头部增量，历史回填只留最低速度；都可在系统参数里调整。
+     */
+    private static final int HEAD_PAGES_DEFAULT = 2;
+    private static final int BACKFILL_PAGES_DEFAULT = 1;
+    private static final int IMAGE_BACKFILL_DEFAULT_BATCH = 10;
+    private static final int IMAGE_BACKFILL_MAX_FAILS = 3;
+    /** 单轮最多发起的星球接口请求数（不含图片下载），达到后本轮提前结束。 */
+    private static final int REQUEST_BUDGET_DEFAULT = 40;
+
+    /** 抓取间隔（反爬）：分页 8 秒、话题/评论 3 秒，再叠加 0~2 秒随机抖动。 */
+    private static final int PAGE_PAUSE_DEFAULT_SECONDS = 8;
+    private static final int TOPIC_PAUSE_DEFAULT_SECONDS = 3;
     /** 在固定间隔上叠加的随机抖动，避免请求节奏过于规律（0~2 秒）。 */
     private static final long PAUSE_JITTER_MS = 2000;
 
@@ -101,6 +105,18 @@ public class ZsxqSyncService {
     private final ZsxqImageService imageService;
     private final JdbcTemplate jdbc;
 
+    // ---------- 本轮运行状态（作业由框架 @DisallowConcurrentExecution 串行执行） ----------
+
+    private int headPages = HEAD_PAGES_DEFAULT;
+    private int backfillPages = BACKFILL_PAGES_DEFAULT;
+    private long pagePauseMs = PAGE_PAUSE_DEFAULT_SECONDS * 1000L;
+    private long topicPauseMs = TOPIC_PAUSE_DEFAULT_SECONDS * 1000L;
+    private boolean refreshOldComments;
+    private int requestBudget = REQUEST_BUDGET_DEFAULT;
+    private int requestsUsed;
+    /** 最近一次星球接口调用描述，风控/异常时写入任务结果，便于定位是哪个请求被拦。 */
+    private String lastApiDesc = "";
+
     /**
      * 同步入口（定时任务唯一调用点）。
      *
@@ -116,13 +132,16 @@ public class ZsxqSyncService {
         String cooling = cooldownMessage();
         if (cooling != null) return JobResult.skip(cooling);
 
+        beginRun();
         ZsxqClient client = buildClient(token);
         progress.accept("校验 token");
+        List<String> parts = new ArrayList<>();
         try {
             List<Group> remoteGroups;
             try {
                 remoteGroups = api("client.groups().list()", () -> client.groups().list());
             } catch (Exception e) {
+                rethrowBudget(e);
                 if (isRiskControl(e)) throw new RiskControlException(e);
                 logger.warn("知识星球 token 校验失败：{}", e.getMessage());
                 return JobResult.fail(tokenErrorText(e));
@@ -130,19 +149,43 @@ public class ZsxqSyncService {
 
             List<String> groupIds = resolveGroupIds(remoteGroups);
             log.info("[知识星球] 本轮同步开始：{} 个星球", groupIds.size());
-            List<String> parts = new ArrayList<>();
             parts.add(syncTopics(client, groupIds, logger, progress));
             parts.add(syncColumnsIfDue(client, groupIds, logger, progress));
             parts.add(backfillImages(client, logger, progress));
 
             // 本轮完整跑通（未触发风控）：清除连续风控计数
             setState(STATE_RISK_STRIKES, 0);
-            String overview = String.join("；", parts);
+            String overview = String.join("；", parts) + "（本轮接口 " + requestsUsed + " 次）";
             log.info("[知识星球] 本轮概览：{}", overview);
+            TaskLog.info("[知识星球] 本轮概览：{}", overview);
+            return JobResult.ok(overview);
+        } catch (BudgetReachedException e) {
+            // 预算用完不是风控：正常结束本轮，下轮从游标继续，避免继续消耗账号配额
+            String overview = "本轮达到请求预算上限（" + requestBudget + " 次），提前结束，下轮从断点继续"
+                    + (parts.isEmpty() ? "" : "；已完成：" + String.join("；", parts));
+            log.info("[知识星球] {}", overview);
+            TaskLog.warn("[知识星球] {}", overview);
             return JobResult.ok(overview);
         } catch (RiskControlException e) {
             return JobResult.fail(enterRiskCooldown(logger, e));
         }
+    }
+
+    /** 读取本轮降载参数（每轮重新读取，调整系统参数后下一轮立即生效）。 */
+    private void beginRun() {
+        headPages = intConfig("zsxq.head-pages", HEAD_PAGES_DEFAULT, 1, 10);
+        backfillPages = intConfig("zsxq.backfill-pages", BACKFILL_PAGES_DEFAULT, 0, 10);
+        pagePauseMs = intConfig("zsxq.page-pause-seconds", PAGE_PAUSE_DEFAULT_SECONDS, 1, 120) * 1000L;
+        topicPauseMs = intConfig("zsxq.topic-pause-seconds", TOPIC_PAUSE_DEFAULT_SECONDS, 1, 60) * 1000L;
+        refreshOldComments = configService.getBool("zsxq.refresh-old-comments");
+        requestBudget = intConfig("zsxq.request-budget", REQUEST_BUDGET_DEFAULT, 10, 500);
+        requestsUsed = 0;
+        lastApiDesc = "";
+    }
+
+    private int intConfig(String key, int def, int min, int max) {
+        int value = configService.getInt(key);
+        return value < min || value > max ? def : value;
     }
 
     /** 专栏按配置间隔执行（默认 24 小时）；没到间隔时不发任何星球请求。 */
@@ -193,9 +236,17 @@ public class ZsxqSyncService {
         long minutes = Math.min((long) base << (strikes - 1), RISK_COOLDOWN_MAX_MINUTES);
         setState(STATE_RISK_STRIKES, strikes);
         setState(STATE_RISK_UNTIL, System.currentTimeMillis() + minutes * 60_000L);
+
+        // 诊断信息：业务码 + 最近一次接口 + 平台返回文案，任务结果与任务日志都能直接看到
+        StringBuilder detail = new StringBuilder("code=").append(e.code());
+        if (!lastApiDesc.isBlank()) detail.append("，接口=").append(lastApiDesc);
+        if (e.getMessage() != null && !e.getMessage().isBlank()) detail.append("，返回=").append(e.getMessage());
         logger.warn("知识星球触发风控（{}），本轮中止，冷却 {} 分钟（连续第 {} 次）",
-                e.getMessage(), minutes, strikes);
-        return "触发知识星球风控，本轮中止；冷却 " + minutes + " 分钟后再试（连续第 " + strikes + " 次）";
+                detail, minutes, strikes);
+        TaskLog.warn("知识星球触发风控（{}），本轮中止，冷却 {} 分钟（连续第 {} 次）",
+                detail, minutes, strikes);
+        return "触发知识星球风控（" + detail + "），本轮中止；冷却 " + minutes + " 分钟后再试（连续第 "
+                + strikes + " 次）";
     }
 
     /** 风控/限流：本轮立即中止，不重试、不计入单帖失败次数。 */
@@ -207,9 +258,27 @@ public class ZsxqSyncService {
 
     /** 内部信号：把风控异常从各阶段抛出到 {@link #syncAll} 统一处理。 */
     private static class RiskControlException extends RuntimeException {
+        private final int code;
+
         RiskControlException(Exception cause) {
             super(cause.getMessage(), cause);
+            this.code = cause instanceof ZsxqException zsxq ? zsxq.getCode() : 0;
         }
+
+        int code() {
+            return code;
+        }
+    }
+
+    /** 内部信号：本轮请求预算用完，正常提前结束（不是风控，不进入冷却）。 */
+    private static class BudgetReachedException extends RuntimeException {
+        BudgetReachedException(String apiDesc) {
+            super("请求预算已用完，未执行：" + apiDesc);
+        }
+    }
+
+    private static void rethrowBudget(Exception e) {
+        if (e instanceof BudgetReachedException budget) throw budget;
     }
 
     /**
@@ -248,8 +317,8 @@ public class ZsxqSyncService {
             String headOldest = "";
             String headEnd = "";
             java.util.Set<String> insertedInHead = new java.util.HashSet<>();
-            for (int page = 0; page < MAX_HEAD_PAGES_PER_GROUP; page++) {
-                pause(PAUSE_BEFORE_PAGE_FETCH_MS);
+            for (int page = 0; page < headPages; page++) {
+                pause(pagePauseMs);
                 List<Topic> list;
                 try {
                     ListTopicsOptions options = new ListTopicsOptions()
@@ -259,6 +328,7 @@ public class ZsxqSyncService {
                     list = api("client.topics().list(groupId=" + gid + ", endTime=" + headEnd + ")",
                             () -> client.topics().list(gid, options));
                 } catch (Exception e) {
+                    rethrowBudget(e);
                     if (isRiskControl(e)) throw new RiskControlException(e);
                     logger.warn("星球 {} 最新话题拉取失败：{}", gid, e.getMessage());
                     break;
@@ -280,10 +350,12 @@ public class ZsxqSyncService {
                         // end_time 边界会重复返回上一页最后一条；本轮刚插入的不算“已追平”
                         if (!insertedInHead.contains(tid)) existingOnPage++;
                         fillAuthorIfMissing(tid, t, existing.get());
-                        comments += refreshCommentsIfGrown(client, gid, t, existing.get(), logger);
+                        if (refreshOldComments) {
+                            comments += refreshCommentsIfGrown(client, gid, t, existing.get(), logger);
+                        }
                         continue;
                     }
-                    pause(PAUSE_BETWEEN_TOPIC_FETCHES_MS);
+                    pause(topicPauseMs);
                     upsertTopic(gid, tid, t, null);
                     topics++;
                     insertedInHead.add(tid);
@@ -299,9 +371,9 @@ public class ZsxqSyncService {
                 end = headOldest;
                 saveCursor(gid, end);
             }
-            for (int page = 0; page < MAX_PAGES_PER_GROUP; page++) {
+            for (int page = 0; page < backfillPages; page++) {
                 if (end.isEmpty()) break;
-                pause(PAUSE_BEFORE_PAGE_FETCH_MS);
+                pause(pagePauseMs);
                 List<Topic> list;
                 try {
                     final String endTime = end;
@@ -311,6 +383,7 @@ public class ZsxqSyncService {
                                     .scope("all")
                                     .endTime(endTime)));
                 } catch (Exception e) {
+                    rethrowBudget(e);
                     if (isRiskControl(e)) throw new RiskControlException(e);
                     logger.warn("星球 {} 历史话题拉取失败：{}", gid, e.getMessage());
                     break;
@@ -329,7 +402,7 @@ public class ZsxqSyncService {
                         if (!createTime.isEmpty()) end = createTime;
                         continue;
                     }
-                    pause(PAUSE_BETWEEN_TOPIC_FETCHES_MS);
+                    pause(topicPauseMs);
                     upsertTopic(gid, tid, t, null);
                     topics++;
                     newOnPage++;
@@ -393,11 +466,12 @@ public class ZsxqSyncService {
         for (int gi = 0; gi < groupIds.size(); gi++) {
             String gid = groupIds.get(gi);
             progress.accept("同步星球专栏 " + (gi + 1) + "/" + groupIds.size());
-            pause(PAUSE_BEFORE_PAGE_FETCH_MS);
+            pause(pagePauseMs);
             List<Column> columns;
             try {
                 columns = api("client.groups().getColumns(groupId=" + gid + ")", () -> client.groups().getColumns(gid));
             } catch (Exception e) {
+                rethrowBudget(e);
                 if (isRiskControl(e)) throw new RiskControlException(e);
                 logger.warn("星球 {} 专栏列表拉取失败：{}", gid, e.getMessage());
                 continue;
@@ -417,7 +491,7 @@ public class ZsxqSyncService {
                 comments += result[1];
                 skipped += result[2];
                 columnsDone++;
-                pause(PAUSE_BETWEEN_TOPIC_FETCHES_MS);
+                pause(topicPauseMs);
             }
             markMissingColumns(gid, seenColumnIds);
             groupsDone++;
@@ -435,8 +509,8 @@ public class ZsxqSyncService {
      */
     private String backfillImages(ZsxqClient client, Logger logger,
                                   java.util.function.Consumer<String> progress) {
-        int batch = configService.getInt("zsxq.image-backfill-batch");
-        if (batch <= 0) batch = IMAGE_BACKFILL_DEFAULT_BATCH;
+        int batch = intConfig("zsxq.image-backfill-batch", IMAGE_BACKFILL_DEFAULT_BATCH, 0, 500);
+        if (batch == 0) return "图片回填跳过（已关闭）";
         List<java.util.Map<String, Object>> rows = jdbc.queryForList(
                 "SELECT topic_id FROM zsxq_topic WHERE (visible IS NULL OR visible = TRUE) AND image_synced_at IS NULL "
                         + "AND COALESCE(image_fail_count, 0) < " + IMAGE_BACKFILL_MAX_FAILS
@@ -450,7 +524,7 @@ public class ZsxqSyncService {
             String tid = toStr(row.containsKey("TOPIC_ID") ? row.get("TOPIC_ID") : row.get("topic_id"));
             if (tid.isBlank()) continue;
             progress.accept("回填图片 " + (i + 1) + "/" + rows.size());
-            pause(PAUSE_BETWEEN_TOPIC_FETCHES_MS);
+            pause(topicPauseMs);
             try {
                 Topic topic = api("client.topics().get(topicId=" + tid + ")", () -> client.topics().get(tid));
                 TalkContent talk = topic == null ? null : topic.getTalk();
@@ -460,6 +534,7 @@ public class ZsxqSyncService {
                 stored += keys.size();
                 if (complete) done++; else failed++;
             } catch (Exception e) {
+                rethrowBudget(e);
                 // 风控/限流不是单帖问题：立即中止本轮，且不累计图片失败次数
                 if (isRiskControl(e)) throw new RiskControlException(e);
                 if (isTopicGone(e)) {
@@ -520,6 +595,7 @@ public class ZsxqSyncService {
                 }
             }
         } catch (Exception e) {
+            rethrowBudget(e);
             log.debug("专栏软删除标记跳过 groupId={} error={}", groupId, e.getMessage());
         }
     }
@@ -534,8 +610,8 @@ public class ZsxqSyncService {
         String headOldest = "";
         String headEnd = "";
         java.util.Set<String> insertedInHead = new java.util.HashSet<>();
-        for (int page = 0; page < MAX_HEAD_PAGES_PER_COLUMN; page++) {
-            pause(PAUSE_BEFORE_PAGE_FETCH_MS);
+        for (int page = 0; page < headPages; page++) {
+            pause(pagePauseMs);
             List<Topic> list;
             try {
                 ListTopicsOptions options = new ListTopicsOptions().count(TOPICS_PER_PAGE).scope("all");
@@ -543,6 +619,7 @@ public class ZsxqSyncService {
                 list = api("client.topics().listByColumn(groupId=" + gid + ", columnId=" + cid + ", endTime=" + headEnd + ")",
                         () -> client.topics().listByColumn(gid, cid, options));
             } catch (Exception e) {
+                rethrowBudget(e);
                 if (isRiskControl(e)) throw new RiskControlException(e);
                 logger.warn("专栏 {} 最新话题拉取失败：{}", cid, e.getMessage());
                 break;
@@ -563,9 +640,11 @@ public class ZsxqSyncService {
                     skipped++;
                     if (!insertedInHead.contains(tid)) existingOnPage++;
                     fillAuthorIfMissing(tid, t, existing.get());
-                    comments += refreshCommentsIfGrown(client, gid, t, existing.get(), logger);
+                    if (refreshOldComments) {
+                        comments += refreshCommentsIfGrown(client, gid, t, existing.get(), logger);
+                    }
                 } else {
-                    pause(PAUSE_BETWEEN_TOPIC_FETCHES_MS);
+                    pause(topicPauseMs);
                     upsertTopic(gid, tid, t, cid);
                     topics++;
                     insertedInHead.add(tid);
@@ -578,9 +657,9 @@ public class ZsxqSyncService {
         // 2) 历史回填：从专栏游标继续向更早翻页
         String end = safe(column.getSyncCursor()).trim();
         if (end.isEmpty() && !headOldest.isEmpty()) end = headOldest;
-        for (int page = 0; page < MAX_PAGES_PER_COLUMN; page++) {
+        for (int page = 0; page < backfillPages; page++) {
             if (end.isEmpty()) break;
-            pause(PAUSE_BEFORE_PAGE_FETCH_MS);
+            pause(pagePauseMs);
             List<Topic> list;
             try {
                 final String endTime = end;
@@ -590,6 +669,7 @@ public class ZsxqSyncService {
                                 .scope("all")
                                 .endTime(endTime)));
             } catch (Exception e) {
+                rethrowBudget(e);
                 if (isRiskControl(e)) throw new RiskControlException(e);
                 logger.warn("专栏 {} 历史话题拉取失败：{}", cid, e.getMessage());
                 break;
@@ -609,7 +689,7 @@ public class ZsxqSyncService {
                     if (!createTime.isEmpty()) end = createTime;
                     continue;
                 }
-                pause(PAUSE_BETWEEN_TOPIC_FETCHES_MS);
+                pause(topicPauseMs);
                 upsertTopic(gid, tid, t, cid);
                 topics++;
                 newOnPage++;
@@ -651,10 +731,26 @@ public class ZsxqSyncService {
                 .token(token)
                 .timeout(20000)
                 .retry(3);
-        // 知识星球 token 形如 <deviceId>_<accessToken>：沿用登录设备号，避免每次请求都被当成新设备
-        int split = token.indexOf('_');
-        if (split > 0) builder.deviceId(token.substring(0, split));
+        String deviceId = stableDeviceId(token);
+        if (!deviceId.isEmpty()) builder.deviceId(deviceId);
         return builder.build();
+    }
+
+    /**
+     * 稳定设备号：知识星球用 {@code x-aduid} 识别设备，随机设备号会被当作新设备。
+     *
+     * <p>优先级：系统参数 {@code zsxq.device-id} → token 的 {@code <deviceId>_} 前缀 →
+     * 由 token 派生的固定 UUID。最后一种保证即使 token 没有设备前缀，也不会每轮随机换设备。</p>
+     */
+    private String stableDeviceId(String token) {
+        String configured = safe(configService.getString("zsxq.device-id")).trim();
+        if (!configured.isEmpty()) return configured;
+
+        int split = token.indexOf('_');
+        if (split >= 8 && token.substring(0, split).matches("[A-Za-z0-9-]+")) {
+            return token.substring(0, split);
+        }
+        return UUID.nameUUIDFromBytes(("jt-workbench-zsxq:" + token).getBytes(StandardCharsets.UTF_8)).toString();
     }
 
     /**
@@ -704,9 +800,10 @@ public class ZsxqSyncService {
                     n++;
                 }
             }
-            pause(PAUSE_BETWEEN_TOPIC_FETCHES_MS);
+            pause(topicPauseMs);
             return n;
         } catch (Exception e) {
+            rethrowBudget(e);
             if (isRiskControl(e)) throw new RiskControlException(e);
             if (isTopicGone(e)) {
                 // 帖子已在星球侧删除：软删除标记，后续同步不再为其请求评论
@@ -874,20 +971,29 @@ public class ZsxqSyncService {
     // ---------- 知识星球交互日志 ----------
 
     /**
-     * 知识星球 API 交互的统一包装：每次请求前打印请求描述（方法 + 关键参数），
-     * 请求后打印结果规模与耗时，错误立即以 error 级别记录，便于定位采集问题。
+     * 知识星球 API 交互的统一包装：先扣减单轮请求预算，再记录请求描述（方法 + 关键参数）、
+     * 结果规模与耗时；错误同时写入应用日志与任务日志，便于在「定时任务 → 执行记录」里直接定位。
      */
-    private static <T> T api(String desc, java.util.function.Supplier<T> call) {
+    private <T> T api(String desc, java.util.function.Supplier<T> call) {
+        lastApiDesc = desc;
+        if (requestsUsed >= requestBudget) throw new BudgetReachedException(desc);
+        requestsUsed++;
+
         long start = System.currentTimeMillis();
         log.info("[知识星球] 请求：{}", desc);
+        TaskLog.info("[知识星球] 请求：{}", desc);
         T result;
         try {
             result = call.get();
         } catch (RuntimeException e) {
-            log.error("[知识星球] 请求失败：{}（{} ms）error={}", desc, System.currentTimeMillis() - start, e.getMessage());
+            long elapsed = System.currentTimeMillis() - start;
+            log.error("[知识星球] 请求失败：{}（{} ms）error={}", desc, elapsed, e.getMessage());
+            TaskLog.error("[知识星球] 请求失败：{}（{} ms）error={}", desc, elapsed, e.getMessage());
             throw e;
         }
-        log.info("[知识星球] 响应：{}（{} ms）-> {}", desc, System.currentTimeMillis() - start, summary(result));
+        long elapsed = System.currentTimeMillis() - start;
+        log.info("[知识星球] 响应：{}（{} ms）-> {}", desc, elapsed, summary(result));
+        TaskLog.info("[知识星球] 响应：{}（{} ms）-> {}", desc, elapsed, summary(result));
         return result;
     }
 

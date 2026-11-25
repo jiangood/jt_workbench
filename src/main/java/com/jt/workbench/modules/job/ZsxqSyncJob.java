@@ -5,6 +5,7 @@ import io.github.jiangood.openadmin.modules.job.BaseJob;
 import io.github.jiangood.openadmin.modules.job.JobDescription;
 import io.github.jiangood.openadmin.modules.job.JobResult;
 import jakarta.annotation.Resource;
+import org.quartz.DisallowConcurrentExecution;
 import org.quartz.JobDataMap;
 import org.springframework.stereotype.Component;
 import org.slf4j.Logger;
@@ -15,6 +16,7 @@ import org.slf4j.Logger;
  * <p>话题、专栏、历史图片回填已合并到同一作业；每次执行前先校验 token，token 失效时本轮直接跳过。</p>
  */
 @Component
+@DisallowConcurrentExecution
 @JobDescription(
         key = "jt.zsxqSync",
         label = "知识星球同步",
