@@ -4,7 +4,6 @@ import {
     MoreOutlined,
     PlusOutlined,
     ReloadOutlined,
-    SearchOutlined,
     StarFilled,
     StarOutlined,
 } from '@ant-design/icons'
@@ -63,7 +62,6 @@ function plainTextLength(html) {
 export default class NewsReaderPage extends React.Component {
     state = {
         tab: 'unread', // unread | read | fav
-        keyword: '',
         items: [],
         page: 1,
         hasMore: true,
@@ -82,15 +80,10 @@ export default class NewsReaderPage extends React.Component {
     loadSeq = 0
     loadMoreLock = false
     markingReadIds = new Set()
-    searchTimer = null
 
     componentDidMount() {
         this.loadBase()
         this.reloadList(true)
-    }
-
-    componentWillUnmount() {
-        clearTimeout(this.searchTimer)
     }
 
     loadBase = async () => {
@@ -143,8 +136,6 @@ export default class NewsReaderPage extends React.Component {
                 size: PAGE_SIZE,
                 status: this.state.tab,
             }
-            const kw = this.state.keyword?.trim()
-            if (kw) params.keyword = kw
             const rs = await HttpClient.post('admin/news/page', null, params)
             if (seq !== this.loadSeq) return
             const data = rs.data || {}
@@ -256,18 +247,10 @@ export default class NewsReaderPage extends React.Component {
     }
 
     onTabChange = (tab) => {
-        clearTimeout(this.searchTimer)
         this.setState({tab}, () => {
             this.loadStats()
             this.reloadList(false)
         })
-    }
-
-    onKeywordChange = (e) => {
-        const keyword = e.target.value
-        this.setState({keyword})
-        clearTimeout(this.searchTimer)
-        this.searchTimer = setTimeout(() => this.reloadList(false), 350)
     }
 
     toggleExpanded = (key) => {
@@ -376,14 +359,14 @@ export default class NewsReaderPage extends React.Component {
     }
 
     renderList() {
-        const {tab, keyword, items, loading, initialLoading, hasMore} = this.state
+        const {tab, items, loading, initialLoading, hasMore} = this.state
         if (initialLoading) {
             return <div className='news-feed-state'><Spin/></div>
         }
         if (!items.length) {
             return <div className='news-feed-state'>
                 <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
-                       description={keyword ? `没有匹配「${keyword}」的资讯` : (tab === 'fav' ? '暂无收藏' : tab === 'read' ? '暂无已读' : '暂无未读')}/>
+                       description={tab === 'fav' ? '暂无收藏' : tab === 'read' ? '暂无已读' : '暂无未读'}/>
             </div>
         }
         return <div className='news-feed-list'>
@@ -397,50 +380,38 @@ export default class NewsReaderPage extends React.Component {
     }
 
     render() {
-        const {tab, keyword, items, loading, initialLoading, stats, sources} = this.state
+        const {tab, loading, initialLoading, stats} = this.state
         const readCount = Math.max(0, (Number(stats.total) || 0) - (Number(stats.unread) || 0) - (Number(stats.fav) || 0))
-        const collectTime = items[0] ? fmtTime(items[0].createTime || items[0].pubTime) : ''
 
         const moreItems = [
-            {key: 'refresh', icon: <ReloadOutlined/>, label: '刷新'},
             ...(tab === 'unread' ? [{key: 'readall', label: '全部已读'}] : []),
-            {type: 'divider'},
+            ...(tab === 'unread' ? [{type: 'divider'}] : []),
             ...(PermUtils.hasPermission('news:source') ? [{key: 'sources', label: '订阅源'}] : []),
             ...(PermUtils.hasPermission('news:block') ? [{key: 'blocks', label: '屏蔽词'}] : []),
         ].filter(Boolean)
         const onMore = ({key}) => {
-            if (key === 'refresh') { this.loadBase(); this.reloadList(false) }
-            else if (key === 'readall') this.readAll()
+            if (key === 'readall') this.readAll()
             else if (key === 'sources') this.openSources()
             else if (key === 'blocks') this.openBlocks()
         }
 
         return <Page>
             <div className='news-feed'>
-                <header className='news-feed-head'>
-                    <div className='news-feed-heading'>
-                        <h1>资讯</h1>
-                        <p>未读 {stats.unread ?? 0} · 收藏 {stats.fav ?? 0}{collectTime ? ` · 采集 ${collectTime}` : ''}</p>
-                    </div>
-                    <div className='news-feed-actions'>
-                        <Tooltip title='刷新'>
-                            <Button icon={<ReloadOutlined/>} loading={loading && !initialLoading} aria-label='刷新'
-                                    onClick={() => { this.loadBase(); this.reloadList(false) }}/>
-                        </Tooltip>
-                        <Dropdown menu={{items: moreItems, onClick: onMore}} trigger={['click']} placement='bottomRight'>
-                            <Button icon={<MoreOutlined/>} aria-label='更多'>更多</Button>
-                        </Dropdown>
-                    </div>
-                </header>
-
                 <div className='news-feed-toolbar'>
                     <Segmented value={tab} onChange={this.onTabChange} options={[
                         {label: `未读${stats.unread ? ` (${stats.unread})` : ''}`, value: 'unread'},
                         {label: `已读${readCount ? ` (${readCount})` : ''}`, value: 'read'},
                         {label: `收藏${stats.fav ? ` (${stats.fav})` : ''}`, value: 'fav'},
                     ]}/>
-                    <Input className='news-feed-search' allowClear prefix={<SearchOutlined/>}
-                           placeholder='搜索标题 / 作者 / 正文' value={keyword} onChange={this.onKeywordChange}/>
+                    <div className='news-feed-actions'>
+                        <Tooltip title='刷新'>
+                            <Button icon={<ReloadOutlined/>} loading={loading && !initialLoading} aria-label='刷新'
+                                    onClick={() => { this.loadBase(); this.reloadList(false) }}/>
+                        </Tooltip>
+                        <Dropdown menu={{items: moreItems, onClick: onMore}} trigger={['click']} placement='bottomRight'>
+                            <Button icon={<MoreOutlined/>} aria-label='更多'/>
+                        </Dropdown>
+                    </div>
                 </div>
 
                 {this.renderList()}
