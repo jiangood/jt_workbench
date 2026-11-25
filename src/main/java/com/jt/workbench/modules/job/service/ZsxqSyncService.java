@@ -57,6 +57,9 @@ public class ZsxqSyncService {
     private static final int BACKFILL_PAGES_DEFAULT = 1;
     private static final int IMAGE_BACKFILL_DEFAULT_BATCH = 10;
     private static final int IMAGE_BACKFILL_MAX_FAILS = 3;
+    /** 专栏文章元数据回填：默认每轮 10 条，连续失败 3 次后不再重试。 */
+    private static final int ARTICLE_BACKFILL_DEFAULT_BATCH = 10;
+    private static final int ARTICLE_BACKFILL_MAX_FAILS = 3;
     /** 单轮最多发起的星球接口请求数（不含图片下载），达到后本轮提前结束。 */
     private static final int REQUEST_BUDGET_DEFAULT = 40;
 
@@ -149,6 +152,7 @@ public class ZsxqSyncService {
             log.info("[知识星球] 本轮同步开始：{} 个星球", groupIds.size());
             parts.add(syncTopics(client, groupIds, logger, progress));
             parts.add(syncColumnsIfDue(client, groupIds, logger, progress));
+            parts.add(backfillColumnArticles(client, logger, progress));
             parts.add(backfillImages(client, logger, progress));
 
             // 本轮完整跑通（未触发风控）：清除连续风控计数
@@ -411,19 +415,30 @@ public class ZsxqSyncService {
 
     /**
      * 老数据补齐作者信息：列表接口本身带 owner，历史帖子（作者名/ID 缺失）在回填翻页时顺带补齐，
-     * 保证“只看星主”能覆盖存量数据。
+     * 保证“只看星主”能覆盖存量数据。长文章的 owner 可能在话题顶层。
      */
     private void fillAuthorIfMissing(String tid, Topic t, ZsxqTopic local) {
         if (local == null) return;
         boolean missingName = safe(local.getAuthor()).isEmpty();
         boolean missingId = safe(local.getAuthorId()).isEmpty();
         if (!missingName && !missingId) return;
-        TalkContent talk = t.getTalk();
-        if (talk == null || talk.getOwner() == null) return;
-        String author = safe(talk.getOwner().getName());
+        String author = topicAuthor(t);
         if (author.isEmpty()) return;
-        String authorId = normalizeId(talk.getOwner().getUserId());
+        String authorId = topicAuthorId(t);
         jdbc.update("UPDATE zsxq_topic SET author = ?, author_id = ? WHERE topic_id = ?", author, authorId, tid);
+    }
+
+    /** 已存在但正文为空的专栏条目：用列表/详情里拿到的标题、摘要与原文链接补齐。 */
+    private void refreshTopicContentIfEmpty(String topicId, Topic t) {
+        String digest = topicDigest(t);
+        String articleUrl = articleUrlOf(t);
+        if (digest.isBlank() && articleUrl.isBlank()) return;
+        jdbc.update("UPDATE zsxq_topic SET "
+                        + "digest = CASE WHEN (digest IS NULL OR digest = '') AND ? <> '' THEN ? ELSE digest END, "
+                        + "article_url = CASE WHEN (article_url IS NULL OR article_url = '') AND ? <> '' THEN ? ELSE article_url END, "
+                        + "article_synced_at = COALESCE(article_synced_at, ?), update_time = ? WHERE topic_id = ?",
+                digest, digest, articleUrl, articleUrl, System.currentTimeMillis(),
+                LocalDateTime.now(), topicId);
     }
 
     /**
@@ -544,6 +559,85 @@ public class ZsxqSyncService {
         return "图片回填 " + done + " 条，失败 " + failed + " 条，入库图片 " + stored + " 张";
     }
 
+    /**
+     * 回填专栏文章元数据：专栏话题列表接口只返回文章索引（无 talk 正文），
+     * 对仍为空的专栏条目逐篇调用话题详情，补齐标题/摘要、作者与原文链接。
+     *
+     * <p>每轮条数由 {@code zsxq.column-article-backfill-batch} 控制；接口不含可用信息时
+     * 累计失败次数，连续 {@value #ARTICLE_BACKFILL_MAX_FAILS} 次后不再自动重试。</p>
+     */
+    private String backfillColumnArticles(ZsxqApiClient client, Logger logger,
+                                          java.util.function.Consumer<String> progress) {
+        int batch = intConfig("zsxq.column-article-backfill-batch", ARTICLE_BACKFILL_DEFAULT_BATCH, 0, 50);
+        if (batch == 0) return "专栏文章回填跳过（已关闭）";
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT topic_id FROM zsxq_topic WHERE column_id IS NOT NULL "
+                        + "AND (digest IS NULL OR digest = '') AND (article_url IS NULL OR article_url = '') "
+                        + "AND article_synced_at IS NULL AND COALESCE(article_fail_count, 0) < "
+                        + ARTICLE_BACKFILL_MAX_FAILS
+                        + " ORDER BY COALESCE(source_create_time, '') DESC LIMIT " + batch);
+        if (rows.isEmpty()) return "专栏文章回填跳过（没有待回填条目）";
+
+        int done = 0, failed = 0;
+        for (int i = 0; i < rows.size(); i++) {
+            Map<String, Object> row = rows.get(i);
+            String tid = rowCell(row, "topic_id");
+            if (tid.isBlank()) continue;
+            progress.accept("回填专栏文章 " + (i + 1) + "/" + rows.size());
+            pause(topicPauseMs);
+            try {
+                Topic topic = getTopic(client, tid);
+                String digest = topicDigest(topic);
+                String articleUrl = articleUrlOf(topic);
+                String author = topicAuthor(topic);
+                String authorId = topicAuthorId(topic);
+                if (digest.isBlank() && articleUrl.isBlank() && author.isBlank()) {
+                    markArticleFailed(tid);
+                    failed++;
+                    logger.debug("专栏文章暂无可解析内容 topicId={}", tid);
+                    continue;
+                }
+                updateArticleContent(tid, digest, articleUrl, author, authorId);
+                markArticleSynced(tid);
+                done++;
+            } catch (Exception e) {
+                rethrowBudget(e);
+                if (isRiskControl(e)) throw new RiskControlException(e);
+                markArticleFailed(tid);
+                failed++;
+                logger.warn("专栏文章回填失败 topicId={} error={}", tid, e.getMessage());
+                if (isAuthOrFatal(e)) {
+                    logger.warn("知识星球授权/请求异常，中止本轮专栏文章回填");
+                    break;
+                }
+            }
+        }
+        return "专栏文章回填 " + done + " 条，失败 " + failed + " 条";
+    }
+
+    /** 写入专栏文章标题/原文链接，并补齐作者；空值不覆盖已有数据。 */
+    private void updateArticleContent(String topicId, String digest, String articleUrl,
+                                      String author, String authorId) {
+        jdbc.update("UPDATE zsxq_topic SET "
+                        + "digest = CASE WHEN (digest IS NULL OR digest = '') AND ? <> '' THEN ? ELSE digest END, "
+                        + "article_url = CASE WHEN (article_url IS NULL OR article_url = '') AND ? <> '' THEN ? ELSE article_url END, "
+                        + "author = CASE WHEN (author IS NULL OR author = '') AND ? <> '' THEN ? ELSE author END, "
+                        + "author_id = CASE WHEN (author_id IS NULL OR author_id = '') AND ? <> '' THEN ? ELSE author_id END, "
+                        + "update_time = ? WHERE topic_id = ?",
+                digest, digest, articleUrl, articleUrl, author, author, authorId, authorId,
+                LocalDateTime.now(), topicId);
+    }
+
+    private void markArticleSynced(String topicId) {
+        jdbc.update("UPDATE zsxq_topic SET article_synced_at = ?, article_fail_count = 0, update_time = ? "
+                + "WHERE topic_id = ?", System.currentTimeMillis(), LocalDateTime.now(), topicId);
+    }
+
+    private void markArticleFailed(String topicId) {
+        jdbc.update("UPDATE zsxq_topic SET article_fail_count = COALESCE(article_fail_count, 0) + 1, "
+                + "update_time = ? WHERE topic_id = ?", LocalDateTime.now(), topicId);
+    }
+
     /** 写回帖子图片列表；complete=false 时保留待回填状态并累计失败次数，下轮重试。 */
     private void saveTopicImages(String topicId, List<String> keys, boolean complete) {
         String json = imageService.toJson(keys);
@@ -626,6 +720,7 @@ public class ZsxqSyncService {
                     skipped++;
                     if (!insertedInHead.contains(tid)) existingOnPage++;
                     fillAuthorIfMissing(tid, t, existing.get());
+                    refreshTopicContentIfEmpty(tid, t);
                     if (refreshOldComments) {
                         comments += refreshCommentsIfGrown(client, gid, t, existing.get(), logger);
                     }
@@ -666,6 +761,7 @@ public class ZsxqSyncService {
                     if (!cid.equals(safe(existing.get().getColumnId()))) assignColumn(tid, cid);
                     skipped++;
                     fillAuthorIfMissing(tid, t, existing.get());
+                    refreshTopicContentIfEmpty(tid, t);
                     String createTime = safe(t.getCreateTime());
                     if (!createTime.isEmpty()) end = createTime;
                     continue;
@@ -942,10 +1038,75 @@ public class ZsxqSyncService {
                 LocalDateTime.now(), LocalDateTime.now());
     }
 
-    private void upsertTopic(String gid, String tid, Topic t, String columnId) {
+    /** 取话题里的长文章元数据：部分接口放在顶层，部分放在 talk.article。 */
+    private static Article articleOf(Topic t) {
+        if (t == null) return null;
+        if (t.getArticle() != null) return t.getArticle();
         TalkContent talk = t.getTalk();
-        String digest = talk != null ? safe(talk.getText()) : "";
-        if (digest.length() > ZsxqTopic.DIGEST_MAX_LENGTH) digest = digest.substring(0, ZsxqTopic.DIGEST_MAX_LENGTH);
+        return talk == null ? null : talk.getArticle();
+    }
+
+    /** 长文章原文地址（没有则返回空串）。 */
+    private static String articleUrlOf(Topic t) {
+        Article article = articleOf(t);
+        return article == null ? "" : safe(article.url()).trim();
+    }
+
+    private static String articleTitle(Topic t) {
+        Article article = articleOf(t);
+        String title = article == null ? "" : safe(article.getTitle()).trim();
+        return title.isEmpty() ? safe(t.getTitle()).trim() : title;
+    }
+
+    /**
+     * 话题摘要：普通话题取 talk.text；长文章取标题 + 摘要/正文；
+     * 都没有时返回空串（由专栏文章回填任务后续处理）。
+     */
+    private static String topicDigest(Topic t) {
+        if (t == null) return "";
+        TalkContent talk = t.getTalk();
+        String text = talk == null ? "" : safe(talk.getText());
+        if (!text.isBlank()) return truncate(text, ZsxqTopic.DIGEST_MAX_LENGTH);
+
+        Article article = articleOf(t);
+        String title = articleTitle(t);
+        String body = article == null ? "" : safe(article.getSummary()).trim();
+        if (body.isEmpty() && article != null) body = stripHtml(article.getContent());
+        if (body.isEmpty()) body = stripHtml(t.getContent());
+        if (title.isEmpty() && body.isEmpty()) return "";
+        if (title.isEmpty()) return truncate(body, ZsxqTopic.DIGEST_MAX_LENGTH);
+        if (body.isEmpty()) return truncate(title, ZsxqTopic.DIGEST_MAX_LENGTH);
+        return truncate(title + "\n" + body, ZsxqTopic.DIGEST_MAX_LENGTH);
+    }
+
+    /** 作者优先取 talk.owner，其次取话题顶层 owner（专栏文章列表）。 */
+    private static String topicAuthor(Topic t) {
+        if (t == null) return "";
+        User owner = t.getTalk() != null && t.getTalk().getOwner() != null
+                ? t.getTalk().getOwner() : t.getOwner();
+        return owner == null ? "" : safe(owner.getName()).trim();
+    }
+
+    private static String topicAuthorId(Topic t) {
+        if (t == null) return "";
+        User owner = t.getTalk() != null && t.getTalk().getOwner() != null
+                ? t.getTalk().getOwner() : t.getOwner();
+        return owner == null ? "" : normalizeId(owner.getUserId());
+    }
+
+    /** 长文章正文是 HTML：粗转纯文本并压缩空白，避免摘要里出现标签。 */
+    private static String stripHtml(String html) {
+        String s = safe(html).replaceAll("<[^>]*>", " ");
+        s = s.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<")
+                .replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'");
+        return s.replaceAll("\\s+", " ").trim();
+    }
+
+    private void upsertTopic(String gid, String tid, Topic t, String columnId) {
+        String digest = topicDigest(t);
+        String articleUrl = articleUrlOf(t);
+        Long articleSyncedAt = digest.isBlank() && articleUrl.isBlank() ? null : System.currentTimeMillis();
+        TalkContent talk = t.getTalk();
 
         // 正文图片直接落对象存储，正文/封面不再依赖会过期的星球临时链接
         List<String> imageKeys = imageService.storeAll(tid, talk);
@@ -961,17 +1122,17 @@ public class ZsxqSyncService {
         String column = columnId == null || columnId.isBlank() ? null : columnId;
 
         jdbc.update("INSERT INTO zsxq_topic (id, topic_id, group_id, column_id, digest, comment_count, likes_count, "
-                        + "source_create_time, cover, images, image_synced_at, image_fail_count, visible, "
-                        + "create_time, update_time) "
-                        + "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE, ?, ? WHERE NOT EXISTS "
+                        + "source_create_time, cover, images, image_synced_at, image_fail_count, article_url, "
+                        + "article_synced_at, article_fail_count, visible, create_time, update_time) "
+                        + "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, TRUE, ?, ? WHERE NOT EXISTS "
                         + "(SELECT 1 FROM zsxq_topic WHERE topic_id = ?)",
                 UUID.randomUUID().toString().replace("-", ""), tid, gid, column, digest, comments, likes,
-                sourceTime, cover, imagesJson, imageSyncedAt, imageFailCount,
+                sourceTime, cover, imagesJson, imageSyncedAt, imageFailCount, articleUrl, articleSyncedAt,
                 LocalDateTime.now(), LocalDateTime.now(), tid);
 
-        // 话题作者：来自话题内容的 owner；已有帖子也由此逐步补齐（作者 ID 用于“只看星主”）
-        String author = talk != null && talk.getOwner() != null ? safe(talk.getOwner().getName()) : "";
-        String authorId = talk != null && talk.getOwner() != null ? normalizeId(talk.getOwner().getUserId()) : "";
+        // 话题作者：来自话题内容的 owner（长文章可能只在话题顶层）；已有帖子也由此逐步补齐
+        String author = topicAuthor(t);
+        String authorId = topicAuthorId(t);
         if (!author.isEmpty()) {
             jdbc.update("UPDATE zsxq_topic SET author = ?, author_id = ? WHERE topic_id = ?", author, authorId, tid);
         }

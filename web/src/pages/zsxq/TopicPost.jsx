@@ -24,6 +24,11 @@ export default class TopicPost extends React.Component {
         const shownComments = ownerCommentOnly ? ownerComments : comments
         const text = item.digest || ''
         const longText = text.length > CLAMP_THRESHOLD
+        // 专栏文章：优先用同步到的原文地址；没有时回退到星球话题详情页
+        const sourceUrl = item.articleUrl
+            || (item.columnId && item.topicId
+                ? `https://wx.zsxq.com/dweb2/index/topic_detail/${encodeURIComponent(item.topicId)}`
+                : '')
 
         return <article className={`zsxq-post${isOwner ? ' is-owner' : ''}`}>
             <div className='zsxq-post-head'>
@@ -36,6 +41,8 @@ export default class TopicPost extends React.Component {
 
             <div className='zsxq-post-meta'>
                 {meta}
+                {sourceUrl ? <a className='zsxq-post-source' href={sourceUrl} target='_blank'
+                                rel='noreferrer'>查看原文</a> : null}
                 {Number(item.likesCount) > 0 ? <span>赞 {item.likesCount}</span> : null}
                 {Number(item.commentCount) > 0 ? <span>评论 {item.commentCount}</span> : null}
                 {item.lastCommentTime ? <span>最近回复 {fmtTime(item.lastCommentTime)}</span> : null}
@@ -46,7 +53,9 @@ export default class TopicPost extends React.Component {
                 {longText ? <button type='button' className='zsxq-post-toggle' onClick={this.toggleExpanded}>
                     {expanded ? '收起' : '展开全文'}
                 </button> : null}
-            </> : images.length ? null : <div className='zsxq-post-text'>（无内容）</div>}
+            </> : images.length ? null : <div className='zsxq-post-text'>
+                {sourceUrl ? '（长文章，点击「查看原文」阅读）' : '（无内容）'}
+            </div>}
 
             {images.length ? <div className='zsxq-post-images'>
                 {images.map((img, idx) => {

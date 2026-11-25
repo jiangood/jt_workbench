@@ -118,6 +118,10 @@ public final class ZsxqModels {
         public String topicUid;
         public String type;
         public String createTime;
+        public String title;
+        public String content;
+        public User owner;
+        public Article article;
         public TalkContent talk;
         public Integer likesCount;
         public Integer commentsCount;
@@ -140,6 +144,26 @@ public final class ZsxqModels {
 
         public String getCreateTime() {
             return createTime;
+        }
+
+        /** 页面/长文章列表里的标题（普通话题通常为空）。 */
+        public String getTitle() {
+            return title;
+        }
+
+        /** 页面/长文章列表里的正文或摘要（普通话题通常为空）。 */
+        public String getContent() {
+            return content;
+        }
+
+        /** 部分接口把作者放在话题顶层（专栏文章列表）。 */
+        public User getOwner() {
+            return owner;
+        }
+
+        /** 部分接口把长文章信息放在话题顶层。 */
+        public Article getArticle() {
+            return article;
         }
 
         public TalkContent getTalk() {
@@ -173,9 +197,10 @@ public final class ZsxqModels {
         @Override
         public String toString() {
             return "Topic{topicId=" + topicId + ", type=" + type + ", createTime=" + createTime
+                    + ", title=" + brief(title)
                     + ", likesCount=" + likesCount + ", commentsCount=" + commentsCount
                     + ", readingCount=" + readingCount + ", digested=" + digested + ", sticky=" + sticky
-                    + ", talk=" + talk + "}";
+                    + ", owner=" + owner + ", article=" + article + ", talk=" + talk + "}";
         }
     }
 
@@ -183,6 +208,8 @@ public final class ZsxqModels {
         public User owner;
         public String text;
         public List<Image> images;
+        /** 长文章：正文需另行获取，这里通常只有标题与原文链接。 */
+        public Article article;
 
         public User getOwner() {
             return owner;
@@ -196,10 +223,69 @@ public final class ZsxqModels {
             return images;
         }
 
+        public Article getArticle() {
+            return article;
+        }
+
         @Override
         public String toString() {
             return "TalkContent{owner=" + owner + ", images=" + (images == null ? 0 : images.size())
-                    + ", text=" + brief(text) + "}";
+                    + ", article=" + article + ", text=" + brief(text) + "}";
+        }
+    }
+
+    /** 知识星球长文章（article）元数据；正文在 articles.zsxq.com，需要登录后另行获取。 */
+    public static class Article {
+        public String articleId;
+        public String title;
+        public String articleUrl;
+        /** 详情接口里长文的原文地址。 */
+        public String inlineArticleUrl;
+        public String summary;
+        public String content;
+
+        public String getArticleId() {
+            return articleId;
+        }
+
+        public String getTitle() {
+            return title;
+        }
+
+        public String getArticleUrl() {
+            return articleUrl;
+        }
+
+        public String getInlineArticleUrl() {
+            return inlineArticleUrl;
+        }
+
+        public String getSummary() {
+            return summary;
+        }
+
+        public String getContent() {
+            return content;
+        }
+
+        /** 取可点击的原文地址：优先 article_url，其次 inline_article_url，并补全协议。 */
+        public String url() {
+            String url = safeUrl(articleUrl);
+            return url.isEmpty() ? safeUrl(inlineArticleUrl) : url;
+        }
+
+        private static String safeUrl(String value) {
+            String url = value == null ? "" : value.trim();
+            if (url.isEmpty()) return "";
+            if (url.startsWith("//")) return "https:" + url;
+            if (url.startsWith("articles.zsxq.com") || url.startsWith("file.zsxq.com")) return "https://" + url;
+            return url;
+        }
+
+        @Override
+        public String toString() {
+            return "Article{articleId=" + articleId + ", title=" + brief(title)
+                    + ", url=" + brief(url()) + "}";
         }
     }
 

@@ -59,6 +59,16 @@ public class ZsxqTopic extends BaseEntity {
     /** 所属专栏 ID（来自专栏同步；普通话题为空） */
     private String columnId;
 
+    /** 长文章原文地址（专栏文章同步/回填后写入；普通话题为空） */
+    @Column(length = 1024)
+    private String articleUrl;
+
+    /** 专栏文章元数据回填完成时间（epoch 毫秒，null 表示待回填） */
+    private Long articleSyncedAt;
+
+    /** 专栏文章回填失败次数（连续失败 3 次后不再自动重试） */
+    private Integer articleFailCount = 0;
+
     /** 原始发帖时间（ISO 字符串，保留源值；不与 BaseEntity.createTime 冲突） */
     private String sourceCreateTime;
 

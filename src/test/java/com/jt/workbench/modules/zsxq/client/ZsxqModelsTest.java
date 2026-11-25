@@ -64,6 +64,33 @@ class ZsxqModelsTest {
         assertEquals(10, column.topicsCount());
     }
 
+    /** 长文章（专栏文章）：article 可能在 talk 内，也可能在话题顶层。 */
+    @Test
+    void articleMetadataIsParsed() {
+        String json = """
+                {"topics":[
+                  {"topic_id":111,"type":"talk","create_time":"2026-01-01T00:00:00.000+0800",
+                   "talk":{"owner":{"user_id":88484111558422,"name":"作者A"},
+                     "article":{"article_id":222,"title":"文章标题",
+                       "article_url":"articles.zsxq.com/id_abc.html"}}},
+                  {"topic_id":333,"type":"talk","create_time":"2026-01-02T00:00:00.000+0800",
+                   "owner":{"user_id":88484111558423,"name":"作者B"},
+                   "article":{"title":"顶层标题","inline_article_url":"//articles.zsxq.com/id_def.html"}}
+                ]}
+                """;
+
+        ZsxqModels.TopicPage page = mapper.treeToValue(mapper.readTree(json), ZsxqModels.TopicPage.class);
+
+        ZsxqModels.Article first = page.topics.get(0).getTalk().getArticle();
+        assertEquals("文章标题", first.getTitle());
+        assertEquals("https://articles.zsxq.com/id_abc.html", first.url());
+
+        ZsxqModels.Topic second = page.topics.get(1);
+        assertEquals("顶层标题", second.getArticle().getTitle());
+        assertEquals("https://articles.zsxq.com/id_def.html", second.getArticle().url());
+        assertEquals("作者B", second.getOwner().getName());
+    }
+
     /** 任务日志依赖 toString：ID 要完整、长正文截断、换行压平，避免刷屏。 */
     @Test
     void toStringIsReadableForJobLogs() {
@@ -82,6 +109,6 @@ class ZsxqModelsTest {
         assertTrue(text.contains("…"), text);
         assertTrue(!text.contains("\n"), text);
         assertTrue(!text.contains("x".repeat(120)), text);
-        assertTrue(text.length() < 400, text);
+        assertTrue(text.length() < 800, text);
     }
 }
