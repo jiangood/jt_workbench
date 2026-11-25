@@ -90,8 +90,8 @@ jobs:
           tags: |
             ${{ steps.ref.outputs.image }}:latest
             ${{ steps.ref.outputs.image }}:${{ steps.ref.outputs.tag }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=jt-workbench
+          cache-to: type=gha,mode=max,scope=jt-workbench
           # ACR 个人版不接受 BuildKit 默认的 provenance 清单（OCI empty v1 json），必须显式关闭
           provenance: false
 

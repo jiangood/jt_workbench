@@ -70,7 +70,7 @@
             </plugin>
         </plugins>
     </build>
-    <!-- 依赖仓库镜像（国内加速） -->
+    <!-- 依赖仓库 -->
     <repositories>
         <!-- 框架快照仓库（仅快照，正式依赖仍走镜像/Central） -->
         <repository>
@@ -83,15 +83,5 @@
                 <enabled>true</enabled>
             </snapshots>
         </repository>
-        <repository>
-            <id>huaweicloud</id>
-            <url>https://mirrors.huaweicloud.com/repository/maven/</url>
-        </repository>
     </repositories>
-    <pluginRepositories>
-        <pluginRepository>
-            <id>huaweicloud-plugins</id>
-            <url>https://mirrors.huaweicloud.com/repository/maven/</url>
-        </pluginRepository>
-    </pluginRepositories>
 </project>

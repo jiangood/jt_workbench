@@ -23,7 +23,7 @@ FROM node:24 AS build-frontend
 WORKDIR /build
 
 COPY web/package.json web/package-lock.json ./
-RUN npm ci --registry=https://registry.npmmirror.com
+RUN npm ci
 
 COPY web/ ./
 RUN npm run build

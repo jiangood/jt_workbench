@@ -53,8 +53,8 @@ jobs:
           tags: |
             ${{ steps.meta.outputs.image }}:latest
             ${{ steps.meta.outputs.image }}:sha-${{ steps.meta.outputs.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=jt-workbench
+          cache-to: type=gha,mode=max,scope=jt-workbench
           provenance: false
 
       - name: Summary
