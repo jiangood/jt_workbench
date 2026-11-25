@@ -2,7 +2,7 @@
 
 ## Spring Boot（open-admin，Docker Compose）
 
-`ci.yml` 在 push `v*` tag（或手动触发）时构建并推送 `:latest`/`:sha-<commit>` 镜像至 GitHub Container Registry（GHCR）；`release.yml` 在 push `vX.Y.Z` tag（或手动指定 tag）时构建并推送版本镜像并创建 GitHub Release。镜像地址为 `ghcr.io/jiangood/jt_workbench`（仅 amd64），**本地不 docker build**；部署 compose 使用 GHCR 地址拉取：
+`release.yml` 在 push `vX.Y.Z` tag（或手动指定 tag）时执行 Docker 多阶段构建（含后端 `mvn verify` 与前端构建），仅推送 `:latest` 镜像至 GitHub Container Registry（GHCR），并创建 GitHub Release。镜像地址为 `ghcr.io/jiangood/jt_workbench`（仅 amd64），**本地不 docker build**；部署 compose 使用 GHCR 地址拉取：
 
 ```bash
 # 包为私有（默认）时先登录：docker login ghcr.io -u <GitHub 用户名> -p <带 read:packages 的 PAT>
@@ -34,7 +34,6 @@ docker compose pull && docker compose up -d
 curl -s http://localhost:8080/admin/public/site-info
 ```
 
-## 回滚
+## 数据恢复
 
-- 镜像回退到上一 tag：调整 compose 镜像版本后 `docker compose pull && docker compose up -d`
 - 数据恢复按实际环境执行（如 H2 数据卷 `deploy/app-data/` 或 MySQL 备份）；建议在升级前自行备份数据目录/数据库。
