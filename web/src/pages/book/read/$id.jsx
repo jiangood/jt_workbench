@@ -17,6 +17,10 @@ export const pageMeta = {layout: 'blank', title: '阅读'}
 const PREFS_KEY = 'book:reader:prefs'
 const POS_PREFIX = 'book:reader:pos:'
 
+// 虚拟页按正文字符数切分：不随手机字号、屏宽或阅读设置变化，跨设备进度一致。
+const PAGE_CHARS = 1200
+const TEXT_INDEX_CACHE = new WeakMap()
+
 const THEMES = {
     paper: {
         label: '白', bg: '#ffffff', fg: '#1f1f1f', sub: '#8c8c8c', border: '#ededed', panel: '#ffffff',
@@ -154,6 +158,184 @@ function encodePathSegments(path) {
     return String(path || '').split('/').map(encodeURIComponent).join('/')
 }
 
+/** 正文位置索引：跳过空白文本与脚本样式，按 DOM 顺序累计字符数。 */
+function getTextIndex(doc) {
+    const cached = TEXT_INDEX_CACHE.get(doc)
+    if (cached) return cached
+    const body = doc?.body
+    if (!body) return null
+
+    const nodes = []
+    const prefixes = []
+    const byNode = new Map()
+    const view = doc.defaultView
+    const showText = view?.NodeFilter?.SHOW_TEXT ?? 4
+    const walker = doc.createTreeWalker(body, showText, null)
+    let total = 0
+    let node = walker.nextNode()
+    while (node) {
+        const value = node.nodeValue || ''
+        const hidden = node.parentElement?.closest?.('script, style, noscript')
+        if (value.trim() && !hidden) {
+            byNode.set(node, nodes.length)
+            prefixes.push(total)
+            nodes.push(node)
+            total += value.length
+        }
+        node = walker.nextNode()
+    }
+    const index = {body, nodes, prefixes, byNode, total}
+    TEXT_INDEX_CACHE.set(doc, index)
+    return index
+}
+
+/** 将 DOM 边界换算为章节内字符偏移；CFI 与视口锚点共用同一把标尺。 */
+function textOffsetFromBoundary(doc, container, offset) {
+    const index = getTextIndex(doc)
+    if (!index || !container) return null
+    if (container.nodeType === 3) {
+        const nodeIndex = index.byNode.get(container)
+        if (nodeIndex === undefined) return null
+        return index.prefixes[nodeIndex] + Math.max(0, Math.min(Number(offset) || 0, container.length))
+    }
+    if (container === index.body && (Number(offset) || 0) <= 0) return 0
+    if (container === index.body && (Number(offset) || 0) >= container.childNodes.length) return index.total
+    try {
+        const point = doc.createRange()
+        point.selectNodeContents(index.body)
+        point.setEnd(container, Math.max(0, Number(offset) || 0))
+        let total = 0
+        const endToEnd = doc.defaultView?.Range?.END_TO_END ?? 2
+        for (const node of index.nodes) {
+            const nodeRange = doc.createRange()
+            nodeRange.selectNodeContents(node)
+            if (point.compareBoundaryPoints(endToEnd, nodeRange) < 0) break
+            total += node.length
+        }
+        return total
+    } catch {
+        return null
+    }
+}
+
+function offsetFromCfi(contents, cfi) {
+    try {
+        const range = contents?.range?.(cfi)
+        return range ? textOffsetFromBoundary(contents.document, range.startContainer, range.startOffset) : null
+    } catch {
+        return null
+    }
+}
+
+function collapsedCfi(contents, range) {
+    const point = range.cloneRange()
+    point.collapse(true)
+    return contents.cfiFromRange(point)
+}
+
+/**
+ * 取视口上沿的第一个正文位置。epub.js 默认映射按空格断句，中文长段落只能精确到段落；
+ * 手机端改用 caret 命中文字，可连续精确到字符，避免进度一跳一大截。
+ */
+function viewportAnchor(rendition) {
+    try {
+        const manager = rendition?.manager
+        const container = manager?.container
+        const views = manager?.views?.displayed?.() || []
+        if (!container || !views.length) return null
+
+        const box = container.getBoundingClientRect()
+        const axis = manager.settings?.axis || views.find(view => view.settings?.axis)?.settings?.axis || 'vertical'
+        const horizontal = axis === 'horizontal'
+        const startSide = horizontal ? 'left' : 'top'
+        const endSide = horizontal ? 'right' : 'bottom'
+        const sizeSide = horizontal ? 'width' : 'height'
+        const edge = box[startSide] + 1
+        const view = views.find(item => {
+            const rect = item.element?.getBoundingClientRect?.()
+            return item.contents?.document && rect && rect[endSide] > edge && rect[startSide] < edge
+        })
+        if (!view) return null
+
+        const contents = view.contents
+        const doc = contents.document
+        const index = getTextIndex(doc)
+        if (!index) return null
+        const frame = (view.iframe || view.element).getBoundingClientRect()
+        const makeAnchor = (offset, atEnd = false) => {
+            const range = doc.createRange()
+            if (atEnd) {
+                range.selectNodeContents(index.body)
+                range.collapse(false)
+            } else {
+                range.setStart(index.body, 0)
+                range.collapse(true)
+            }
+            return {index: view.section.index, cfi: collapsedCfi(contents, range), offset}
+        }
+
+        const scrollPos = Math.abs(horizontal ? container.scrollLeft : container.scrollTop)
+        const scrollSize = horizontal ? container.scrollWidth : container.scrollHeight
+        const viewportSize = horizontal ? container.clientWidth : container.clientHeight
+        if (scrollPos <= 1 && !view.section.prev()) return makeAnchor(0)
+        if (scrollPos + viewportSize >= scrollSize - 2 && !view.section.next()) return makeAnchor(index.total, true)
+
+        const cross = horizontal ? frame.height / 2 : frame.width / 2
+        let along = Math.max(0, edge - frame[startSide] + 1)
+        const maxScan = Math.min(frame[sizeSide], Math.max(48, box[sizeSide] / 3))
+        for (let scanned = 0; scanned <= maxScan; scanned += 4, along += 4) {
+            const x = horizontal ? along : cross
+            const y = horizontal ? cross : along
+            let range = doc.defaultView?.caretRangeFromPoint?.(x, y)
+            if (!range && doc.defaultView?.caretPositionFromPoint) {
+                const pos = doc.defaultView.caretPositionFromPoint(x, y)
+                if (pos?.offsetNode) {
+                    range = doc.createRange()
+                    range.setStart(pos.offsetNode, pos.offset)
+                }
+            }
+            if (!range?.startContainer) continue
+            const offset = textOffsetFromBoundary(doc, range.startContainer, range.startOffset)
+            if (offset === null) continue
+            return {index: view.section.index, cfi: collapsedCfi(contents, range), offset}
+        }
+    } catch {
+        /* 固定布局 / 浏览器不支持 caret 命中：回退 epub.js 的位置映射 */
+    }
+    return null
+}
+
+/** 扫描一遍 spine 统计真实正文长度，避免短章节被 epub.js 的等份位置统计放大权重。 */
+async function buildReadingIndex(epub, isDisposed = () => false) {
+    const sections = []
+    let total = 0
+    let loaded = 0
+    for (const section of epub?.spine?.spineItems || []) {
+        if (isDisposed()) return null
+        if (!section.linear) {
+            sections.push(null)
+            continue
+        }
+        const start = total
+        try {
+            // 直接请求章节文档，不碰 Section 的加载/卸载状态，避免与连续阅读器的渲染竞争。
+            const doc = await epub.request(section.url)
+            if (isDisposed()) return null
+            total += getTextIndex(doc)?.total || 0
+        } catch {
+            /* 损坏章节不计入正文；阅读器仍会显示它，但不会挤占正常章节的进度权重 */
+        }
+        sections.push({start, length: total - start})
+        // 大书在手机端也留出渲染间隙，避免连续解析章节时长时间卡住主线程。
+        if (++loaded % 8 === 0) await new Promise(resolve => window.setTimeout(resolve, 0))
+    }
+    return {
+        sections,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / PAGE_CHARS)),
+    }
+}
+
 function postJson(path, body) {
     return fetch(UrlUtils.contextPath('/' + path), {
         method: 'POST',
@@ -161,7 +343,7 @@ function postJson(path, body) {
         keepalive: true,
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(body),
-    }).catch(() => null)
+    }).then(res => res.ok).catch(() => false)
 }
 
 async function fetchJson(path) {
@@ -176,29 +358,41 @@ async function fetchJson(path) {
     }
 }
 
-/** 节流上报：相同值不重复发，攒 wait 毫秒再发，离页时 flush */
+/** 串行节流上报：相同值不重复发，攒 wait 毫秒再发，离页时 flush；失败自动重试。 */
 function createReporter(send, wait, same = (a, b) => a === b) {
     let last
     let pending
     let timer = 0
+    let flying = false
+    const schedule = () => {
+        if (!timer && pending !== undefined) timer = window.setTimeout(flush, wait)
+    }
     const flush = () => {
         if (timer) {
             clearTimeout(timer)
             timer = 0
         }
-        if (pending === undefined) return
+        if (flying || pending === undefined) return
         const value = pending
         pending = undefined
         if (last !== undefined && same(value, last)) return
-        last = value
-        send(value)
+        flying = true
+        Promise.resolve(send(value)).then(ok => {
+            if (ok) last = value
+            else if (pending === undefined) pending = value
+        }).catch(() => {
+            if (pending === undefined) pending = value
+        }).finally(() => {
+            flying = false
+            schedule()
+        })
     }
     return {
         report(value) {
             if (value === undefined || value === null) return
             if (pending !== undefined && same(value, pending)) return
             pending = value
-            if (!timer) timer = window.setTimeout(flush, wait)
+            schedule()
         },
         flush,
     }
@@ -239,7 +433,7 @@ export default function BookReader({params}) {
     const renditionRef = React.useRef(null)
     const epubRef = React.useRef(null)
     const lastLocRef = React.useRef(null)
-    const locationsReadyRef = React.useRef(false)
+    const readingIndexRef = React.useRef(null)
     const totalSectionsRef = React.useRef(0)
     const prefsRef = React.useRef(prefs)
     const uiOpenRef = React.useRef(false)
@@ -363,11 +557,17 @@ export default function BookReader({params}) {
         const savedPosition = readLocalPosition(id)
 
         let disposed = false
-        let locationTimer = 0
+        let latestPosition = null
         let saveTimer = 0
         let paintTimer = 0
         let themeTimer = 0
         const cleanupFns = []
+
+        const persistLatest = () => {
+            if (!latestPosition) return
+            writeLocalPosition(id, latestPosition)
+            reportersRef.current?.position.report({cfi: latestPosition.cfi, progress: latestPosition.progress})
+        }
 
         // 打开即记一次「最近阅读」，待读 → 阅读中；失败不影响阅读
         HttpClient.post(`admin/book/reading/${id}`, null, null, {toastError: false, toastSuccess: false}).catch(() => {
@@ -393,50 +593,12 @@ export default function BookReader({params}) {
                 const localCfi = savedPosition && savedPosition.v === version ? savedPosition.cfi : null
                 const startCfi = serverCfi || localCfi || null
 
-                const progressReporter = createReporter(pct => postJson(`admin/book/progress/${id}`, {progress: pct}), 2000)
                 const positionReporter = createReporter(
-                    ({cfi}) => postJson(`admin/book/position/${id}`, {cfi, version}),
+                    ({cfi, progress}) => postJson(`admin/book/position/${id}`, {cfi, version, progress}),
                     1500,
-                    (a, b) => a?.cfi === b?.cfi,
+                    (a, b) => a?.cfi === b?.cfi && a?.progress === b?.progress,
                 )
-                reportersRef.current = {progress: progressReporter, position: positionReporter}
-
-                const rateLocation = loc => {
-                    try {
-                        if (locationsReadyRef.current && loc?.start?.cfi && epubRef.current?.locations?.length() > 0) {
-                            return epubRef.current.locations.percentageFromCfi(loc.start.cfi) || 0
-                        }
-                        if (Number.isInteger(loc?.start?.index) && totalSectionsRef.current > 0) {
-                            return Math.min(1, (loc.start.index + (loc.atEnd ? 1 : 0)) / totalSectionsRef.current)
-                        }
-                    } catch {
-                        /* 位置统计未就绪 */
-                    }
-                    return 0
-                }
-
-                // 页码：按 epub.js 的整本位置统计（约每 1200 字一个位置）折算已读页 / 总页
-                const paintPages = loc => {
-                    try {
-                        const locations = epubRef.current?.locations
-                        const cfi = loc?.start?.cfi
-                        if (!locationsReadyRef.current || !locations || !cfi) return
-                        const total = locations.length()
-                        if (!total) return
-                        const index = locations.locationFromCfi(cfi)
-                        if (index < 0) return
-                        setPageInfo({page: Math.min(index + 1, total), total})
-                    } catch {
-                        /* 位置统计未就绪 */
-                    }
-                }
-
-                const paintProgress = () => {
-                    const ratio = rateLocation(lastLocRef.current)
-                    setProgress(Math.round(ratio * 100))
-                    progressReporter.report(Math.round(ratio * 100))
-                    paintPages(lastLocRef.current)
-                }
+                reportersRef.current = {position: positionReporter}
 
                 const opfUrl = UrlUtils.contextPath(
                     `/admin/book/resource/${encodeURIComponent(id)}/${encodeURIComponent(version)}/${encodePathSegments(openData.opfPath)}`)
@@ -602,9 +764,35 @@ export default function BookReader({params}) {
                     if (paintTimer) return
                     paintTimer = window.setTimeout(() => {
                         paintTimer = 0
+                        if (disposed) return
                         const current = lastLocRef.current
-                        if (!current) return
-                        const index = Number.isInteger(current.start?.index) ? current.start.index : 0
+                        const anchor = viewportAnchor(rendition)
+                        const index = Number.isInteger(anchor?.index)
+                            ? anchor.index
+                            : (Number.isInteger(current?.start?.index) ? current.start.index : 0)
+                        const cfi = anchor?.cfi || current?.start?.cfi
+                        let sectionOffset = anchor?.offset
+                        if (sectionOffset == null && cfi) {
+                            const view = rendition.manager?.views?.displayed?.().find(item => item.section.index === index)
+                            sectionOffset = offsetFromCfi(view?.contents, cfi)
+                        }
+
+                        const readingIndex = readingIndexRef.current
+                        const metric = readingIndex?.sections?.[index]
+                        let pct = Number.isFinite(book.progress) ? Math.max(0, Math.min(100, book.progress)) : 0
+                        if (metric && sectionOffset != null && readingIndex.total > 0) {
+                            const globalOffset = Math.max(0, Math.min(
+                                readingIndex.total,
+                                metric.start + Math.max(0, Math.min(metric.length, sectionOffset)),
+                            ))
+                            pct = Math.round(globalOffset / readingIndex.total * 100)
+                            setProgress(pct)
+                            setPageInfo({
+                                page: Math.min(readingIndex.totalPages, Math.floor(globalOffset / PAGE_CHARS) + 1),
+                                total: readingIndex.totalPages,
+                            })
+                        }
+
                         let hit = null
                         for (const item of tocIndexed) {
                             if (item.index <= index) hit = item
@@ -612,7 +800,15 @@ export default function BookReader({params}) {
                         }
                         setChapter(hit?.label || (totalSectionsRef.current ? `第 ${index + 1} 节` : ''))
                         setTocCurrent(hit ? tocIndexed.indexOf(hit) : -1)
-                        setProgress(Math.round(rateLocation(current) * 100))
+
+                        if (cfi) {
+                            latestPosition = {v: version, cfi, progress: pct}
+                            if (saveTimer) clearTimeout(saveTimer)
+                            saveTimer = window.setTimeout(() => {
+                                saveTimer = 0
+                                if (!disposed) persistLatest()
+                            }, 600)
+                        }
                     }, 120)
                 }
 
@@ -620,18 +816,15 @@ export default function BookReader({params}) {
                     if (disposed) return
                     lastLocRef.current = loc
                     paintLocation(loc)
-                    paintProgress()
                     scheduleEpubStyle()
-                    const cfi = loc?.start?.cfi
-                    if (!cfi) return
-                    if (saveTimer) clearTimeout(saveTimer)
-                    saveTimer = window.setTimeout(() => {
-                        saveTimer = 0
-                        if (disposed || !cfi) return
-                        writeLocalPosition(id, {v: version, cfi})
-                        positionReporter.report({cfi})
-                    }, 600)
                 })
+                rendition.on('resized', () => paintLocation(lastLocRef.current))
+
+                // 手机触摸滚动不一定会触发 epub.js 的 relocated；直接监听外层滚动容器补算视口锚点。
+                const scroller = rendition.manager?.container
+                const onScroll = () => paintLocation(lastLocRef.current)
+                scroller?.addEventListener('scroll', onScroll, {passive: true})
+                cleanupFns.push(() => scroller?.removeEventListener('scroll', onScroll))
 
                 const onKey = e => {
                     if (uiOpenRef.current) return
@@ -676,19 +869,14 @@ export default function BookReader({params}) {
                 setReady(true)
                 setLoading(false)
 
-                // 整本位置统计（约 1200 等份）：异步跑，完成后百分比更精确
-                epub.ready
-                    .then(() => epub.locations.generate(1200))
-                    .then(() => {
-                        locationsReadyRef.current = true
-                        if (!disposed) paintProgress()
-                    })
-                    .catch(() => {
-                    })
-
-                locationTimer = window.setTimeout(() => {
-                    if (!disposed) paintProgress()
-                }, 1200)
+                // 后台按正文字符数建立全书索引；完成后页数与百分比连续更新，不再每 1200 字跳一次。
+                buildReadingIndex(epub, () => disposed).then(index => {
+                    if (disposed || !index) return
+                    readingIndexRef.current = index
+                    paintLocation(lastLocRef.current)
+                }).catch(() => {
+                    /* 索引失败时保留 CFI 续读，页数显示占位 */
+                })
             } catch (err) {
                 if (disposed || err?.name === 'AbortError') return
                 setError(err?.message || '打开 EPUB 失败')
@@ -699,27 +887,25 @@ export default function BookReader({params}) {
         run()
 
         const flushAll = () => {
-            const r = reportersRef.current
-            if (!r) return
+            persistLatest()
             try {
-                r.progress.flush()
-            } catch {
-                /* 忽略 */
-            }
-            try {
-                r.position.flush()
+                reportersRef.current?.position.flush()
             } catch {
                 /* 忽略 */
             }
         }
         const onPageHide = () => flushAll()
+        const onVisibilityChange = () => {
+            if (document.visibilityState === 'hidden') flushAll()
+        }
         window.addEventListener('pagehide', onPageHide)
+        document.addEventListener('visibilitychange', onVisibilityChange)
 
         return () => {
             disposed = true
             flushAll()
             window.removeEventListener('pagehide', onPageHide)
-            if (locationTimer) clearTimeout(locationTimer)
+            document.removeEventListener('visibilitychange', onVisibilityChange)
             if (saveTimer) clearTimeout(saveTimer)
             if (paintTimer) clearTimeout(paintTimer)
             if (themeTimer) clearTimeout(themeTimer)
@@ -742,8 +928,9 @@ export default function BookReader({params}) {
                 /* 已销毁 */
             }
             epubRef.current = null
-            locationsReadyRef.current = false
+            readingIndexRef.current = null
             lastLocRef.current = null
+            latestPosition = null
             reportersRef.current = null
         }
     }, [book, id, applyEpubStyle, applyContentStyle])
@@ -812,8 +999,12 @@ export default function BookReader({params}) {
                 </div>
             </div>
             <div className='reader-topbar-right'>
-                <span className='reader-percent' title='已读页数 / 总页数'>
-                    {pageInfo.total > 0 ? `${pageInfo.page} / ${pageInfo.total} 页` : `${progress}%`}
+                <span
+                    className='reader-percent'
+                    title='已读页数 / 总页数'
+                    aria-label={pageInfo.total > 0 ? `已读 ${pageInfo.page} / ${pageInfo.total} 页，进度 ${progress}%` : '正在计算页数'}
+                >
+                    {pageInfo.total > 0 ? `${pageInfo.page} / ${pageInfo.total} 页` : '— / — 页'}
                 </span>
                 <Tooltip title='目录'>
                     <Button type='text' icon={<MenuOutlined/>} onClick={() => setTocOpen(true)}/>
@@ -898,7 +1089,7 @@ export default function BookReader({params}) {
             </SettingRow>
             <p className='reader-tip' style={{marginTop: 16}}>
                 上下滚动阅读：滚轮 / 触控板 / 触摸滑动，方向键上下或翻页键滚动一屏。<br/>
-                阅读进度与位置会自动保存，换设备可继续读。
+                页数按正文位置划分，不随手机排版变化；阅读进度与位置会自动保存，换设备可继续读。
             </p>
         </Drawer>
     </div>

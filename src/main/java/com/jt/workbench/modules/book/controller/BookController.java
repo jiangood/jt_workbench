@@ -391,7 +391,7 @@ public class BookController {
         return new AjaxResult();
     }
 
-    /** EPUB 精确阅读位置（CFI）云端保存：跨设备续读，version = 当前文件的版本号 */
+    /** EPUB 精确阅读位置（CFI）云端保存：可同时原子回写进度，version = 当前文件的版本号 */
     @HasPermission("book:read")
     @PostMapping("position/{id}")
     public AjaxResult position(@PathVariable String id, @RequestBody Map<String, Object> body) {
@@ -399,7 +399,14 @@ public class BookController {
         if (cfi == null || cfi.isBlank()) return AjaxResult.err("阅读位置无效");
         if (cfi.length() > 4000) cfi = cfi.substring(0, 4000);
         String version = body.get("version") == null ? null : String.valueOf(body.get("version")).trim();
-        bookRepository.updatePosition(id, cfi, version, System.currentTimeMillis());
+        Integer progress = normalizeProgress(body == null ? null : body.get("progress"));
+        long now = System.currentTimeMillis();
+        // 兼容旧版前端只传 CFI；新版同时传 progress，一次 UPDATE 保证两者一致。
+        if (progress == null) {
+            bookRepository.updatePosition(id, cfi, version, now);
+        } else {
+            bookRepository.updateReadingPosition(id, cfi, version, progress, now);
+        }
         return new AjaxResult();
     }
 
