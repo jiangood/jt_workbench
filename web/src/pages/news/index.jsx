@@ -80,10 +80,42 @@ export default class NewsReaderPage extends React.Component {
     loadSeq = 0
     loadMoreLock = false
     markingReadIds = new Set()
+    readMarkers = new Map()
+    readObserver = null
 
     componentDidMount() {
+        if (typeof IntersectionObserver !== 'undefined') {
+            this.readObserver = new IntersectionObserver(this.handleReadMarkerIntersection, {threshold: 1})
+        }
         this.loadBase()
         this.reloadList(true)
+    }
+
+    componentWillUnmount() {
+        this.readObserver?.disconnect()
+        this.readMarkers.clear()
+    }
+
+    setReadMarkerRef = (key, node) => {
+        const previous = this.readMarkers.get(key)
+        if (previous === node) return
+        if (previous) this.readObserver?.unobserve(previous)
+        if (node) {
+            this.readMarkers.set(key, node)
+            this.readObserver?.observe(node)
+        } else {
+            this.readMarkers.delete(key)
+        }
+    }
+
+    handleReadMarkerIntersection = entries => {
+        if (this.state.tab !== 'unread') return
+        for (const entry of entries) {
+            if (!entry.isIntersecting || entry.intersectionRatio < 1) continue
+            const id = entry.target.dataset.newsId
+            const item = this.state.items.find(it => String(it.id) === id)
+            if (item?.status === 'unread') this.markRead(item, {remove: false})
+        }
     }
 
     loadBase = async () => {
@@ -342,6 +374,8 @@ export default class NewsReaderPage extends React.Component {
                 {safe.trim()
                     ? <div className='jt-news-content' dangerouslySetInnerHTML={{__html: safe}} />
                     : <Typography.Text type='secondary'>（无正文）</Typography.Text>}
+                <div ref={node => this.setReadMarkerRef(key, node)} data-news-id={key}
+                     className='news-post-read-marker' aria-hidden='true'/>
             </div>
             {longText ? <button type='button' className='news-post-toggle' onClick={() => this.toggleExpanded(key)}>
                 {expanded ? '收起' : '展开全文'}

@@ -82,6 +82,12 @@
     pointer-events: none;
 }
 
+/* 正文末尾进入视口才标记已读；折叠时末尾被裁切，不会提前触发 */
+.news-post-read-marker {
+    height: 1px;
+    pointer-events: none;
+}
+
 .news-post-toggle {
     margin-top: 6px;
     padding: 0;
