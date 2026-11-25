@@ -1,29 +1,25 @@
 import React from 'react'
-import {SearchOutlined} from '@ant-design/icons'
-import {Input, Switch} from 'antd'
-import {HttpClient, history} from '@jiangood/open-admin'
-import SwipeReader from '../../../components/SwipeReader'
-import {fmtTime, imageSrc, topicImages} from '../media'
+import {ArrowLeftOutlined, ReloadOutlined, SearchOutlined} from '@ant-design/icons'
+import {Button, Empty, Input, Spin, Switch, Tooltip} from 'antd'
+import {HttpClient, Page, history} from '@jiangood/open-admin'
+import TopicPost from '../TopicPost'
 import '../zsxq.css'
 
-export const pageMeta = {layout: 'blank', title: '专栏阅读'}
+export const pageMeta = {title: '专栏阅读'}
 
 const PAGE_SIZE = 20
 
+/** 专栏阅读：普通单列信息流，支持搜索、只看星主与加载更多 */
 export default class ZsxqColumnReaderPage extends React.Component {
     state = {
         keyword: '',
         ownerOnly: false,
-        ownerCommentOnly: false,
         column: null,
-        groupName: '',
-        groupOwner: '',
         items: [],
         page: 1,
         hasMore: true,
         loading: false,
         initialLoading: true,
-        swipeIndex: 0,
         commentsByTopicId: {},
     }
 
@@ -52,19 +48,19 @@ export default class ZsxqColumnReaderPage extends React.Component {
         clearTimeout(this.searchTimer)
     }
 
+    goBack = () => {
+        if (window.history.length > 1) window.history.back()
+        else history.push('/zsxq/columns')
+    }
+
     loadColumn = async () => {
         const columnId = this.columnId
         if (!columnId) return
         try {
             const rs = await HttpClient.get(`admin/zsxq/column/${encodeURIComponent(columnId)}`)
-            const column = rs.data || null
-            this.setState({
-                column,
-                groupName: column?.groupName || '',
-                groupOwner: column?.groupOwner || '',
-            })
+            this.setState({column: rs.data || null})
         } catch (_) {
-            this.setState({column: null, groupName: '', groupOwner: ''})
+            this.setState({column: null})
         }
     }
 
@@ -77,7 +73,6 @@ export default class ZsxqColumnReaderPage extends React.Component {
             hasMore: true,
             loading: false,
             initialLoading: initial || this.state.items.length === 0,
-            swipeIndex: 0,
             commentsByTopicId: {},
         }, () => this.loadPage(1, true))
     }
@@ -105,14 +100,15 @@ export default class ZsxqColumnReaderPage extends React.Component {
             const size = data.size != null ? Number(data.size) : PAGE_SIZE
             const currentPage = data.number != null ? Number(data.number) + 1 : page
             const totalPages = data.totalPages != null ? Number(data.totalPages) : (totalElements ? Math.ceil(totalElements / size) : page)
-            this.setState(prev => ({
-                items: replace ? content : [...prev.items, ...content],
+            const nextItems = replace ? content : [...this.state.items, ...content]
+            this.setState({
+                items: nextItems,
                 page: currentPage,
                 hasMore: currentPage < totalPages,
                 loading: false,
                 initialLoading: false,
-            }))
-            await this.loadComments(content)
+            })
+            await this.loadComments(nextItems)
         } catch (_) {
             if (seq === this.loadSeq) this.setState({loading: false, initialLoading: false})
         } finally {
@@ -148,91 +144,79 @@ export default class ZsxqColumnReaderPage extends React.Component {
         this.searchTimer = setTimeout(() => this.reloadList(false), 350)
     }
 
-    render() {
-        const {keyword, column, groupName, groupOwner, items, loading, initialLoading, hasMore, swipeIndex} = this.state
-        const title = column?.name || '专栏阅读'
-        const subtitle = column?.topicsCount != null ? `${column.topicsCount} 篇` : '专栏'
-        const posText = items.length ? `${Math.min(swipeIndex + 1, items.length)}/${items.length}${hasMore ? '+' : ''}` : ''
-        const progressPct = items.length ? Math.round(((Math.min(swipeIndex, items.length - 1) + 1) / Math.max(items.length, 1)) * 100) : 0
+    renderPost(item) {
+        const {column, commentsByTopicId} = this.state
+        const groupOwner = column?.groupOwner || ''
+        const isOwner = !!item.author && !!groupOwner && item.author === groupOwner
+        const comments = commentsByTopicId[String(item.topicId)] || []
+        return <TopicPost key={item.id} item={item} comments={comments} isOwner={isOwner}/>
+    }
 
-        return <SwipeReader
-            title={title}
-            subtitle={subtitle}
-            badges={[{text: `专栏`, accent: true}]}
-            posText={posText}
-            progressPct={progressPct}
-            onBack={() => { if (window.history.length > 1) window.history.back(); else history.push('/zsxq/columns') }}
-            items={items}
-            index={swipeIndex}
-            onIndexChange={(swipeIndex) => this.setState({swipeIndex}, () => {
-                if (this.state.hasMore && !this.state.loading && swipeIndex >= this.state.items.length - 2) this.loadMore()
-            })}
-            initialLoading={initialLoading}
-            loading={loading}
-            hasMore={hasMore}
-            onLoadMore={this.loadMore}
-            emptyDescription={keyword ? `没有匹配「${keyword}」的内容` : '该专栏暂无内容'}
-            drawerTitle={column?.name || '专栏目录'}
-            drawerControls={<div style={{display: 'flex', alignItems: 'center', gap: 12}}>
-                <Input allowClear prefix={<SearchOutlined />} placeholder='搜索摘要' value={keyword} onChange={this.onKeywordChange} />
-                <label style={{display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap', cursor: 'pointer'}}>
-                    <Switch size='small' checked={this.state.ownerOnly}
-                            onChange={(v) => this.setState({ownerOnly: v}, () => this.reloadList(false))} />
-                    <span>只看星主</span>
-                </label>
-            </div>}
-            articleClassName={(item) => (!!item.author && !!groupOwner && item.author === groupOwner ? 'zsxq-owner-post' : '')}
-            renderArticle={(item) => {
-                const metaParts = [fmtTime(item.sourceCreateTime || item.lastCommentTime)].filter(Boolean)
-                const images = topicImages(item)
-                const isOwner = !!item.author && !!groupOwner && item.author === groupOwner
-                const comments = this.state.commentsByTopicId[String(item.topicId)] || []
-                const ownerComments = comments.filter(c => c.owner)
-                const shownComments = this.state.ownerCommentOnly ? ownerComments : comments
-                return <>
-                    <div className='swipe-reader-article-meta'>
-                        {metaParts.map((p, i) => <span key={i}>{p}</span>)}
-                        {item.author ? <span>作者 {item.author}{isOwner ? <b className='zsxq-owner-badge'>星主</b> : null}</span> : null}
-                        {Number(item.likesCount) > 0 ? <span>赞 {item.likesCount}</span> : null}
-                        {Number(item.commentCount) > 0 ? <span>评论 {item.commentCount}</span> : null}
-                        {item.lastCommentTime ? <span>最近回复 {fmtTime(item.lastCommentTime)}</span> : null}
-                    </div>
-                    <div className='swipe-reader-content'>{item.digest || (images.length ? '' : '（无内容）')}</div>
-                    {images.length ? <div className='swipe-reader-images'>
-                        {images.map((img, idx) => <img key={`${img}-${idx}`} src={imageSrc(img)} alt='' loading='lazy' />)}
-                    </div> : null}
-                    {comments.length ? (
-                        <div className='swipe-reader-comments'>
-                            <div className='swipe-reader-comments-title' style={{display: 'flex', alignItems: 'center', gap: 10}}>
-                                <span>评论 ({shownComments.length}{this.state.ownerCommentOnly ? '' : `/${comments.length}`})</span>
-                                {ownerComments.length ? <label style={{display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 400, cursor: 'pointer'}}>
-                                    <Switch size='small' checked={this.state.ownerCommentOnly}
-                                            onChange={(v) => this.setState({ownerCommentOnly: v})} />
-                                    <span>只看星主（{ownerComments.length}）</span>
-                                </label> : null}
-                            </div>
-                            <ul className='swipe-reader-comments-list'>
-                                {shownComments.map((c, i) => (
-                                    <li key={`${c.author}-${i}`} className={`swipe-reader-comment${c.owner ? ' is-owner' : ''}`}>
-                                        <div className='swipe-reader-comment-head'>
-                                            <span className='swipe-reader-comment-author'>{c.author || '匿名'}{c.owner ? <b className='zsxq-owner-badge'>星主</b> : null}</span>
-                                            {c.time ? <span className='swipe-reader-comment-time'>{fmtTime(c.time)}</span> : null}
-                                        </div>
-                                        <div className='swipe-reader-comment-text'>{c.text || ''}</div>
-                                    </li>
-                                ))}
-                            </ul>
+    renderList() {
+        const {keyword, items, loading, initialLoading, hasMore} = this.state
+        if (initialLoading) {
+            return <div className='zsxq-feed-state'><Spin/></div>
+        }
+        if (!items.length) {
+            return <div className='zsxq-feed-state'>
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
+                       description={keyword ? `没有匹配「${keyword}」的内容` : '该专栏暂无内容'}/>
+            </div>
+        }
+        return <div className='zsxq-feed-list'>
+            {items.map(item => this.renderPost(item))}
+            <div className='zsxq-feed-more'>
+                {loading ? <Spin size='small'/>
+                    : hasMore ? <Button onClick={this.loadMore}>加载更多</Button>
+                        : <span>已加载全部 {items.length} 条</span>}
+            </div>
+        </div>
+    }
+
+    render() {
+        const {keyword, ownerOnly, column, loading, initialLoading, items} = this.state
+        const subtitle = [
+            column?.groupName,
+            column?.topicsCount != null ? `${column.topicsCount} 篇` : '',
+        ].filter(Boolean).join(' · ')
+        const refresh = () => {
+            this.loadColumn()
+            this.reloadList(items.length === 0)
+        }
+
+        return <Page>
+            <div className='zsxq-feed'>
+                <header className='zsxq-feed-head'>
+                    <div className='zsxq-feed-heading'>
+                        <div className='zsxq-feed-title'>
+                            <Button type='text' size='small' className='zsxq-feed-back'
+                                    icon={<ArrowLeftOutlined/>} onClick={this.goBack} aria-label='返回专栏列表'/>
+                            <h1>{column?.name || '专栏阅读'}</h1>
                         </div>
-                    ) : null}
-                </>
-            }}
-            renderListItem={(item, idx, active, onClick) => {
-                const ownerItem = !!item.author && !!groupOwner && item.author === groupOwner
-                return <button key={item.id} type='button' className={`swipe-reader-list-item${active ? ' active' : ''}${ownerItem ? ' is-owner' : ''}`} onClick={onClick}>
-                    <div className='swipe-reader-list-title'>{item.digest || '(无内容)'}</div>
-                    <div className='swipe-reader-list-meta'>{[fmtTime(item.sourceCreateTime || item.lastCommentTime)].filter(Boolean).join(' · ')}</div>
-                </button>
-            }}
-        />
+                        <p>{subtitle || '专栏'}</p>
+                    </div>
+                    <div className='zsxq-feed-filters'>
+                        <Input
+                            className='zsxq-feed-search'
+                            allowClear
+                            prefix={<SearchOutlined/>}
+                            placeholder='搜索专栏内容'
+                            value={keyword}
+                            onChange={this.onKeywordChange}
+                        />
+                        <label className='zsxq-feed-switch'>
+                            <Switch size='small' checked={ownerOnly}
+                                    onChange={(v) => this.setState({ownerOnly: v}, () => this.reloadList(false))}/>
+                            <span>只看星主</span>
+                        </label>
+                        <Tooltip title='刷新'>
+                            <Button icon={<ReloadOutlined/>} loading={loading && !initialLoading}
+                                    onClick={refresh} aria-label='刷新'/>
+                        </Tooltip>
+                    </div>
+                </header>
+                {this.renderList()}
+            </div>
+        </Page>
     }
 }

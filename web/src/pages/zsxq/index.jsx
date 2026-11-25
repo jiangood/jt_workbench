@@ -1,8 +1,8 @@
 import React from 'react'
 import {ReloadOutlined, SearchOutlined} from '@ant-design/icons'
-import {Button, Empty, Input, Select, Spin, Switch, Tag, Tooltip} from 'antd'
-import {HttpClient, Page, history} from '@jiangood/open-admin'
-import {fmtTime, imageSrc, topicImages} from './media'
+import {Button, Empty, Input, Select, Spin, Switch, Tooltip} from 'antd'
+import {HttpClient, Page} from '@jiangood/open-admin'
+import TopicPost from './TopicPost'
 import './zsxq.css'
 
 export const pageMeta = {title: '知识星球'}
@@ -17,9 +17,6 @@ const SORT_OPTIONS = [
     {value: 'lastCommentTime|ASC', label: '最近回复正序'},
 ]
 
-/** 摘要超过该长度时默认折叠，避免单条帖子占满整屏 */
-const CLAMP_THRESHOLD = 600
-
 /** 知识星球阅读页：传统单列信息流（帖子正文、图片与评论直接展开） */
 export default class ZsxqReaderPage extends React.Component {
     state = {
@@ -31,12 +28,9 @@ export default class ZsxqReaderPage extends React.Component {
         hasMore: true,
         loading: false,
         initialLoading: true,
-        stats: {topics: 0, groups: 0, columns: 0},
+        stats: {topics: 0, groups: 0},
         groups: [],
-        columns: [],
         commentsByTopicId: {},
-        expandedById: {},
-        ownerCommentOnlyById: {},
     }
 
     loadSeq = 0
@@ -54,15 +48,13 @@ export default class ZsxqReaderPage extends React.Component {
 
     loadBase = async () => {
         try {
-            const [statsRs, groupsRs, columnsRs] = await Promise.all([
+            const [statsRs, groupsRs] = await Promise.all([
                 HttpClient.get('admin/zsxq/stats'),
                 HttpClient.get('admin/zsxq/groups'),
-                HttpClient.get('admin/zsxq/columns'),
             ])
             this.setState({
                 stats: statsRs.data || {},
                 groups: groupsRs.data || [],
-                columns: columnsRs.data || [],
             })
         } catch (_) {}
     }
@@ -76,8 +68,6 @@ export default class ZsxqReaderPage extends React.Component {
             hasMore: true,
             loading: false,
             initialLoading: initial || this.state.items.length === 0,
-            expandedById: {},
-            ownerCommentOnlyById: {},
         }, () => this.loadPage(1, true))
     }
 
@@ -147,96 +137,13 @@ export default class ZsxqReaderPage extends React.Component {
         this.searchTimer = setTimeout(() => this.reloadList(false), 350)
     }
 
-    openColumn = (column) => {
-        const cid = column?.columnId
-        if (!cid) return
-        history.push(`/zsxq/column/${encodeURIComponent(cid)}`)
-    }
-
-    toggleExpanded = (key) => {
-        this.setState(prev => ({
-            expandedById: {...prev.expandedById, [key]: !prev.expandedById[key]},
-        }))
-    }
-
-    toggleOwnerComments = (key) => {
-        this.setState(prev => ({
-            ownerCommentOnlyById: {...prev.ownerCommentOnlyById, [key]: !prev.ownerCommentOnlyById[key]},
-        }))
-    }
-
     renderPost(item) {
-        const key = String(item.topicId ?? item.id)
         const group = this.state.groups.find(g => String(g.id) === String(item.groupId))
-        const column = this.state.columns.find(c => String(c.columnId) === String(item.columnId))
         const author = item.author
         const isOwner = !!author && !!group?.owner && author === group.owner
-        const images = topicImages(item)
         const comments = this.state.commentsByTopicId[String(item.topicId)] || []
-        const ownerComments = comments.filter(c => c.owner)
-        const starOnly = !!this.state.ownerCommentOnlyById[key]
-        const shownComments = starOnly ? ownerComments : comments
-        const text = item.digest || ''
-        const longText = text.length > CLAMP_THRESHOLD
-        const expanded = !!this.state.expandedById[key]
 
-        return <article className={`zsxq-post${isOwner ? ' is-owner' : ''}`} key={item.id}>
-            <div className='zsxq-post-head'>
-                <div className='zsxq-post-author'>
-                    <span>{author || '匿名'}</span>
-                    {isOwner ? <Tag color='magenta' bordered={false}>星主</Tag> : null}
-                </div>
-                <span className='zsxq-post-time'>{fmtTime(item.sourceCreateTime)}</span>
-            </div>
-
-            <div className='zsxq-post-meta'>
-                {column?.name ? <a href={`#/zsxq/column/${encodeURIComponent(column.columnId)}`}
-                                   onClick={(e) => { e.preventDefault(); this.openColumn(column) }}>{column.name}</a> : null}
-                {Number(item.likesCount) > 0 ? <span>赞 {item.likesCount}</span> : null}
-                {Number(item.commentCount) > 0 ? <span>评论 {item.commentCount}</span> : null}
-                {item.lastCommentTime ? <span>最近回复 {fmtTime(item.lastCommentTime)}</span> : null}
-            </div>
-
-            {text ? <>
-                <div className={`zsxq-post-text${longText && !expanded ? ' is-clamped' : ''}`}>{text}</div>
-                {longText ? <button type='button' className='zsxq-post-toggle' onClick={() => this.toggleExpanded(key)}>
-                    {expanded ? '收起' : '展开全文'}
-                </button> : null}
-            </> : images.length ? null : <div className='zsxq-post-text'>（无内容）</div>}
-
-            {images.length ? <div className='zsxq-post-images'>
-                {images.map((img, idx) => {
-                    const src = imageSrc(img)
-                    return <a key={`${img}-${idx}`} href={src} target='_blank' rel='noreferrer'>
-                        <img src={src} alt='' loading='lazy'/>
-                    </a>
-                })}
-            </div> : null}
-
-            {comments.length ? <div className='zsxq-post-comments'>
-                <div className='zsxq-comments-head'>
-                    <span>评论 {shownComments.length}{starOnly ? ` / ${comments.length}` : ''}</span>
-                    {ownerComments.length ? <label className='zsxq-comments-filter'>
-                        <Switch size='small' checked={starOnly} onChange={() => this.toggleOwnerComments(key)}/>
-                        <span>只看星主（{ownerComments.length}）</span>
-                    </label> : null}
-                </div>
-                <ul className='zsxq-comments-list'>
-                    {shownComments.map((c, i) => (
-                        <li key={`${c.author}-${i}`} className={`zsxq-comment${c.owner ? ' is-owner' : ''}`}>
-                            <div className='zsxq-comment-head'>
-                                <span className='zsxq-comment-author'>
-                                    {c.author || '匿名'}
-                                    {c.owner ? <b className='zsxq-comment-owner'>星主</b> : null}
-                                </span>
-                                {c.time ? <span className='zsxq-comment-time'>{fmtTime(c.time)}</span> : null}
-                            </div>
-                            <div className='zsxq-comment-text'>{c.text || ''}</div>
-                        </li>
-                    ))}
-                </ul>
-            </div> : null}
-        </article>
+        return <TopicPost key={item.id} item={item} comments={comments} isOwner={isOwner}/>
     }
 
     renderList() {
@@ -261,17 +168,16 @@ export default class ZsxqReaderPage extends React.Component {
     }
 
     render() {
-        const {keyword, sort, ownerOnly, loading, initialLoading, stats, groups, columns} = this.state
+        const {keyword, sort, ownerOnly, loading, initialLoading, stats, groups} = this.state
         const topicsCount = stats.topics ?? 0
         const groupsCount = stats.groups ?? groups.length
-        const columnsCount = stats.columns ?? columns.length
 
         return <Page>
             <div className='zsxq-feed'>
                 <header className='zsxq-feed-head'>
                     <div className='zsxq-feed-heading'>
                         <h1>知识星球</h1>
-                        <p>帖子 {topicsCount} · 星球 {groupsCount} · 专栏 {columnsCount}</p>
+                        <p>帖子 {topicsCount} · 星球 {groupsCount}</p>
                     </div>
                     <div className='zsxq-feed-filters'>
                         <Input
