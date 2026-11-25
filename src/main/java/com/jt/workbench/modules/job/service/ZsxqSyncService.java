@@ -73,6 +73,14 @@ public class ZsxqSyncService {
     private static final int CODE_RISK_CONTROL = 1059;
     /** 知识星球限流 */
     private static final int CODE_RATE_LIMIT = 40001;
+    /** HTTP 429：网关限流（与 40001 同等处理） */
+    private static final int CODE_TOO_MANY_REQUESTS = 429;
+    /**
+     * 1059 是逐请求随机命中的（同一请求重试通常就过），客户端默认原地重试 3 次，
+     * 仍失败才视为本轮被拦、进入冷却。
+     */
+    private static final int RISK_RETRY_DEFAULT = 3;
+    private static final int RISK_RETRY_PAUSE_DEFAULT_SECONDS = 3;
     private static final java.util.regex.Pattern GONE_MESSAGE = java.util.regex.Pattern.compile(
             "已被删除|已删除|被删除|不存在|not\\s*found|not\\s*exist|deleted",
             java.util.regex.Pattern.CASE_INSENSITIVE);
@@ -240,11 +248,11 @@ public class ZsxqSyncService {
                 + strikes + " 次）";
     }
 
-    /** 风控/限流：本轮立即中止，不重试、不计入单帖失败次数。 */
+    /** 风控/限流：重试耗尽后本轮立即中止，不计入单帖失败次数。 */
     private static boolean isRiskControl(Exception e) {
         if (!(e instanceof ZsxqApiException api)) return false;
         int code = api.getCode();
-        return code == CODE_RISK_CONTROL || code == CODE_RATE_LIMIT;
+        return code == CODE_RISK_CONTROL || code == CODE_RATE_LIMIT || code == CODE_TOO_MANY_REQUESTS;
     }
 
     /** 内部信号：把风控异常从各阶段抛出到 {@link #syncAll} 统一处理。 */
@@ -698,12 +706,20 @@ public class ZsxqSyncService {
     }
 
     private ZsxqApiClient buildClient(String token) {
+        int riskRetry = intConfig("zsxq.risk-retry-count", RISK_RETRY_DEFAULT, 1, 6);
+        long riskRetryPause = intConfig("zsxq.risk-retry-pause-seconds", RISK_RETRY_PAUSE_DEFAULT_SECONDS, 1, 60) * 1000L;
         return new ZsxqApiClient(
                 token,
                 stableDeviceId(token),
                 appVersion(),
                 safe(configService.getString("zsxq.user-agent")),
-                safe(configService.getString("zsxq.cookie")));
+                safe(configService.getString("zsxq.cookie")),
+                riskRetry,
+                riskRetryPause)
+                .onRetry(message -> {
+                    log.info("[知识星球] {}", message);
+                    TaskLog.info("[知识星球] {}", message);
+                });
     }
 
     /** 星球 App 版本号（x-version/UA）：跟浏览器保持一致，默认取当前网页端版本。 */

@@ -49,30 +49,33 @@
 
 ## 三、避免触发风控
 
-知识星球对非官方客户端有风控（业务码 `1059`，提示「设备状态异常」或「不支持非官方工具访问」），原则是**少发请求、别发得太整齐、单轮有上限**：
+知识星球对非官方客户端有风控（业务码 `1059`，提示「不支持非官方工具访问」/「设备状态异常」），实测是**逐请求随机命中**（约 1/5），与 token、设备号、签名无关；同一请求换个 `x-request-id` 立刻重试通常就能成功。原则是**按浏览器真实方式请求 + 命中后原地重试 + 少发请求、单轮有上限**：
 
 | 措施 | 实现 |
 |---|---|
+| 浏览器同款请求 | Cookie `zsxq_access_token` 认证；签名 `MD5(完整 URL + " " + 秒级时间戳 + " " + x-request-id)`；带 `X-Version / X-Aduid / Origin / Referer / Accept-Language` 与 Chrome UA |
+| 1059 原地重试 | 同一请求换 request-id 重试（默认 3 次，2/4/8 秒退避 + 抖动），仍失败才中止本轮；重试不额外占用请求预算 |
 | 复用请求 | token 校验与星球发现合并为一次 `/v2/groups`，不再额外请求 |
 | 固定间隔 + 随机抖动 | 分页请求 8～10 秒、话题/评论之间 3～5 秒（固定值 + 0～2 秒随机），可用 `zsxq.page-pause-seconds` / `zsxq.topic-pause-seconds` 调整 |
 | 降低请求量 | 专栏默认 24 小时同步一次；话题每轮头部 2 页 + 回填 1 页；图片每轮 10 条；老帖新增评论默认不补抓 |
 | 单轮预算 | 每轮最多 40 次星球接口请求（`zsxq.request-budget`），达到即结束，避免一次跑太久 |
-| 设备号稳定 | 优先用 `zsxq.device-id`（填浏览器请求头里的 `x-aduid`）；未配置时按 token 派生固定 UUID。注意 token 中 `_` 前面的部分不是 `x-aduid`，不能再当设备号 |
+| 设备号稳定 | 优先用 `zsxq.device-id`（必须是标准 UUID，格式不对会自动忽略）；未配置时按 token 派生固定 UUID。注意 token 中 `_` 前面的部分不是 `x-aduid`，不能再当设备号 |
 | ID 精度 | 话题/评论/专栏直接按强类型 DTO 解析，所有 ID 用字符串接收，避免 64 位 `topic_id` 被 `Double` 四舍五入 |
 | 避开高峰 | 作业每 3 小时一次，不并发（`ZsxqSyncJob` 显式标注 `@DisallowConcurrentExecution`） |
 
 ## 四、触发风控后的处理
 
-识别到 `1059`（风控）或 `40001`（限流）时：
+识别到 `1059`（风控）或 `40001`/HTTP 429（限流）时：
 
-1. **立即中止本轮**：不再发任何星球接口请求，避免越刷越严重
-2. **自动冷却**：默认 240 分钟起，连续触发翻倍（240 → 480 → 720 分钟，最长 12 小时）
-3. **冷却期内**：作业直接返回「知识星球风控冷却中，本轮跳过（约 N 分钟后重试）」，不发请求
-4. **不污染数据**：
+1. **先原地重试**：同一请求换 `x-request-id`/时间戳/签名重试（默认 3 次，2/4/8 秒退避），重试成功则本轮继续，不消耗请求预算、不进入冷却
+2. **重试仍失败才中止本轮**：不再发任何星球接口请求，避免越刷越严重
+3. **自动冷却**：默认 240 分钟起，连续触发翻倍（240 → 480 → 720 分钟，最长 12 小时）
+4. **冷却期内**：作业直接返回「知识星球风控冷却中，本轮跳过（约 N 分钟后重试）」，不发请求
+5. **不污染数据**：
    - 评论接口触发风控只跳过该帖评论，不标记帖子删除
    - 图片回填触发风控不计入帖子失败次数（不会把帖子提前判死）
    - 已同步的游标/幂等键保留，冷却结束后从断点继续
-5. **自动恢复**：完整跑通一轮（未触发风控）后清零连续触发计数；更换 `zsxq.token` 会立即清空冷却
+6. **自动恢复**：完整跑通一轮（未触发风控）后清零连续触发计数；更换 `zsxq.token` 会立即清空冷却
 
 任务结果与任务日志中会记录「触发知识星球风控（code=1059，接口=…，返回=…），本轮中止；冷却 N 分钟后再试（连续第 K 次）」，
 可直接看出被拦的是哪个接口。请求预算用完时本轮正常结束（不进入冷却），结果提示「本轮达到请求预算上限」，下轮从游标继续。
@@ -85,19 +88,22 @@
     ```sql
     DELETE FROM zsxq_job_state WHERE state_key IN ('risk_until', 'risk_strikes');
     ```
-- **频繁触发**：先暂停作业几天，再按“`zsxq.request-budget` → `zsxq.head-pages`/`zsxq.backfill-pages` → `zsxq.page-pause-seconds`”逐项收紧，
-  并把 `zsxq.image-backfill-batch`、`zsxq.column-sync-interval-hours` 调到更低频率；仍频繁出现说明非官方通道已被收紧，
-  需要评估迁移到知识星球官方 `zsxq-cli`（`https://garden.zsxq.com/skill/`；注意：成员账号需要星主开启 Skill 权限才能读取星球内容）。
+- **频繁触发**：先确认不是重试次数设置过低（`zsxq.risk-retry-count` 默认 3 次，单次逻辑请求全失败概率约 0.2⁴≈0.16%），
+  再按“`zsxq.request-budget` → `zsxq.head-pages`/`zsxq.backfill-pages` → `zsxq.page-pause-seconds`”逐项收紧，
+  并把 `zsxq.image-backfill-batch`、`zsxq.column-sync-interval-hours` 调到更低频率。
+  官方 Skill（`https://garden.zsxq.com/skill/`）不使用，本项目继续走网页端接口 + 浏览器同款请求 + 原地重试的方案。
 
 ## 六、参数
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `zsxq.token` | 空 | 知识星球网页 Cookie 中的 `zsxq_access_token`；也可写成 `<deviceId>_<accessToken>` |
-| `zsxq.device-id` | 空 | 设备号（`x-aduid`）；建议填浏览器实际值，留空时按 token 派生固定值 |
-| `zsxq.app-version` | 2.100.0 | 请求头 `x-version` / UA 使用的版本，建议与当前网页端一致 |
-| `zsxq.user-agent` | 空 | 可选；留空使用 `xiaomiquan/<app-version> SDK/1.0.0`，可填浏览器真实 UA |
-| `zsxq.cookie` | 空 | 可选；浏览器 Cookie 字符串，留空不发送 Cookie 头；包含 token，按敏感信息保管 |
+| `zsxq.token` | 空 | 知识星球网页 Cookie 中的 `zsxq_access_token`；实测需整串 `<deviceId>_<accessToken>`，缺前缀会 401 |
+| `zsxq.device-id` | 空 | 设备号（`x-aduid`）；须为标准 UUID（浏览器请求头里的值），格式不对会自动忽略并按 token 派生固定值 |
+| `zsxq.app-version` | 2.100.0 | 请求头 `x-version` 使用的网页端版本，建议与当前网页端一致 |
+| `zsxq.user-agent` | 空 | 可选；留空使用网页端 Chrome UA |
+| `zsxq.cookie` | 空 | 可选；额外 Cookie，留空时自动发送 `zsxq_access_token=<token>`（含 token，按敏感信息保管） |
+| `zsxq.risk-retry-count` | 3 | 命中 1059/40001 时同一请求的原地重试次数（1～6），不占用单轮请求预算 |
+| `zsxq.risk-retry-pause-seconds` | 3 | 首次重试等待秒数（1～60），之后按 2/4/8 倍退避并叠加 0～1 秒抖动 |
 | `zsxq.head-pages` | 2 | 每轮头部增量翻页数（1～10，每页 20 条） |
 | `zsxq.backfill-pages` | 1 | 每轮历史回填翻页数（0～10，0=暂停回填） |
 | `zsxq.request-budget` | 40 | 单轮星球接口请求上限（10～500，不含图片下载） |

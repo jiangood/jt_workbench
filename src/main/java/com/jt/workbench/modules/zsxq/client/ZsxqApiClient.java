@@ -5,8 +5,6 @@ import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.PropertyNamingStrategies;
 import tools.jackson.databind.json.JsonMapper;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URLEncoder;
@@ -14,48 +12,82 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.HexFormat;
 import java.util.Map;
 import java.util.StringJoiner;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.function.Consumer;
+import java.util.regex.Pattern;
 
 /**
  * 知识星球只读接口的最小 HTTP 客户端（项目内源码，不再依赖 zsxq-sdk）。
  *
- * <p>保留官方/社区 SDK 的请求协议：{@code authorization} token、{@code x-timestamp} +
- * {@code x-signature}（HMAC-SHA1）、{@code x-version}、{@code x-aduid}、{@code x-request-id}。
- * 与 SDK 的关键区别是响应直接解析成强类型模型，ID 全部按字符串处理，不经过 Map/Double 中转。</p>
+ * <p>按网页端（https://wx.zsxq.com）的真实请求方式构造：</p>
+ * <ul>
+ *     <li>认证走 Cookie {@code zsxq_access_token}，不发 SDK 的 {@code authorization} 头；</li>
+ *     <li>签名与浏览器一致：{@code MD5(完整 URL + " " + 秒级时间戳 + " " + x-request-id)}；</li>
+ *     <li>请求头带 {@code x-request-id / x-version / x-timestamp / x-signature / x-aduid}，
+ *         并补上浏览器的 {@code Origin / Referer / Accept / Accept-Language}。</li>
+ * </ul>
  *
- * <p>设备号、App 版本、User-Agent、Cookie 都可以从系统参数传入，便于按浏览器实际情况调整。</p>
+ * <p>知识星球对非官方通道的拦截（业务码 {@code 1059}）是**按请求随机命中**的：
+ * 同一请求换个 request-id 立刻重试通常就能成功。因此客户端对 1059/40001 做原地重试
+ * （默认 3 次，2/4/8 秒退避 + 抖动），仍失败才把异常抛给调用方进冷却。</p>
  */
 public class ZsxqApiClient {
 
     private static final String BASE_URL = "https://api.zsxq.com";
-    private static final String DEFAULT_SIGNATURE_KEY = "zsxq-sdk-secret";
+    private static final String WEB_ORIGIN = "https://wx.zsxq.com";
     private static final String DEFAULT_APP_VERSION = "2.100.0";
+    private static final String DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+    private static final String ACCEPT = "application/json, text/plain, */*";
+    private static final String ACCEPT_LANGUAGE = "zh-CN,zh;q=0.9,en;q=0.8";
     private static final int DEFAULT_TIMEOUT_SECONDS = 20;
-    private static final int DEFAULT_RETRY_COUNT = 3;
+    private static final int DEFAULT_TRANSPORT_RETRY = 3;
+    private static final int DEFAULT_RISK_RETRY = 3;
+    private static final long DEFAULT_RISK_RETRY_PAUSE_MS = 3000L;
+    private static final long MAX_RISK_RETRY_PAUSE_MS = 30_000L;
+    private static final int CODE_RISK_CONTROL = 1059;
+    private static final int CODE_RATE_LIMIT = 40001;
+    private static final Pattern UUID_PATTERN = Pattern.compile(
+            "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
 
     private final String token;
     private final String deviceId;
     private final String appVersion;
     private final String userAgent;
-    private final String cookie;
-    private final String signatureKey;
-    private final int retryCount;
+    private final String extraCookie;
+    private final int riskRetryCount;
+    private final long riskRetryPauseMs;
+    private final int transportRetryCount;
     private final Duration timeout;
     private final HttpClient http;
     private final ObjectMapper mapper;
+    private Consumer<String> retryListener = message -> { };
 
     public ZsxqApiClient(String token, String deviceId, String appVersion, String userAgent, String cookie) {
-        this.token = token;
-        this.deviceId = deviceId == null ? "" : deviceId.trim();
+        this(token, deviceId, appVersion, userAgent, cookie, DEFAULT_RISK_RETRY, DEFAULT_RISK_RETRY_PAUSE_MS);
+    }
+
+    /**
+     * @param riskRetryCount   1059/40001 的原地重试次数（0 表示不重试）
+     * @param riskRetryPauseMs 首次退避毫秒数，之后按 2 倍递增并叠加 0~1 秒抖动
+     */
+    public ZsxqApiClient(String token, String deviceId, String appVersion, String userAgent, String cookie,
+                         int riskRetryCount, long riskRetryPauseMs) {
+        this.token = token == null ? "" : token.trim();
+        this.deviceId = normalizeDeviceId(deviceId, this.token);
         this.appVersion = blankToDefault(appVersion, DEFAULT_APP_VERSION);
-        this.userAgent = blankToDefault(userAgent, "xiaomiquan/" + this.appVersion + " SDK/1.0.0");
-        this.cookie = cookie == null ? "" : cookie.trim();
-        this.signatureKey = DEFAULT_SIGNATURE_KEY;
-        this.retryCount = DEFAULT_RETRY_COUNT;
+        this.userAgent = blankToDefault(userAgent, DEFAULT_USER_AGENT);
+        this.extraCookie = cookie == null ? "" : cookie.trim();
+        this.riskRetryCount = Math.max(0, riskRetryCount);
+        this.riskRetryPauseMs = riskRetryPauseMs <= 0 ? DEFAULT_RISK_RETRY_PAUSE_MS : riskRetryPauseMs;
+        this.transportRetryCount = DEFAULT_TRANSPORT_RETRY;
         this.timeout = Duration.ofSeconds(DEFAULT_TIMEOUT_SECONDS);
         this.http = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
@@ -72,36 +104,52 @@ public class ZsxqApiClient {
 
     /** GET 请求；{@code query} 可为 null。响应体解析为 {@code resp_data} 对应的类型。 */
     public <T> T get(String path, Map<String, Object> query, Class<T> respType) {
-        String requestPath = path + queryString(query);
-        String timestamp = String.valueOf(System.currentTimeMillis() / 1000);
-        String signature = signature(timestamp, "GET", path, "");
-
-        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(BASE_URL + requestPath))
-                .timeout(timeout)
-                .header("authorization", token)
-                .header("User-Agent", userAgent)
-                .header("Accept", "application/json")
-                .header("x-request-id", UUID.randomUUID().toString())
-                .header("x-version", appVersion)
-                .header("x-aduid", deviceId)
-                .header("x-timestamp", timestamp)
-                .header("x-signature", signature);
-        if (!cookie.isEmpty()) builder.header("Cookie", cookie);
-        return execute(builder.GET().build(), respType);
+        return execute(path + queryString(query), respType);
     }
 
-    private <T> T execute(HttpRequest request, Class<T> respType) {
-        for (int attempt = 0; ; attempt++) {
+    /** 注册 1059/40001 原地重试的回调（用于任务日志），返回自身便于链式调用。 */
+    public ZsxqApiClient onRetry(Consumer<String> listener) {
+        this.retryListener = listener == null ? message -> { } : listener;
+        return this;
+    }
+
+    /**
+     * 发送请求；1059（非官方工具随机拦截）与 40001（限流）在客户端原地重试，
+     * 每次重试都会重新生成时间戳、request-id 与签名，避免复用被拦下的请求指纹。
+     */
+    private <T> T execute(String requestPath, Class<T> respType) {
+        int transportAttempt = 0;
+        int riskAttempt = 0;
+        while (true) {
             try {
-                HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-                if (response.statusCode() >= 500 && attempt < retryCount) {
-                    sleepBeforeRetry(attempt);
+                HttpResponse<String> response = http.send(buildGet(requestPath),
+                        HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                if (response.statusCode() >= 500 && transportAttempt < transportRetryCount) {
+                    transportAttempt++;
+                    sleepBeforeRetry(transportAttempt - 1);
                     continue;
                 }
-                return parse(response, respType);
+                if (response.statusCode() == 429 && riskAttempt < riskRetryCount) {
+                    riskAttempt++;
+                    notifyRetry(requestPath, 429, "HTTP 429 请求过于频繁", riskAttempt);
+                    sleepBeforeRiskRetry(riskAttempt);
+                    continue;
+                }
+                try {
+                    return parse(response, respType);
+                } catch (ZsxqApiException e) {
+                    if (isTransientRisk(e.getCode()) && riskAttempt < riskRetryCount) {
+                        riskAttempt++;
+                        notifyRetry(requestPath, e.getCode(), e.getMessage(), riskAttempt);
+                        sleepBeforeRiskRetry(riskAttempt);
+                        continue;
+                    }
+                    throw e;
+                }
             } catch (IOException e) {
-                if (attempt < retryCount) {
-                    sleepBeforeRetry(attempt);
+                if (transportAttempt < transportRetryCount) {
+                    transportAttempt++;
+                    sleepBeforeRetry(transportAttempt - 1);
                     continue;
                 }
                 throw new ZsxqApiException(0, "知识星球网络请求失败：" + e.getMessage());
@@ -110,6 +158,37 @@ public class ZsxqApiClient {
                 throw new ZsxqApiException(0, "知识星球请求被中断");
             }
         }
+    }
+
+    /** 按浏览器的方式构造 GET：Cookie 认证 + MD5 签名 + 网页端请求头。 */
+    private HttpRequest buildGet(String requestPath) {
+        String url = BASE_URL + requestPath;
+        String timestamp = String.valueOf(System.currentTimeMillis() / 1000);
+        String requestId = UUID.randomUUID().toString();
+
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
+                .timeout(timeout)
+                .header("Accept", ACCEPT)
+                .header("Accept-Language", ACCEPT_LANGUAGE)
+                .header("User-Agent", userAgent)
+                .header("Origin", WEB_ORIGIN)
+                .header("Referer", WEB_ORIGIN + "/")
+                .header("x-request-id", requestId)
+                .header("x-version", appVersion)
+                .header("x-aduid", deviceId)
+                .header("x-timestamp", timestamp)
+                .header("x-signature", signature(url, timestamp, requestId));
+        String cookie = cookieHeader();
+        if (!cookie.isEmpty()) builder.header("Cookie", cookie);
+        return builder.GET().build();
+    }
+
+    /** 网页端认证 Cookie；配置了额外 Cookie 时合并，避免丢登录态相关的其他字段。 */
+    private String cookieHeader() {
+        String tokenCookie = "zsxq_access_token=" + token;
+        if (extraCookie.isEmpty()) return tokenCookie;
+        if (extraCookie.contains("zsxq_access_token=")) return extraCookie;
+        return extraCookie.endsWith(";") ? extraCookie + " " + tokenCookie : extraCookie + "; " + tokenCookie;
     }
 
     private <T> T parse(HttpResponse<String> response, Class<T> respType) {
@@ -124,11 +203,7 @@ public class ZsxqApiClient {
 
         if (!root.path("succeeded").asBoolean(false)) {
             int code = root.path("code").asInt(response.statusCode());
-            String message = firstNonBlank(
-                    root.path("error").asText(""),
-                    root.path("info").asText(""),
-                    "知识星球接口错误（code=" + code + "）");
-            throw new ZsxqApiException(code, message);
+            throw new ZsxqApiException(code, errorMessage(root, code));
         }
 
         JsonNode respData = root.get("resp_data");
@@ -137,6 +212,53 @@ public class ZsxqApiClient {
             return mapper.treeToValue(respData, respType);
         } catch (Exception e) {
             throw new ZsxqApiException(0, "知识星球响应解析失败：" + e.getMessage());
+        }
+    }
+
+    /**
+     * 平台错误文案：1059 的 {@code error} 是无信息量的「内部错误」，
+     * 真正有用的说明在 {@code info}（例如「不支持非官方工具访问…」），优先取 info。
+     */
+    static String errorMessage(JsonNode root, int code) {
+        String error = root.path("error").asText("").trim();
+        String info = root.path("info").asText("").trim();
+        if (isGenericError(error)) {
+            if (!info.isEmpty()) return info;
+            return "知识星球接口错误（code=" + code + "）";
+        }
+        if (!error.isEmpty()) {
+            return info.isEmpty() || info.contains(error) ? error : error + "：" + info;
+        }
+        return info.isEmpty() ? "知识星球接口错误（code=" + code + "）" : info;
+    }
+
+    private static boolean isGenericError(String error) {
+        if (error.isEmpty()) return true;
+        String lower = error.toLowerCase();
+        return "内部错误".equals(error) || "internal server error".equals(lower) || "error".equals(lower);
+    }
+
+    /** 与网页端一致：MD5(完整 URL + " " + 秒级时间戳 + " " + x-request-id)。 */
+    static String signature(String url, String timestamp, String requestId) {
+        String payload = url + " " + timestamp + " " + requestId;
+        try {
+            MessageDigest md5 = MessageDigest.getInstance("MD5");
+            return HexFormat.of().formatHex(md5.digest(payload.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("生成知识星球请求签名失败", e);
+        }
+    }
+
+    private static boolean isTransientRisk(int code) {
+        return code == CODE_RISK_CONTROL || code == CODE_RATE_LIMIT;
+    }
+
+    private void notifyRetry(String requestPath, int code, String message, int attempt) {
+        try {
+            retryListener.accept("命中 code=" + code + "（" + brief(message)
+                    + "），第 " + attempt + " 次原地重试：" + requestPath);
+        } catch (RuntimeException ignored) {
+            // 回调只用于日志，不能影响重试
         }
     }
 
@@ -151,21 +273,18 @@ public class ZsxqApiClient {
         return s.isEmpty() ? "" : "?" + s;
     }
 
-    private String signature(String timestamp, String method, String path, String body) {
-        String payload = timestamp + "\n" + method.toUpperCase() + "\n" + path;
-        if (body != null && !body.isEmpty()) payload += "\n" + body;
-        try {
-            Mac mac = Mac.getInstance("HmacSHA1");
-            mac.init(new SecretKeySpec(signatureKey.getBytes(StandardCharsets.UTF_8), "HmacSHA1"));
-            return HexFormat.of().formatHex(mac.doFinal(payload.getBytes(StandardCharsets.UTF_8)));
-        } catch (Exception e) {
-            throw new IllegalStateException("生成知识星球请求签名失败", e);
-        }
+    private void sleepBeforeRetry(int attempt) {
+        sleep(1000L << Math.min(attempt, 4));
     }
 
-    private void sleepBeforeRetry(int attempt) {
+    private void sleepBeforeRiskRetry(int attempt) {
+        long base = Math.min(riskRetryPauseMs << Math.min(attempt - 1, 4), MAX_RISK_RETRY_PAUSE_MS);
+        sleep(base + ThreadLocalRandom.current().nextLong(1000));
+    }
+
+    private static void sleep(long ms) {
         try {
-            Thread.sleep(1000L << attempt);
+            Thread.sleep(ms);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
@@ -175,11 +294,14 @@ public class ZsxqApiClient {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }
 
-    private static String firstNonBlank(String... values) {
-        for (String value : values) {
-            if (value != null && !value.isBlank()) return value;
-        }
-        return "";
+    /**
+     * 设备号：优先用配置值（必须是浏览器里 {@code XAduid} 那样的标准 UUID）；
+     * 配置为空或格式不对时按 token 派生固定 UUID，保证多轮同步看到的是同一设备。
+     */
+    private static String normalizeDeviceId(String configured, String token) {
+        String value = configured == null ? "" : configured.trim();
+        if (UUID_PATTERN.matcher(value).matches()) return value;
+        return UUID.nameUUIDFromBytes(("jt-workbench-zsxq:" + token).getBytes(StandardCharsets.UTF_8)).toString();
     }
 
     private static String blankToDefault(String value, String def) {
