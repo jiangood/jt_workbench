@@ -6,6 +6,7 @@ import tools.jackson.databind.PropertyNamingStrategies;
 import tools.jackson.databind.json.JsonMapper;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** 回归：17 位以上的星球 ID 必须按字符串精确解析，不能被 Double 四舍五入。 */
 class ZsxqModelsTest {
@@ -61,5 +62,26 @@ class ZsxqModelsTest {
         ZsxqModels.Column column = columns.columns.get(0);
         assertEquals("518414128484", column.getColumnId());
         assertEquals(10, column.topicsCount());
+    }
+
+    /** 任务日志依赖 toString：ID 要完整、长正文截断、换行压平，避免刷屏。 */
+    @Test
+    void toStringIsReadableForJobLogs() {
+        String longText = "第一行\\n" + "x".repeat(200);
+        String json = """
+                {"topics":[{"topic_id":22258421152844422,"type":"talk",
+                  "create_time":"2026-11-25T10:40:00.819+0800","comments_count":10,
+                  "talk":{"text":"%s","owner":{"user_id":88484111558422,"name":"tester"}}}]}
+                """.formatted(longText);
+        ZsxqModels.Topic topic = mapper.treeToValue(mapper.readTree(json), ZsxqModels.TopicPage.class).topics.get(0);
+
+        String text = topic.toString();
+        assertTrue(text.contains("topicId=22258421152844422"), text);
+        assertTrue(text.contains("name=tester"), text);
+        assertTrue(text.contains("commentsCount=10"), text);
+        assertTrue(text.contains("…"), text);
+        assertTrue(!text.contains("\n"), text);
+        assertTrue(!text.contains("x".repeat(120)), text);
+        assertTrue(text.length() < 400, text);
     }
 }

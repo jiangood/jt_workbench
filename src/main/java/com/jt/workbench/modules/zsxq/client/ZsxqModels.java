@@ -11,7 +11,17 @@ import java.util.List;
  */
 public final class ZsxqModels {
 
+    /** 日志里的正文/描述最多保留的字符数，避免把整篇帖子打进任务日志。 */
+    private static final int LOG_TEXT_LIMIT = 120;
+
     private ZsxqModels() {
+    }
+
+    /** 日志展示用短文本：压掉换行、截断过长正文，null 安全。 */
+    private static String brief(String text) {
+        if (text == null) return "null";
+        String s = text.replace('\r', ' ').replace('\n', ' ').trim();
+        return s.length() <= LOG_TEXT_LIMIT ? s : s.substring(0, LOG_TEXT_LIMIT) + "…";
     }
 
     public static class Group {
@@ -30,6 +40,11 @@ public final class ZsxqModels {
         public User getOwner() {
             return owner;
         }
+
+        @Override
+        public String toString() {
+            return "Group{groupId=" + groupId + ", name=" + name + ", owner=" + owner + "}";
+        }
     }
 
     public static class User {
@@ -42,6 +57,11 @@ public final class ZsxqModels {
 
         public String getName() {
             return name;
+        }
+
+        @Override
+        public String toString() {
+            return "User{userId=" + userId + ", name=" + name + "}";
         }
     }
 
@@ -74,10 +94,23 @@ public final class ZsxqModels {
             if (statistics != null && statistics.topicsCount != null) return statistics.topicsCount;
             return topicsCount == null ? 0 : topicsCount;
         }
+
+        @Override
+        public String toString() {
+            return "Column{columnId=" + columnId + ", name=" + name
+                    + ", topicsCount=" + topicsCount()
+                    + ", description=" + brief(description)
+                    + ", coverUrl=" + brief(coverUrl) + "}";
+        }
     }
 
     public static class Statistics {
         public Integer topicsCount;
+
+        @Override
+        public String toString() {
+            return "Statistics{topicsCount=" + topicsCount + "}";
+        }
     }
 
     public static class Topic {
@@ -136,6 +169,14 @@ public final class ZsxqModels {
         public Boolean getSticky() {
             return sticky;
         }
+
+        @Override
+        public String toString() {
+            return "Topic{topicId=" + topicId + ", type=" + type + ", createTime=" + createTime
+                    + ", likesCount=" + likesCount + ", commentsCount=" + commentsCount
+                    + ", readingCount=" + readingCount + ", digested=" + digested + ", sticky=" + sticky
+                    + ", talk=" + talk + "}";
+        }
     }
 
     public static class TalkContent {
@@ -153,6 +194,12 @@ public final class ZsxqModels {
 
         public List<Image> getImages() {
             return images;
+        }
+
+        @Override
+        public String toString() {
+            return "TalkContent{owner=" + owner + ", images=" + (images == null ? 0 : images.size())
+                    + ", text=" + brief(text) + "}";
         }
     }
 
@@ -182,6 +229,11 @@ public final class ZsxqModels {
         public ImageSize getLarge() {
             return large;
         }
+
+        @Override
+        public String toString() {
+            return "Image{imageId=" + imageId + ", type=" + type + ", original=" + original + "}";
+        }
     }
 
     public static class ImageSize {
@@ -199,6 +251,11 @@ public final class ZsxqModels {
 
         public Integer getHeight() {
             return height;
+        }
+
+        @Override
+        public String toString() {
+            return "ImageSize{" + width + "x" + height + ", url=" + url + "}";
         }
     }
 
@@ -228,27 +285,58 @@ public final class ZsxqModels {
         public Integer getLikesCount() {
             return likesCount;
         }
+
+        @Override
+        public String toString() {
+            return "Comment{commentId=" + commentId + ", owner=" + owner + ", createTime=" + createTime
+                    + ", likesCount=" + likesCount + ", text=" + brief(text) + "}";
+        }
     }
 
     // ---------- resp_data 外壳 ----------
 
     public static class GroupPage {
         public List<Group> groups;
+
+        @Override
+        public String toString() {
+            return "GroupPage{groups=" + (groups == null ? 0 : groups.size()) + "}";
+        }
     }
 
     public static class TopicPage {
         public List<Topic> topics;
+
+        @Override
+        public String toString() {
+            return "TopicPage{topics=" + (topics == null ? 0 : topics.size()) + "}";
+        }
     }
 
     public static class CommentPage {
         public List<Comment> comments;
+
+        @Override
+        public String toString() {
+            return "CommentPage{comments=" + (comments == null ? 0 : comments.size()) + "}";
+        }
     }
 
     public static class ColumnPage {
         public List<Column> columns;
+
+        @Override
+        public String toString() {
+            return "ColumnPage{columns=" + (columns == null ? 0 : columns.size()) + "}";
+        }
     }
 
     public static class TopicDetail {
         public Topic topic;
+
+        @Override
+        public String toString() {
+            return "TopicDetail{topic=" + topic + "}";
+        }
     }
 }

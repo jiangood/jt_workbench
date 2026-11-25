@@ -19,4 +19,10 @@ public class ZsxqApiException extends RuntimeException {
     public int getCode() {
         return code;
     }
+
+    /** 任务日志里直接打印异常对象时也能看到业务码。 */
+    @Override
+    public String toString() {
+        return "ZsxqApiException{code=" + code + ", message=" + getMessage() + "}";
+    }
 }
