@@ -30,13 +30,14 @@ export default class TopicPost extends React.Component {
     renderRichText = (raw) => this.renderTextParts(parseZsxqText(raw))
 
     render() {
-        const {item, comments = [], isOwner = false, meta = null} = this.props
+        const {item, comments = [], isOwner = false, meta = null, distinguishOwner = true, showSourceLink = true} = this.props
         const {expanded, ownerCommentOnly, previewIndex} = this.state
+        const markedIsOwner = distinguishOwner && isOwner
         const articleHtml = sanitizeArticleHtml(item.articleContent, item.articleTitle)
         const hasArticleContent = !!articleHtml.trim()
         const images = hasArticleContent ? [] : topicImages(item)
-        const ownerComments = comments.filter(c => c.owner)
-        const shownComments = ownerCommentOnly ? ownerComments : comments
+        const ownerComments = distinguishOwner ? comments.filter(c => c.owner) : []
+        const shownComments = distinguishOwner && ownerCommentOnly ? ownerComments : comments
         const textParts = parseZsxqText(item.digest || '')
         const text = textParts.map(part => part.value).join('')
         const longText = text.length > CLAMP_THRESHOLD
@@ -46,19 +47,19 @@ export default class TopicPost extends React.Component {
                 ? `https://wx.zsxq.com/dweb2/index/topic_detail/${encodeURIComponent(item.topicId)}`
                 : '')
 
-        return <article className={`zsxq-post${isOwner ? ' is-owner' : ''}`}>
+        return <article className={`zsxq-post${markedIsOwner ? ' is-owner' : ''}`}>
             <div className='zsxq-post-head'>
                 <div className='zsxq-post-author'>
                     <span>{item.author || '匿名'}</span>
-                    {isOwner ? <Tag color='magenta' bordered={false}>星主</Tag> : null}
+                    {markedIsOwner ? <Tag color='magenta' bordered={false}>星主</Tag> : null}
                 </div>
                 <span className='zsxq-post-time'>{fmtTime(item.sourceCreateTime)}</span>
             </div>
 
             <div className='zsxq-post-meta'>
                 {meta}
-                {sourceUrl ? <a className='zsxq-post-source' href={sourceUrl} target='_blank'
-                                rel='noreferrer'>查看原文</a> : null}
+                {showSourceLink && sourceUrl ? <a className='zsxq-post-source' href={sourceUrl} target='_blank'
+                                                  rel='noreferrer'>查看原文</a> : null}
                 {Number(item.likesCount) > 0 ? <span>赞 {item.likesCount}</span> : null}
                 {Number(item.commentCount) > 0 ? <span>评论 {item.commentCount}</span> : null}
                 {item.lastCommentTime ? <span>最近回复 {fmtTime(item.lastCommentTime)}</span> : null}
@@ -73,7 +74,7 @@ export default class TopicPost extends React.Component {
                     {expanded ? '收起' : '展开全文'}
                 </button> : null}
             </> : images.length ? null : <div className='zsxq-post-text'>
-                {item.columnId ? (sourceUrl ? '（正文待同步，可先查看原文）' : '（正文待同步）') : '（无内容）'}
+                {item.columnId ? (showSourceLink && sourceUrl ? '（正文待同步，可先查看原文）' : '（正文待同步）') : '（无内容）'}
             </div>}
 
             {images.length ? <div className='zsxq-post-images'>
@@ -101,7 +102,7 @@ export default class TopicPost extends React.Component {
 
             {comments.length ? <div className='zsxq-post-comments'>
                 <div className='zsxq-comments-head'>
-                    <span>评论 {shownComments.length}{ownerCommentOnly ? ` / ${comments.length}` : ''}</span>
+                    <span>评论 {shownComments.length}{distinguishOwner && ownerCommentOnly ? ` / ${comments.length}` : ''}</span>
                     {ownerComments.length ? <label className='zsxq-comments-filter'>
                         <Switch size='small' checked={ownerCommentOnly} onChange={this.toggleOwnerComments}/>
                         <span>只看星主（{ownerComments.length}）</span>
@@ -109,11 +110,11 @@ export default class TopicPost extends React.Component {
                 </div>
                 <ul className='zsxq-comments-list'>
                     {shownComments.map((c, i) => (
-                        <li key={`${c.author}-${i}`} className={`zsxq-comment${c.owner ? ' is-owner' : ''}`}>
+                        <li key={`${c.author}-${i}`} className={`zsxq-comment${distinguishOwner && c.owner ? ' is-owner' : ''}`}>
                             <div className='zsxq-comment-head'>
                                 <span className='zsxq-comment-author'>
                                     {c.author || '匿名'}
-                                    {c.owner ? <b className='zsxq-comment-owner'>星主</b> : null}
+                                    {distinguishOwner && c.owner ? <b className='zsxq-comment-owner'>星主</b> : null}
                                 </span>
                                 {c.time ? <span className='zsxq-comment-time'>{fmtTime(c.time)}</span> : null}
                             </div>

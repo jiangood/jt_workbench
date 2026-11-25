@@ -1,6 +1,6 @@
 import React from 'react'
-import {ArrowLeftOutlined, ReloadOutlined, SearchOutlined} from '@ant-design/icons'
-import {Button, Empty, Input, Spin, Switch, Tooltip} from 'antd'
+import {ArrowLeftOutlined, ReloadOutlined} from '@ant-design/icons'
+import {Button, Empty, Spin, Tooltip} from 'antd'
 import {HttpClient, Page, history} from '@jiangood/open-admin'
 import TopicPost from '../TopicPost'
 import '../zsxq.css'
@@ -9,11 +9,9 @@ export const pageMeta = {title: '专栏阅读'}
 
 const PAGE_SIZE = 20
 
-/** 专栏阅读：普通单列信息流，支持搜索、只看星主与加载更多 */
+/** 专栏阅读：普通单列信息流，按发布时间正序加载；专栏内容均为星主发布，不额外区分 */
 export default class ZsxqColumnReaderPage extends React.Component {
     state = {
-        keyword: '',
-        ownerOnly: false,
         column: null,
         items: [],
         page: 1,
@@ -25,7 +23,6 @@ export default class ZsxqColumnReaderPage extends React.Component {
 
     loadSeq = 0
     loadMoreLock = false
-    searchTimer = null
 
     get columnId() {
         return this.props.params?.id || this.props.match?.params?.id || ''
@@ -42,10 +39,6 @@ export default class ZsxqColumnReaderPage extends React.Component {
             this.loadColumn()
             this.reloadList(true)
         }
-    }
-
-    componentWillUnmount() {
-        clearTimeout(this.searchTimer)
     }
 
     goBack = () => {
@@ -88,10 +81,13 @@ export default class ZsxqColumnReaderPage extends React.Component {
         this.loadMoreLock = true
         this.setState({loading: true})
         try {
-            const params = {page, size: PAGE_SIZE, columnId}
-            const kw = this.state.keyword?.trim()
-            if (kw) params.keyword = kw
-            if (this.state.ownerOnly) params.ownerOnly = true
+            const params = {
+                page,
+                size: PAGE_SIZE,
+                columnId,
+                sort: 'sourceCreateTime',
+                direction: 'ASC',
+            }
             const rs = await HttpClient.post('admin/zsxq/page', null, params)
             if (seq !== this.loadSeq) return
             const data = rs.data || {}
@@ -137,30 +133,21 @@ export default class ZsxqColumnReaderPage extends React.Component {
         this.loadPage(page + 1, false)
     }
 
-    onKeywordChange = (e) => {
-        const keyword = e.target.value
-        this.setState({keyword})
-        clearTimeout(this.searchTimer)
-        this.searchTimer = setTimeout(() => this.reloadList(false), 350)
-    }
-
     renderPost(item) {
-        const {column, commentsByTopicId} = this.state
-        const groupOwner = column?.groupOwner || ''
-        const isOwner = !!item.author && !!groupOwner && item.author === groupOwner
+        const {commentsByTopicId} = this.state
         const comments = commentsByTopicId[String(item.topicId)] || []
-        return <TopicPost key={item.id} item={item} comments={comments} isOwner={isOwner}/>
+        return <TopicPost key={item.id} item={item} comments={comments}
+                          distinguishOwner={false} showSourceLink={false}/>
     }
 
     renderList() {
-        const {keyword, items, loading, initialLoading, hasMore} = this.state
+        const {items, loading, initialLoading, hasMore} = this.state
         if (initialLoading) {
             return <div className='zsxq-feed-state'><Spin/></div>
         }
         if (!items.length) {
             return <div className='zsxq-feed-state'>
-                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
-                       description={keyword ? `没有匹配「${keyword}」的内容` : '该专栏暂无内容'}/>
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description='该专栏暂无内容'/>
             </div>
         }
         return <div className='zsxq-feed-list'>
@@ -174,7 +161,7 @@ export default class ZsxqColumnReaderPage extends React.Component {
     }
 
     render() {
-        const {keyword, ownerOnly, column, loading, initialLoading, items} = this.state
+        const {column, loading, initialLoading, items} = this.state
         const subtitle = [
             column?.groupName,
             column?.topicsCount != null ? `${column.topicsCount} 篇` : '',
@@ -196,19 +183,6 @@ export default class ZsxqColumnReaderPage extends React.Component {
                         <p>{subtitle || '专栏'}</p>
                     </div>
                     <div className='zsxq-feed-filters'>
-                        <Input
-                            className='zsxq-feed-search'
-                            allowClear
-                            prefix={<SearchOutlined/>}
-                            placeholder='搜索专栏内容'
-                            value={keyword}
-                            onChange={this.onKeywordChange}
-                        />
-                        <label className='zsxq-feed-switch'>
-                            <Switch size='small' checked={ownerOnly}
-                                    onChange={(v) => this.setState({ownerOnly: v}, () => this.reloadList(false))}/>
-                            <span>只看星主</span>
-                        </label>
                         <Tooltip title='刷新'>
                             <Button icon={<ReloadOutlined/>} loading={loading && !initialLoading}
                                     onClick={refresh} aria-label='刷新'/>
