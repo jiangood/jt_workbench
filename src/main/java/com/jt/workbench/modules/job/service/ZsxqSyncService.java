@@ -10,6 +10,7 @@ import com.jt.workbench.modules.zsxq.client.ZsxqModels.*;
 import com.jt.workbench.modules.zsxq.service.ZsxqImageService;
 import io.github.jiangood.openadmin.modules.config.service.SysConfigService;
 import io.github.jiangood.openadmin.modules.job.JobResult;
+import io.github.jiangood.openadmin.modules.job.JobStatus;
 import io.github.jiangood.openadmin.modules.logviewer.util.TaskLog;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -24,14 +25,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
- * 知识星球同步。
+ * 知识星球同步与历史回填。
  *
- * <p>单一作业入口 {@link #syncAll}：每次执行先用星球列表接口校验 Cookie，再依次完成
- * 话题增量回溯（end_time 翻页 + topic_id 去重）→ 评论抓取 → 专栏增量 → 历史图片回填，落
- * zsxq_group / zsxq_topic / zsxq_comment / zsxq_sync_state。保留旧库的幂等键与游标语义，
- * 不做完整请求预算/删除探测（旧版高级对账逻辑可在后续迭代补齐）。</p>
+ * <p>{@link #syncAll} 负责每 30 分钟的头部增量；{@link #backfillAll} 负责每天 08:00 的历史回填，
+ * 从游标连续翻到最早页，并补齐专栏、图片与专栏文章元数据。两个入口共享风控状态与同步游标，
+ * 通过进程内锁互斥，避免并发执行时覆盖本轮状态。</p>
  *
  * <p>Cookie 失效或校验异常时本轮直接结束并返回提示，不再发起后续抓取，避免过期 Cookie 持续刷失败日志。</p>
  *
@@ -49,19 +50,13 @@ public class ZsxqSyncService {
     private static final int COLUMN_NAME_MAX_LENGTH = 512;
     private static final int COLUMN_TEXT_MAX_LENGTH = 2048;
 
-    /**
-     * 降载默认值：头部 2 页（40 条/星球）、历史回填 1 页（20 条/星球）。
-     * 触发过风控后优先保住头部增量，历史回填只留最低速度；都可在系统参数里调整。
-     */
+    /** 头部增量默认 2 页（40 条/星球），碰到已同步帖子即提前停止。 */
     private static final int HEAD_PAGES_DEFAULT = 2;
-    private static final int BACKFILL_PAGES_DEFAULT = 1;
     private static final int IMAGE_BACKFILL_DEFAULT_BATCH = 10;
     private static final int IMAGE_BACKFILL_MAX_FAILS = 3;
     /** 专栏文章元数据回填：默认每轮 10 条，连续失败 3 次后不再重试。 */
     private static final int ARTICLE_BACKFILL_DEFAULT_BATCH = 10;
     private static final int ARTICLE_BACKFILL_MAX_FAILS = 3;
-    /** 单轮最多发起的星球接口请求数（不含图片下载），达到后本轮提前结束。 */
-    private static final int REQUEST_BUDGET_DEFAULT = 40;
 
     /** 抓取间隔（反爬）：分页 8 秒、话题/评论 3 秒，再叠加 0~2 秒随机抖动。 */
     private static final int PAGE_PAUSE_DEFAULT_SECONDS = 8;
@@ -107,80 +102,105 @@ public class ZsxqSyncService {
     private final ZsxqImageService imageService;
     private final JdbcTemplate jdbc;
 
-    // ---------- 本轮运行状态（作业由框架 @DisallowConcurrentExecution 串行执行） ----------
+    // ---------- 本轮运行状态（两个 Quartz 作业通过共享锁互斥） ----------
 
+    private final ReentrantLock runLock = new ReentrantLock();
     private int headPages = HEAD_PAGES_DEFAULT;
-    private int backfillPages = BACKFILL_PAGES_DEFAULT;
     private long pagePauseMs = PAGE_PAUSE_DEFAULT_SECONDS * 1000L;
     private long topicPauseMs = TOPIC_PAUSE_DEFAULT_SECONDS * 1000L;
     private boolean refreshOldComments;
-    private int requestBudget = REQUEST_BUDGET_DEFAULT;
     private int requestsUsed;
     /** 最近一次星球接口调用描述，风控/异常时写入任务结果，便于定位是哪个请求被拦。 */
     private String lastApiDesc = "";
 
     /**
-     * 同步入口（定时任务唯一调用点）。
+     * 增量同步入口（每 30 分钟）。
      *
      * <p>认证只使用系统参数里粘贴的浏览器 Cookie。</p>
      */
     public JobResult syncAll(Logger logger, java.util.function.Consumer<String> progress) {
-        String cookie = safe(configService.getString("zsxq.cookie")).trim();
-        if (cookie.isEmpty()) return JobResult.skip("未配置知识星球 Cookie，跳过");
-        ensureTables();
-        resetCooldownOnCookieChange(cookie);
-
-        String cooling = cooldownMessage();
-        if (cooling != null) return JobResult.skip(cooling);
-
-        beginRun();
-        ZsxqApiClient client = buildClient(cookie);
-        progress.accept("校验 Cookie");
-        List<String> parts = new ArrayList<>();
         try {
-            List<Group> remoteGroups;
-            try {
-                remoteGroups = listGroups(client);
-            } catch (Exception e) {
-                rethrowBudget(e);
-                if (isRiskControl(e)) throw new RiskControlException(e);
-                logger.warn("知识星球 Cookie 校验失败：{}", e.getMessage());
-                return JobResult.fail(cookieErrorText(e));
-            }
-
-            List<String> groupIds = resolveGroupIds(remoteGroups);
-            log.info("[知识星球] 本轮同步开始：{} 个星球", groupIds.size());
-            parts.add(syncTopics(client, groupIds, logger, progress));
-            parts.add(syncColumnsIfDue(client, groupIds, logger, progress));
-            parts.add(backfillColumnArticles(client, logger, progress));
-            parts.add(backfillImages(client, logger, progress));
-
-            // 本轮完整跑通（未触发风控）：清除连续风控计数
-            setState(STATE_RISK_STRIKES, 0);
-            String overview = String.join("；", parts) + "（本轮接口 " + requestsUsed + " 次）";
-            log.info("[知识星球] 本轮概览：{}", overview);
-            TaskLog.info("[知识星球] 本轮概览：{}", overview);
-            return JobResult.ok(overview);
-        } catch (BudgetReachedException e) {
-            // 预算用完不是风控：正常结束本轮，下轮从游标继续，避免继续消耗账号配额
-            String overview = "本轮达到请求预算上限（" + requestBudget + " 次），提前结束，下轮从断点继续"
-                    + (parts.isEmpty() ? "" : "；已完成：" + String.join("；", parts));
-            log.info("[知识星球] {}", overview);
-            TaskLog.warn("[知识星球] {}", overview);
-            return JobResult.ok(overview);
-        } catch (RiskControlException e) {
-            return JobResult.fail(enterRiskCooldown(logger, e));
+            return execute("同步", false, logger, progress);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return new JobResult(JobStatus.CANCELLED, "已取消");
         }
     }
 
-    /** 读取本轮降载参数（每轮重新读取，调整系统参数后下一轮立即生效）。 */
+    /** 历史回填入口（每天 08:00）：连续翻页直到追平，不受单轮请求预算限制。 */
+    public JobResult backfillAll(Logger logger, java.util.function.Consumer<String> progress) {
+        try {
+            return execute("历史回填", true, logger, progress);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return new JobResult(JobStatus.CANCELLED, "已取消");
+        }
+    }
+
+    private JobResult execute(String taskName, boolean backfill, Logger logger,
+                              java.util.function.Consumer<String> progress) throws InterruptedException {
+        if (backfill) {
+            // 08:00 与增量作业可能同时触发：回填等待增量结束，避免抢锁导致当天回填被跳过
+            runLock.lockInterruptibly();
+        } else if (!runLock.tryLock()) {
+            return JobResult.skip("知识星球同步跳过（历史回填正在执行）");
+        }
+        try {
+            String cookie = safe(configService.getString("zsxq.cookie")).trim();
+            if (cookie.isEmpty()) return JobResult.skip("未配置知识星球 Cookie，跳过");
+            ensureTables();
+            resetCooldownOnCookieChange(cookie);
+
+            String cooling = cooldownMessage();
+            if (cooling != null) return JobResult.skip(cooling);
+
+            beginRun();
+            ZsxqApiClient client = buildClient(cookie);
+            progress.accept("校验 Cookie");
+            List<String> parts = new ArrayList<>();
+            try {
+                List<Group> remoteGroups;
+                try {
+                    remoteGroups = listGroups(client);
+                } catch (Exception e) {
+                    if (isRiskControl(e)) throw new RiskControlException(e);
+                    logger.warn("知识星球 Cookie 校验失败：{}", e.getMessage());
+                    return JobResult.fail(cookieErrorText(e));
+                }
+
+                List<String> groupIds = resolveGroupIds(remoteGroups);
+                log.info("[知识星球] 本轮{}开始：{} 个星球", taskName, groupIds.size());
+                if (backfill) {
+                    parts.add(backfillTopics(client, groupIds, logger, progress));
+                    parts.add(syncColumns(client, groupIds, logger, progress, true));
+                    setState(STATE_COLUMNS_LAST_OK, System.currentTimeMillis());
+                    parts.add(backfillColumnArticles(client, logger, progress));
+                    parts.add(backfillImages(client, logger, progress));
+                } else {
+                    parts.add(syncTopics(client, groupIds, logger, progress));
+                    parts.add(syncColumnsIfDue(client, groupIds, logger, progress));
+                }
+
+                // 本轮完整跑通（未触发风控）：清除连续风控计数
+                setState(STATE_RISK_STRIKES, 0);
+                String overview = String.join("；", parts) + "（本轮接口 " + requestsUsed + " 次）";
+                log.info("[知识星球] 本轮{}概览：{}", taskName, overview);
+                TaskLog.info("[知识星球] 本轮{}概览：{}", taskName, overview);
+                return JobResult.ok(overview);
+            } catch (RiskControlException e) {
+                return JobResult.fail(enterRiskCooldown(logger, e));
+            }
+        } finally {
+            runLock.unlock();
+        }
+    }
+
+    /** 读取本轮参数（每轮重新读取，调整系统参数后下一轮立即生效）。 */
     private void beginRun() {
         headPages = intConfig("zsxq.head-pages", HEAD_PAGES_DEFAULT, 1, 10);
-        backfillPages = intConfig("zsxq.backfill-pages", BACKFILL_PAGES_DEFAULT, 0, 10);
         pagePauseMs = intConfig("zsxq.page-pause-seconds", PAGE_PAUSE_DEFAULT_SECONDS, 1, 120) * 1000L;
         topicPauseMs = intConfig("zsxq.topic-pause-seconds", TOPIC_PAUSE_DEFAULT_SECONDS, 1, 60) * 1000L;
         refreshOldComments = configService.getBool("zsxq.refresh-old-comments");
-        requestBudget = intConfig("zsxq.request-budget", REQUEST_BUDGET_DEFAULT, 10, 500);
         requestsUsed = 0;
         lastApiDesc = "";
     }
@@ -202,7 +222,7 @@ public class ZsxqSyncService {
             long remainHours = Math.max(1, (intervalMs - (now - lastOk) + 3_599_999) / 3_600_000);
             return "专栏同步跳过（约 " + remainHours + " 小时后到期）";
         }
-        String result = syncColumns(client, groupIds, logger, progress);
+        String result = syncColumns(client, groupIds, logger, progress, false);
         setState(STATE_COLUMNS_LAST_OK, System.currentTimeMillis());
         return result;
     }
@@ -272,17 +292,6 @@ public class ZsxqSyncService {
         }
     }
 
-    /** 内部信号：本轮请求预算用完，正常提前结束（不是风控，不进入冷却）。 */
-    private static class BudgetReachedException extends RuntimeException {
-        BudgetReachedException(String apiDesc) {
-            super("请求预算已用完，未执行：" + apiDesc);
-        }
-    }
-
-    private static void rethrowBudget(Exception e) {
-        if (e instanceof BudgetReachedException budget) throw budget;
-    }
-
     /**
      * Cookie 校验失败时的任务结果提示。
      *
@@ -307,6 +316,7 @@ public class ZsxqSyncService {
         return "知识星球 Cookie 校验失败：" + e.getMessage();
     }
 
+    /** 头部增量：从最新往回抓，直到碰到上一轮已同步过的帖子（覆盖停机期间的新帖）。 */
     private String syncTopics(ZsxqApiClient client, List<String> groupIds, Logger logger,
                               java.util.function.Consumer<String> progress) {
         if (groupIds.isEmpty()) return "话题同步跳过（没有可用星球）";
@@ -316,7 +326,6 @@ public class ZsxqSyncService {
             String gid = groupIds.get(gi);
             progress.accept("同步星球 " + (gi + 1) + "/" + groupIds.size());
 
-            // 1) 头部增量：从最新往回抓，直到碰到上一轮已同步过的帖子（覆盖停机期间的新帖）
             String headOldest = "";
             String headEnd = "";
             java.util.Set<String> insertedInHead = new java.util.HashSet<>();
@@ -326,7 +335,6 @@ public class ZsxqSyncService {
                 try {
                     list = listTopics(client, gid, headEnd);
                 } catch (Exception e) {
-                    rethrowBudget(e);
                     if (isRiskControl(e)) throw new RiskControlException(e);
                     logger.warn("星球 {} 最新话题拉取失败：{}", gid, e.getMessage());
                     break;
@@ -363,54 +371,67 @@ public class ZsxqSyncService {
                 if (existingOnPage > 0 || list.size() < TOPICS_PER_PAGE) break;
             }
 
-            // 2) 历史回填：从游标继续向更早翻页；首次同步用头部最旧时间初始化游标，避免重复抓最新页
+            // 首次增量同步只负责初始化历史游标，实际回填交给每日独立作业
+            if (cursor(gid).isEmpty() && !headOldest.isEmpty()) saveCursor(gid, headOldest);
+            groupsDone++;
+        }
+        return "话题同步：" + groupsDone + " 个星球，新话题 " + topics + " 条，评论 "
+                + comments + " 条，跳过已存在 " + skipped + " 条";
+    }
+
+    /**
+     * 历史话题回填：从游标连续向更早翻页，直到空页、末页或游标无法前进。
+     * 每页处理完立即保存游标；风控中止后次日从断点继续，不受单轮请求预算限制。
+     */
+    private String backfillTopics(ZsxqApiClient client, List<String> groupIds, Logger logger,
+                                  java.util.function.Consumer<String> progress) {
+        if (groupIds.isEmpty()) return "历史话题回填跳过（没有可用星球）";
+
+        int topics = 0, comments = 0, skipped = 0, pages = 0, groupsDone = 0;
+        for (int gi = 0; gi < groupIds.size(); gi++) {
+            String gid = groupIds.get(gi);
             String end = cursor(gid);
-            if (end.isEmpty() && !headOldest.isEmpty()) {
-                end = headOldest;
-                saveCursor(gid, end);
-            }
-            for (int page = 0; page < backfillPages; page++) {
-                if (end.isEmpty()) break;
+            progress.accept("回填星球历史话题 " + (gi + 1) + "/" + groupIds.size());
+
+            while (true) {
                 pause(pagePauseMs);
                 List<Topic> list;
                 try {
                     list = listTopics(client, gid, end);
                 } catch (Exception e) {
-                    rethrowBudget(e);
                     if (isRiskControl(e)) throw new RiskControlException(e);
                     logger.warn("星球 {} 历史话题拉取失败：{}", gid, e.getMessage());
                     break;
                 }
                 if (list == null || list.isEmpty()) break;
+
                 String before = end;
-                int newOnPage = 0;
+                pages++;
                 for (Topic t : list) {
                     String tid = toStr(t.getTopicId());
                     if (tid.isEmpty()) continue;
+                    String createTime = safe(t.getCreateTime());
+                    if (!createTime.isEmpty()) end = createTime;
+
                     java.util.Optional<ZsxqTopic> existing = topicRepository.findByTopicId(tid);
                     if (existing.isPresent()) {
                         skipped++;
                         fillAuthorIfMissing(tid, t, existing.get());
-                        String createTime = safe(t.getCreateTime());
-                        if (!createTime.isEmpty()) end = createTime;
                         continue;
                     }
                     pause(topicPauseMs);
                     upsertTopic(gid, tid, t, null);
                     topics++;
-                    newOnPage++;
                     if (safeInt(t.getCommentsCount()) > 0) comments += fetchComments(client, gid, tid, logger);
-                    String createTime = safe(t.getCreateTime());
-                    if (!createTime.isEmpty()) end = createTime;
                 }
                 saveCursor(gid, end);
-                // 同一时间戳导致游标没有前进且整页重复时，避免下轮原地打转
-                if (newOnPage == 0 && end.equals(before)) break;
+                // 末页直接结束；同一时间戳导致游标原地打转时也要停止，避免无限重复请求
+                if (list.size() < TOPICS_PER_PAGE || end.isEmpty() || end.equals(before)) break;
             }
             groupsDone++;
         }
-        return "话题同步：" + groupsDone + " 个星球，新话题 " + topics + " 条，评论 "
-                + comments + " 条，跳过已存在 " + skipped + " 条";
+        return "历史话题回填：" + groupsDone + " 个星球，" + pages + " 页，新话题 " + topics
+                + " 条，评论 " + comments + " 条，跳过已存在 " + skipped + " 条";
     }
 
     /**
@@ -463,19 +484,18 @@ public class ZsxqSyncService {
      * 不重复插入。专栏被删除时标记 visible=false，保留历史内容。</p>
      */
     private String syncColumns(ZsxqApiClient client, List<String> groupIds, Logger logger,
-                               java.util.function.Consumer<String> progress) {
+                               java.util.function.Consumer<String> progress, boolean fullBackfill) {
         if (groupIds.isEmpty()) return "专栏同步跳过（没有可用星球）";
 
         int columnsDone = 0, topics = 0, comments = 0, skipped = 0, groupsDone = 0;
         for (int gi = 0; gi < groupIds.size(); gi++) {
             String gid = groupIds.get(gi);
-            progress.accept("同步星球专栏 " + (gi + 1) + "/" + groupIds.size());
+            progress.accept((fullBackfill ? "回填" : "同步") + "星球专栏 " + (gi + 1) + "/" + groupIds.size());
             pause(pagePauseMs);
             List<Column> columns;
             try {
                 columns = listColumns(client, gid);
             } catch (Exception e) {
-                rethrowBudget(e);
                 if (isRiskControl(e)) throw new RiskControlException(e);
                 logger.warn("星球 {} 专栏列表拉取失败：{}", gid, e.getMessage());
                 continue;
@@ -490,7 +510,7 @@ public class ZsxqSyncService {
                 if (cid.isEmpty()) continue;
                 seenColumnIds.add(cid);
                 ZsxqColumn column = upsertColumn(gid, cid, c);
-                int[] result = syncColumnTopics(client, column, logger);
+                int[] result = syncColumnTopics(client, column, logger, fullBackfill);
                 topics += result[0];
                 comments += result[1];
                 skipped += result[2];
@@ -500,8 +520,9 @@ public class ZsxqSyncService {
             markMissingColumns(gid, seenColumnIds);
             groupsDone++;
         }
-        return "专栏同步：" + groupsDone + " 个星球的 " + columnsDone + " 个专栏，新话题 " + topics
-                + " 条，评论 " + comments + " 条，跳过已存在 " + skipped + " 条";
+        return (fullBackfill ? "专栏历史回填：" : "专栏同步：") + groupsDone + " 个星球的 "
+                + columnsDone + " 个专栏，新话题 " + topics + " 条，评论 " + comments
+                + " 条，跳过已存在 " + skipped + " 条";
     }
 
     /**
@@ -538,7 +559,6 @@ public class ZsxqSyncService {
                 stored += keys.size();
                 if (complete) done++; else failed++;
             } catch (Exception e) {
-                rethrowBudget(e);
                 // 风控/限流不是单帖问题：立即中止本轮，且不累计图片失败次数
                 if (isRiskControl(e)) throw new RiskControlException(e);
                 if (isTopicGone(e)) {
@@ -601,7 +621,6 @@ public class ZsxqSyncService {
                 markArticleSynced(tid);
                 done++;
             } catch (Exception e) {
-                rethrowBudget(e);
                 if (isRiskControl(e)) throw new RiskControlException(e);
                 markArticleFailed(tid);
                 failed++;
@@ -678,13 +697,12 @@ public class ZsxqSyncService {
                 }
             }
         } catch (Exception e) {
-            rethrowBudget(e);
             log.debug("专栏软删除标记跳过 groupId={} error={}", groupId, e.getMessage());
         }
     }
 
-    /** 专栏话题同步：头部增量 + 历史回填；返回 [新话题数, 新评论数, 跳过数]。 */
-    private int[] syncColumnTopics(ZsxqApiClient client, ZsxqColumn column, Logger logger) {
+    /** 专栏话题同步：头部增量 + 可选历史回填；返回 [新话题数, 新评论数, 跳过数]。 */
+    private int[] syncColumnTopics(ZsxqApiClient client, ZsxqColumn column, Logger logger, boolean fullBackfill) {
         int topics = 0, comments = 0, skipped = 0;
         String gid = safe(column.getGroupId());
         String cid = safe(column.getColumnId());
@@ -699,7 +717,6 @@ public class ZsxqSyncService {
             try {
                 list = listColumnTopics(client, gid, cid, headEnd);
             } catch (Exception e) {
-                rethrowBudget(e);
                 if (isRiskControl(e)) throw new RiskControlException(e);
                 logger.warn("专栏 {} 最新话题拉取失败：{}", cid, e.getMessage());
                 break;
@@ -735,46 +752,48 @@ public class ZsxqSyncService {
             if (existingOnPage > 0 || list.size() < TOPICS_PER_PAGE) break;
         }
 
-        // 2) 历史回填：从专栏游标继续向更早翻页
+        // 2) 历史回填：增量作业只初始化游标；每日回填作业连续翻到最早页
         String end = safe(column.getSyncCursor()).trim();
         if (end.isEmpty() && !headOldest.isEmpty()) end = headOldest;
-        for (int page = 0; page < backfillPages; page++) {
-            if (end.isEmpty()) break;
+        if (fullBackfill) {
+            column.setSyncCursor(end);
+            column.setLastSyncAt(System.currentTimeMillis());
+            columnRepository.save(column);
+        }
+        for (int page = 0; fullBackfill && !end.isEmpty(); page++) {
             pause(pagePauseMs);
             List<Topic> list;
             try {
                 list = listColumnTopics(client, gid, cid, end);
             } catch (Exception e) {
-                rethrowBudget(e);
                 if (isRiskControl(e)) throw new RiskControlException(e);
                 logger.warn("专栏 {} 历史话题拉取失败：{}", cid, e.getMessage());
                 break;
             }
             if (list == null || list.isEmpty()) break;
             String before = end;
-            int newOnPage = 0;
             for (Topic t : list) {
                 String tid = toStr(t.getTopicId());
                 if (tid.isEmpty()) continue;
+                String createTime = safe(t.getCreateTime());
+                if (!createTime.isEmpty()) end = createTime;
                 java.util.Optional<ZsxqTopic> existing = topicRepository.findByTopicId(tid);
                 if (existing.isPresent()) {
                     if (!cid.equals(safe(existing.get().getColumnId()))) assignColumn(tid, cid);
                     skipped++;
                     fillAuthorIfMissing(tid, t, existing.get());
                     refreshTopicContentIfEmpty(tid, t);
-                    String createTime = safe(t.getCreateTime());
-                    if (!createTime.isEmpty()) end = createTime;
                     continue;
                 }
                 pause(topicPauseMs);
                 upsertTopic(gid, tid, t, cid);
                 topics++;
-                newOnPage++;
                 if (safeInt(t.getCommentsCount()) > 0) comments += fetchComments(client, gid, tid, logger);
-                String createTime = safe(t.getCreateTime());
-                if (!createTime.isEmpty()) end = createTime;
             }
-            if (newOnPage == 0 && end.equals(before)) break;
+            column.setSyncCursor(end);
+            column.setLastSyncAt(System.currentTimeMillis());
+            columnRepository.save(column);
+            if (list.size() < TOPICS_PER_PAGE || end.isEmpty() || end.equals(before)) break;
         }
         column.setSyncCursor(end);
         column.setLastSyncAt(System.currentTimeMillis());
@@ -912,7 +931,6 @@ public class ZsxqSyncService {
             pause(topicPauseMs);
             return n;
         } catch (Exception e) {
-            rethrowBudget(e);
             if (isRiskControl(e)) throw new RiskControlException(e);
             if (isTopicGone(e)) {
                 // 帖子已在星球侧删除：软删除标记，后续同步不再为其请求评论
@@ -1203,12 +1221,11 @@ public class ZsxqSyncService {
     // ---------- 知识星球交互日志 ----------
 
     /**
-     * 知识星球 API 交互的统一包装：先扣减单轮请求预算，再记录请求描述（方法 + 关键参数）、
-     * 结果规模与耗时；错误同时写入应用日志与任务日志，便于在「定时任务 → 执行记录」里直接定位。
+     * 知识星球 API 交互的统一包装：记录请求描述（方法 + 关键参数）、结果规模与耗时；
+     * 错误同时写入应用日志与任务日志，便于在「定时任务 → 执行记录」里直接定位。
      */
     private <T> T api(String desc, java.util.function.Supplier<T> call) {
         lastApiDesc = desc;
-        if (requestsUsed >= requestBudget) throw new BudgetReachedException(desc);
         requestsUsed++;
 
         long start = System.currentTimeMillis();

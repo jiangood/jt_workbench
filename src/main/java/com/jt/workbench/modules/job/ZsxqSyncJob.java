@@ -11,19 +11,24 @@ import org.springframework.stereotype.Component;
 import org.slf4j.Logger;
 
 /**
- * 知识星球同步（每 3 小时）。
+ * 知识星球增量同步（每 30 分钟）。
  *
- * <p>话题、专栏、历史图片回填已合并到同一作业；每次执行前先校验 token，token 失效时本轮直接跳过。</p>
+ * <p>只同步最新话题与到期专栏的增量；历史话题、专栏游标、图片及专栏文章元数据回填
+ * 由 {@link ZsxqBackfillJob} 独立执行。每次执行前先校验 Cookie，失效时本轮直接跳过。</p>
  */
 @Component
 @DisallowConcurrentExecution
 @JobDescription(
         key = "jt.zsxqSync",
         label = "知识星球同步",
-        defaultCron = "0 0 0/3 * * ?",
+        defaultCron = "0 0/30 * * * ?",
         defaultEnabled = true
 )
 public class ZsxqSyncJob extends BaseJob {
+
+    static final String JOB_KEY = "jt.zsxqSync";
+    static final String DEFAULT_CRON = "0 0/30 * * * ?";
+    static final String LEGACY_CRON = "0 0 0/3 * * ?";
 
     @Resource
     private ZsxqSyncService service;
