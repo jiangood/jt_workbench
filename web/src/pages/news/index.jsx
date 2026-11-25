@@ -1,18 +1,15 @@
 import React from 'react'
 import {
     DeleteOutlined,
-    LeftOutlined,
     MoreOutlined,
     PlusOutlined,
     ReloadOutlined,
     SearchOutlined,
     StarFilled,
     StarOutlined,
-    UnorderedListOutlined,
 } from '@ant-design/icons'
 import {
     Button,
-    Drawer,
     Dropdown,
     Empty,
     Input,
@@ -23,16 +20,20 @@ import {
     Switch,
     Table,
     Tag,
+    Tooltip,
     Typography,
     message,
 } from 'antd'
 import DOMPurify from 'dompurify'
-import {HttpClient, PermUtils, history} from '@jiangood/open-admin'
+import {HttpClient, Page, PermUtils} from '@jiangood/open-admin'
 import './news.css'
 
-export const pageMeta = {layout: 'blank', title: '资讯'}
+export const pageMeta = {title: '资讯'}
 
 const PAGE_SIZE = 20
+
+/** 正文纯文本超过该长度时默认折叠 */
+const CLAMP_TEXT_LENGTH = 600
 
 function fmtTime(v) {
     if (!v) return ''
@@ -54,6 +55,11 @@ function sanitize(html) {
     })
 }
 
+function plainTextLength(html) {
+    return String(html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().length
+}
+
+/** 资讯阅读页：传统单列信息流（未读 / 已读 / 收藏，正文直接展开） */
 export default class NewsReaderPage extends React.Component {
     state = {
         tab: 'unread', // unread | read | fav
@@ -63,11 +69,10 @@ export default class NewsReaderPage extends React.Component {
         hasMore: true,
         loading: false,
         initialLoading: true,
-        swipeIndex: 0,
         stats: {unread: 0, fav: 0, total: 0, recent24h: 0, sources: 0},
         sources: [],
         blocks: [],
-        listOpen: false,
+        expandedById: {},
         sourceModalOpen: false,
         blockModalOpen: false,
         sourceForm: {name: '', url: '', type: 'rss'},
@@ -76,22 +81,12 @@ export default class NewsReaderPage extends React.Component {
 
     loadSeq = 0
     loadMoreLock = false
-    swipeRef = React.createRef()
     markingReadIds = new Set()
     searchTimer = null
 
     componentDidMount() {
         this.loadBase()
         this.reloadList(true)
-    }
-
-    componentDidUpdate(prevProps, prevState) {
-        if ((prevState.tab !== this.state.tab || prevState.keyword !== this.state.keyword) && this.state.swipeIndex !== 0) {
-            this.scrollToIndex(0, false)
-        }
-        if (prevState.items !== this.state.items && this.state.items.length > 0 && this.state.swipeIndex >= this.state.items.length) {
-            this.scrollToIndex(this.state.items.length - 1, false)
-        }
     }
 
     componentWillUnmount() {
@@ -133,11 +128,8 @@ export default class NewsReaderPage extends React.Component {
             hasMore: true,
             loading: false,
             initialLoading: initial || this.state.items.length === 0,
-            swipeIndex: 0,
-        }, () => {
-            this.scrollToIndex(0, false)
-            this.loadPage(1, true)
-        })
+            expandedById: {},
+        }, () => this.loadPage(1, true))
     }
 
     loadPage = async (page, replace = false) => {
@@ -189,7 +181,7 @@ export default class NewsReaderPage extends React.Component {
         this.loadPage(page + 1, false)
     }
 
-    markRead = async (record, {remove = true, autoNext = false} = {}) => {
+    markRead = async (record, {remove = true} = {}) => {
         if (!record) return
         const key = String(record.id)
         const current = this.state.items.find(it => String(it.id) === key) || record
@@ -210,60 +202,9 @@ export default class NewsReaderPage extends React.Component {
                 }
             }, () => {
                 if (remove && this.state.items.length === 0 && this.state.hasMore) this.loadMore()
-                if (autoNext) this.advanceAfterMarkRead()
             })
         } catch (_) {}
         finally { this.markingReadIds.delete(key) }
-    }
-
-    advanceAfterMarkRead = () => {
-        const {items, swipeIndex, hasMore, loading} = this.state
-        const nextIdx = swipeIndex + 1
-        if (nextIdx < items.length) {
-            this.scrollToIndex(nextIdx)
-        } else if (hasMore && !loading) {
-            this.loadMore()
-        }
-    }
-
-    autoMarkReadOnSwipe = (fromIdx, toIdx) => {
-        if (toIdx <= fromIdx) return
-        const {items} = this.state
-        const end = Math.min(toIdx, items.length)
-        for (let i = fromIdx; i < end; i++) {
-            const item = items[i]
-            if (item && item.status === 'unread') this.markRead(item, {remove: false})
-        }
-    }
-
-    onSwipeScroll = () => {
-        const el = this.swipeRef.current
-        if (!el) return
-        const w = el.clientWidth || 1
-        const rawIdx = Math.round(el.scrollLeft / w)
-        const prevIdx = this.state.swipeIndex
-        const maxItemIdx = Math.max(0, this.state.items.length - 1)
-        const clamped = Math.max(0, Math.min(rawIdx, maxItemIdx))
-        if (rawIdx > prevIdx) this.autoMarkReadOnSwipe(prevIdx, Math.min(rawIdx, this.state.items.length))
-        if (clamped !== prevIdx) {
-            this.setState({swipeIndex: clamped}, () => {
-                if (this.state.hasMore && !this.state.loading && clamped >= this.state.items.length - 2) this.loadMore()
-            })
-        } else if (this.state.hasMore && !this.state.loading && clamped >= this.state.items.length - 2) {
-            this.loadMore()
-        }
-    }
-
-    scrollToIndex = (index, smooth = true) => {
-        const el = this.swipeRef.current
-        if (!el) {
-            if (this.state.swipeIndex !== index) this.setState({swipeIndex: index})
-            return
-        }
-        const left = index * (el.clientWidth || 0)
-        if (smooth && el.scrollTo) el.scrollTo({left, behavior: 'smooth'})
-        else el.scrollLeft = left
-        if (this.state.swipeIndex !== index) this.setState({swipeIndex: index})
     }
 
     toggleFav = async (record) => {
@@ -316,7 +257,7 @@ export default class NewsReaderPage extends React.Component {
 
     onTabChange = (tab) => {
         clearTimeout(this.searchTimer)
-        this.setState({tab, listOpen: this.state.listOpen}, () => {
+        this.setState({tab}, () => {
             this.loadStats()
             this.reloadList(false)
         })
@@ -327,6 +268,12 @@ export default class NewsReaderPage extends React.Component {
         this.setState({keyword})
         clearTimeout(this.searchTimer)
         this.searchTimer = setTimeout(() => this.reloadList(false), 350)
+    }
+
+    toggleExpanded = (key) => {
+        this.setState(prev => ({
+            expandedById: {...prev.expandedById, [key]: !prev.expandedById[key]},
+        }))
     }
 
     // ---- 订阅源 ----
@@ -393,11 +340,65 @@ export default class NewsReaderPage extends React.Component {
         </Modal>
     }
 
+    renderItem(item) {
+        const src = this.state.sources.find(s => s.id === item.sourceId)
+        const isUnread = item.status === 'unread'
+        const isFav = item.status === 'fav'
+        const safe = sanitize(item.content || '')
+        const key = String(item.id)
+        const longText = plainTextLength(safe) > CLAMP_TEXT_LENGTH
+        const expanded = !!this.state.expandedById[key]
+        return <article className='news-post' key={item.id}>
+            <div className='news-post-meta'>
+                <span>{[src?.name, item.author, fmtTime(item.pubTime)].filter(Boolean).join(' · ')}</span>
+                {isFav ? <Tag color='gold' bordered={false}>已收藏</Tag> : null}
+            </div>
+            <h2 className='news-post-title'>{item.title || '(无标题)'}</h2>
+            {item.tags ? <div className='news-post-tags'><Tag>{item.tags}</Tag></div> : null}
+            <div className={`news-post-content${longText && !expanded ? ' is-clamped' : ''}`}>
+                {safe.trim()
+                    ? <div className='jt-news-content' dangerouslySetInnerHTML={{__html: safe}} />
+                    : <Typography.Text type='secondary'>（无正文）</Typography.Text>}
+            </div>
+            {longText ? <button type='button' className='news-post-toggle' onClick={() => this.toggleExpanded(key)}>
+                {expanded ? '收起' : '展开全文'}
+            </button> : null}
+            <div className='news-post-actions'>
+                <button type='button' className={`news-post-favbtn${isFav ? ' active' : ''}`}
+                        onClick={() => this.toggleFav(item)} aria-label={isFav ? '取消收藏' : '收藏'}>
+                    {isFav ? <StarFilled/> : <StarOutlined/>}<span>{isFav ? '已收藏' : '收藏'}</span>
+                </button>
+                {isUnread
+                    ? <button type='button' className='news-post-readbtn' onClick={() => this.markRead(item, {remove: false})}>标记已读</button>
+                    : <span className='news-post-status'>{item.status === 'fav' ? '已收藏' : '已读'}</span>}
+            </div>
+        </article>
+    }
+
+    renderList() {
+        const {tab, keyword, items, loading, initialLoading, hasMore} = this.state
+        if (initialLoading) {
+            return <div className='news-feed-state'><Spin/></div>
+        }
+        if (!items.length) {
+            return <div className='news-feed-state'>
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
+                       description={keyword ? `没有匹配「${keyword}」的资讯` : (tab === 'fav' ? '暂无收藏' : tab === 'read' ? '暂无已读' : '暂无未读')}/>
+            </div>
+        }
+        return <div className='news-feed-list'>
+            {items.map(item => this.renderItem(item))}
+            <div className='news-feed-more'>
+                {loading ? <Spin size='small'/>
+                    : hasMore ? <Button onClick={this.loadMore}>加载更多</Button>
+                        : <span>已加载全部 {items.length} 条</span>}
+            </div>
+        </div>
+    }
+
     render() {
-        const {tab, keyword, items, loading, initialLoading, hasMore, stats, sources, swipeIndex, listOpen} = this.state
+        const {tab, keyword, items, loading, initialLoading, stats, sources} = this.state
         const readCount = Math.max(0, (Number(stats.total) || 0) - (Number(stats.unread) || 0) - (Number(stats.fav) || 0))
-        const posText = items.length ? `${Math.min(swipeIndex + 1, items.length)}/${items.length}${hasMore ? '+' : ''}` : ''
-        const progressPct = items.length ? Math.round(((Math.min(swipeIndex, items.length - 1) + 1) / Math.max(items.length, 1)) * 100) : 0
         const collectTime = items[0] ? fmtTime(items[0].createTime || items[0].pubTime) : ''
 
         const moreItems = [
@@ -414,107 +415,39 @@ export default class NewsReaderPage extends React.Component {
             else if (key === 'blocks') this.openBlocks()
         }
 
-        return <div className='news-reader-root'>
-            <header className='news-reader-topbar'>
-                <div className='news-reader-left'>
-                    <button type='button' className='news-reader-iconbtn' onClick={() => history.push('/')} aria-label='返回'>
-                        <LeftOutlined />
-                    </button>
-                    <div className='news-reader-meta'>
-                        <div className='news-reader-title'>资讯</div>
+        return <Page>
+            <div className='news-feed'>
+                <header className='news-feed-head'>
+                    <div className='news-feed-heading'>
+                        <h1>资讯</h1>
+                        <p>未读 {stats.unread ?? 0} · 收藏 {stats.fav ?? 0}{collectTime ? ` · 采集 ${collectTime}` : ''}</p>
                     </div>
-                </div>
-                <div className='news-reader-right'>
-                    <span className='news-reader-badge'>未读 {stats.unread ?? 0}</span>
-                    {collectTime ? <span className='news-reader-collect'>采集 {collectTime}</span> : null}
-                    {posText ? <span className='news-reader-pos'>{posText}</span> : null}
-                    <button type='button' className='news-reader-iconbtn' onClick={() => this.setState({listOpen: true})} aria-label='列表'>
-                        <UnorderedListOutlined />
-                    </button>
-                    <Dropdown menu={{items: moreItems, onClick: onMore}} trigger={['click']} placement='bottomRight'>
-                        <button type='button' className='news-reader-iconbtn' aria-label='更多'>
-                            <MoreOutlined />
-                        </button>
-                    </Dropdown>
-                </div>
-            </header>
-
-            <div className='news-reader-stage'>
-                {initialLoading ? (
-                    <div className='news-reader-center'><Spin /></div>
-                ) : items.length === 0 ? (
-                    <div className='news-reader-center'>
-                        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={keyword ? `没有匹配「${keyword}」的资讯` : (tab === 'fav' ? '暂无收藏' : tab === 'read' ? '暂无已读' : '暂无未读')} />
+                    <div className='news-feed-actions'>
+                        <Tooltip title='刷新'>
+                            <Button icon={<ReloadOutlined/>} loading={loading && !initialLoading} aria-label='刷新'
+                                    onClick={() => { this.loadBase(); this.reloadList(false) }}/>
+                        </Tooltip>
+                        <Dropdown menu={{items: moreItems, onClick: onMore}} trigger={['click']} placement='bottomRight'>
+                            <Button icon={<MoreOutlined/>} aria-label='更多'>更多</Button>
+                        </Dropdown>
                     </div>
-                ) : (
-                    <div className='news-reader-track' ref={this.swipeRef} onScroll={this.onSwipeScroll}>
-                        {items.map((item, idx) => {
-                            const src = sources.find(s => s.id === item.sourceId)
-                            const isUnread = item.status === 'unread'
-                            const isFav = item.status === 'fav'
-                            const safe = sanitize(item.content || '')
-                            return <div className='news-reader-slide' key={item.id}>
-                                <article className='news-reader-article'>
-                                    <div className='news-reader-article-meta'>
-                                        {[src?.name, item.author, fmtTime(item.pubTime)].filter(Boolean).join(' · ')}
-                                    </div>
-                                    <h1 className='news-reader-article-title'>{item.title || '(无标题)'}</h1>
-                                    {item.tags ? <div className='news-reader-tags'><Tag>{item.tags}</Tag></div> : null}
-                                    <div className='news-reader-content'>
-                                        {safe.trim()
-                                            ? <div className='jt-news-content' dangerouslySetInnerHTML={{__html: safe}} />
-                                            : <Typography.Text type='secondary'>（无正文）</Typography.Text>}
-                                    </div>
-                                    <div className='news-reader-article-actions'>
-                                        <button type='button' className={`news-reader-favbtn${isFav ? ' active' : ''}`} onClick={() => this.toggleFav(item)} aria-label={isFav ? '取消收藏' : '收藏'}>
-                                            {isFav ? <StarFilled /> : <StarOutlined />}<span>{isFav ? '已收藏' : '收藏'}</span>
-                                        </button>
-                                        {isUnread ? (
-                                            <button type='button' className='news-reader-readbtn' onClick={() => this.markRead(item, {remove: false, autoNext: true})}>标记已读</button>
-                                        ) : <span className='news-reader-statuslabel'>{item.status === 'fav' ? '已收藏' : '已读'}</span>}
-                                    </div>
-                                </article>
-                            </div>
-                        })}
-                        {hasMore || loading ? (
-                            <div className='news-reader-slide'><div className='news-reader-center' style={{height: '100%'}}>{loading ? <Spin /> : null}</div></div>
-                        ) : null}
-                    </div>
-                )}
-            </div>
+                </header>
 
-            <div className='news-reader-progress-line'>
-                <div style={{width: `${progressPct}%`}} />
-            </div>
-
-            <Drawer title='资讯列表' placement='left' width={Math.min(typeof window !== 'undefined' ? window.innerWidth * 0.92 : 380, 420)}
-                open={listOpen} onClose={() => this.setState({listOpen: false})}
-                styles={{body: {padding: '12px 12px 16px', display: 'flex', flexDirection: 'column', minHeight: 0}}}>
-                <div className='news-reader-list-controls'>
-                    <Segmented block value={tab} onChange={this.onTabChange} options={[
+                <div className='news-feed-toolbar'>
+                    <Segmented value={tab} onChange={this.onTabChange} options={[
                         {label: `未读${stats.unread ? ` (${stats.unread})` : ''}`, value: 'unread'},
                         {label: `已读${readCount ? ` (${readCount})` : ''}`, value: 'read'},
                         {label: `收藏${stats.fav ? ` (${stats.fav})` : ''}`, value: 'fav'},
-                    ]} />
-                    <Input allowClear prefix={<SearchOutlined />} placeholder='搜索标题 / 作者 / 正文' value={keyword} onChange={this.onKeywordChange} />
+                    ]}/>
+                    <Input className='news-feed-search' allowClear prefix={<SearchOutlined/>}
+                           placeholder='搜索标题 / 作者 / 正文' value={keyword} onChange={this.onKeywordChange}/>
                 </div>
-                <div className='news-reader-list'>
-                    {initialLoading ? <div className='news-reader-center' style={{padding: 24}}><Spin size='small' /></div>
-                        : items.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description='暂无内容' style={{marginTop: 24}} />
-                        : items.map((item, idx) => {
-                            const src = sources.find(s => s.id === item.sourceId)
-                            const active = idx === swipeIndex
-                            return <button key={item.id} type='button' className={`news-reader-list-item${active ? ' active' : ''}`} onClick={() => { this.scrollToIndex(idx); this.setState({listOpen: false}) }}>
-                                <div className='news-reader-list-title'>{item.title || '(无标题)'}</div>
-                                <div className='news-reader-list-meta'>{[src?.name, fmtTime(item.pubTime)].filter(Boolean).join(' · ')}</div>
-                            </button>
-                        })}
-                    {!initialLoading && hasMore ? <div className='news-reader-list-more'>{loading ? <Spin size='small' /> : '继续浏览可加载更多'}</div> : null}
-                </div>
-            </Drawer>
+
+                {this.renderList()}
+            </div>
 
             {this.renderSourcesModal()}
             {this.renderBlocksModal()}
-        </div>
+        </Page>
     }
 }
