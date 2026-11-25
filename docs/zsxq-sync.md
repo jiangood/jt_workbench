@@ -49,12 +49,12 @@
 
 ## 三、避免触发风控
 
-知识星球对非官方客户端有风控（业务码 `1059`，提示「不支持非官方工具访问」/「设备状态异常」），实测是**逐请求随机命中**（约 1/5），与 token、设备号、签名无关；同一请求换个 `x-request-id` 立刻重试通常就能成功。原则是**按浏览器真实方式请求 + 命中后原地重试 + 少发请求、单轮有上限**：
+知识星球对非官方客户端有风控（业务码 `1059`，提示「不支持非官方工具访问」）。实测它不是固定指纹问题：网页端 48 个请求 0 命中，同一 token 从服务器直连在同样的“干净窗口”里也 0 命中；但短时间密集请求会把账号风险分推高，随后一段时间内请求会被随机拦截。原则是**按浏览器真实方式请求 + 命中后原地重试 + 少发请求/及时停手**：
 
 | 措施 | 实现 |
 |---|---|
-| 浏览器同款请求 | Cookie `zsxq_access_token` 认证；签名 `SHA1(完整 URL + " " + 秒级时间戳 + " " + x-request-id)`；带 `X-Version / X-Aduid / Origin / Referer / Accept-Language / sec-ch-ua / sec-fetch-*` 与 Chrome UA |
-| 1059 原地重试 | 同一请求换 request-id 重试（默认 3 次，2/4/8 秒退避 + 抖动），仍失败才中止本轮；重试不额外占用请求预算 |
+| 浏览器同款请求 | Cookie `zsxq_access_token` + `abtest_env=product` 认证；签名 `SHA1(完整 URL + " " + 秒级时间戳 + " " + x-request-id)`；带 `X-Version / X-Aduid / Origin / Referer / Accept-Language / sec-ch-ua / sec-fetch-*` 与 Chrome UA；ID 用星球自定义 9-4-4-4-11 位格式 |
+| 1059 原地重试 | 同一请求换 request-id 重试（默认 3 次，3/6/12 秒退避 + 抖动），成功后额外静默 2~3 秒；单轮累计重试上限 20 次，避免在风险窗口里靠重试放大请求量；重试不额外占用请求预算 |
 | 复用请求 | token 校验与星球发现合并为一次 `/v2/groups`，不再额外请求 |
 | 固定间隔 + 随机抖动 | 分页请求 8～10 秒、话题/评论之间 3～5 秒（固定值 + 0～2 秒随机），可用 `zsxq.page-pause-seconds` / `zsxq.topic-pause-seconds` 调整 |
 | 降低请求量 | 专栏默认 24 小时同步一次；话题每轮头部 2 页 + 回填 1 页；图片每轮 10 条；老帖新增评论默认不补抓 |
@@ -103,7 +103,7 @@
 | `zsxq.user-agent` | 空 | 可选；留空使用网页端 Chrome UA |
 | `zsxq.cookie` | 空 | 可选；额外 Cookie，留空时自动发送 `zsxq_access_token=<token>`（含 token，按敏感信息保管） |
 | `zsxq.risk-retry-count` | 3 | 命中 1059/40001 时同一请求的原地重试次数（1～6），不占用单轮请求预算 |
-| `zsxq.risk-retry-pause-seconds` | 3 | 首次重试等待秒数（1～60），之后按 2/4/8 倍退避并叠加 0～1 秒抖动 |
+| `zsxq.risk-retry-pause-seconds` | 3 | 首次重试等待秒数（1～60），之后按 2/4/8 倍退避并叠加 0～1 秒抖动；单轮累计重试上限 20 次 |
 | `zsxq.head-pages` | 2 | 每轮头部增量翻页数（1～10，每页 20 条） |
 | `zsxq.backfill-pages` | 1 | 每轮历史回填翻页数（0～10，0=暂停回填） |
 | `zsxq.request-budget` | 40 | 单轮星球接口请求上限（10～500，不含图片下载） |

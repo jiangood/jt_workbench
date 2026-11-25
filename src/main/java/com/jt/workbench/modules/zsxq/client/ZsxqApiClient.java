@@ -35,9 +35,10 @@ import java.util.regex.Pattern;
  *         {@code x-aduid} 与 {@code x-request-id} 使用星球自定义的 9-4-4-4-11 位格式。</li>
  * </ul>
  *
- * <p>知识星球对非官方通道的拦截（业务码 {@code 1059}）是**按请求随机命中**的：
- * 同一请求换个 request-id 立刻重试通常就能成功。因此客户端对 1059/40001 做原地重试
- * （默认 3 次，2/4/8 秒退避 + 抖动），仍失败才把异常抛给调用方进冷却。</p>
+ * <p>知识星球对非官方通道的拦截（业务码 {@code 1059}）是**按账号风险分/时间窗口**出现的：
+ * 短时间密集请求会把风险分推高，之后一段时间内请求会被随机拦截；停一会儿或换新会话就恢复。
+ * 因此客户端对 1059/40001 做原地重试（默认 3 次，3/6/12 秒退避 + 抖动，成功后额外静默 2~3 秒，
+ * 单轮累计重试上限 20 次），仍失败才把异常抛给调用方进冷却。</p>
  */
 public class ZsxqApiClient {
 
@@ -48,12 +49,19 @@ public class ZsxqApiClient {
             + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.7977.167 Safari/537.36";
     private static final String ACCEPT = "application/json, text/plain, */*";
     private static final String ACCEPT_LANGUAGE = "zh-CN";
+    private static final String ACCEPT_ENCODING = "gzip, deflate";
     private static final Pattern CHROME_VERSION = Pattern.compile("Chrome/(\\d+)");
     private static final int DEFAULT_TIMEOUT_SECONDS = 20;
     private static final int DEFAULT_TRANSPORT_RETRY = 3;
     private static final int DEFAULT_RISK_RETRY = 3;
     private static final long DEFAULT_RISK_RETRY_PAUSE_MS = 3000L;
     private static final long MAX_RISK_RETRY_PAUSE_MS = 30_000L;
+    /** 单轮（一个客户端实例）累计 1059 重试上限，防止风控窗口内靠重试放大请求量。 */
+    private static final int MAX_TOTAL_RISK_RETRIES = 20;
+    /** 重试成功后额外静默一会儿，让风险分回落，避免紧接着的下一个请求再次命中。 */
+    private static final long RECOVERY_PAUSE_MS = 2000L;
+    /** 浏览器端可见的 A/B 标记 Cookie（网页端所有请求都会带）。 */
+    private static final String ABTEST_COOKIE = "abtest_env=product";
     private static final int CODE_RISK_CONTROL = 1059;
     private static final int CODE_RATE_LIMIT = 40001;
     /**
@@ -75,6 +83,7 @@ public class ZsxqApiClient {
     private final HttpClient http;
     private final ObjectMapper mapper;
     private Consumer<String> retryListener = message -> { };
+    private int totalRiskRetries;
 
     public ZsxqApiClient(String token, String deviceId, String appVersion, String userAgent, String cookie) {
         this(token, deviceId, appVersion, userAgent, cookie, DEFAULT_RISK_RETRY, DEFAULT_RISK_RETRY_PAUSE_MS);
@@ -128,24 +137,28 @@ public class ZsxqApiClient {
         int riskAttempt = 0;
         while (true) {
             try {
-                HttpResponse<String> response = http.send(buildGet(requestPath),
-                        HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                HttpResponse<byte[]> response = http.send(buildGet(requestPath),
+                        HttpResponse.BodyHandlers.ofByteArray());
                 if (response.statusCode() >= 500 && transportAttempt < transportRetryCount) {
                     transportAttempt++;
                     sleepBeforeRetry(transportAttempt - 1);
                     continue;
                 }
-                if (response.statusCode() == 429 && riskAttempt < riskRetryCount) {
+                if (response.statusCode() == 429 && canRetryRisk(riskAttempt)) {
                     riskAttempt++;
+                    totalRiskRetries++;
                     notifyRetry(requestPath, 429, "HTTP 429 请求过于频繁", riskAttempt);
                     sleepBeforeRiskRetry(riskAttempt);
                     continue;
                 }
                 try {
-                    return parse(response, respType);
+                    T parsed = parse(response, respType);
+                    if (riskAttempt > 0) sleep(RECOVERY_PAUSE_MS + ThreadLocalRandom.current().nextLong(1000));
+                    return parsed;
                 } catch (ZsxqApiException e) {
-                    if (isTransientRisk(e.getCode()) && riskAttempt < riskRetryCount) {
+                    if (isTransientRisk(e.getCode()) && canRetryRisk(riskAttempt)) {
                         riskAttempt++;
+                        totalRiskRetries++;
                         notifyRetry(requestPath, e.getCode(), e.getMessage(), riskAttempt);
                         sleepBeforeRiskRetry(riskAttempt);
                         continue;
@@ -177,6 +190,7 @@ public class ZsxqApiClient {
                 .timeout(timeout)
                 .header("Accept", ACCEPT)
                 .header("Accept-Language", ACCEPT_LANGUAGE)
+                .header("Accept-Encoding", ACCEPT_ENCODING)
                 .header("User-Agent", userAgent)
                 .header("Origin", WEB_ORIGIN)
                 .header("Referer", WEB_ORIGIN + "/")
@@ -197,16 +211,17 @@ public class ZsxqApiClient {
         return builder.GET().build();
     }
 
-    /** 网页端认证 Cookie；配置了额外 Cookie 时合并，避免丢登录态相关的其他字段。 */
+    /** 网页端认证 Cookie；带上浏览器同款 A/B 标记，并合并配置的额外 Cookie。 */
     private String cookieHeader() {
         String tokenCookie = "zsxq_access_token=" + token;
-        if (extraCookie.isEmpty()) return tokenCookie;
-        if (extraCookie.contains("zsxq_access_token=")) return extraCookie;
-        return extraCookie.endsWith(";") ? extraCookie + " " + tokenCookie : extraCookie + "; " + tokenCookie;
+        if (extraCookie.isEmpty()) return ABTEST_COOKIE + "; " + tokenCookie;
+        String base = extraCookie.contains("abtest_env=") ? extraCookie : ABTEST_COOKIE + "; " + extraCookie;
+        if (base.contains("zsxq_access_token=")) return base;
+        return base.endsWith(";") ? base + " " + tokenCookie : base + "; " + tokenCookie;
     }
 
-    private <T> T parse(HttpResponse<String> response, Class<T> respType) {
-        String body = response.body() == null ? "" : response.body();
+    private <T> T parse(HttpResponse<byte[]> response, Class<T> respType) {
+        String body = bodyText(response);
         JsonNode root;
         try {
             root = mapper.readTree(body);
@@ -227,6 +242,28 @@ public class ZsxqApiClient {
         } catch (Exception e) {
             throw new ZsxqApiException(0, "知识星球响应解析失败：" + e.getMessage());
         }
+    }
+
+    /** 读取响应体并按 Content-Encoding 解压（浏览器同款 Accept-Encoding）。 */
+    private static String bodyText(HttpResponse<byte[]> response) {
+        byte[] bytes = response.body() == null ? new byte[0] : response.body();
+        String encoding = response.headers().firstValue("content-encoding").orElse("").toLowerCase();
+        try {
+            if (encoding.contains("gzip")) {
+                try (java.util.zip.GZIPInputStream in = new java.util.zip.GZIPInputStream(
+                        new java.io.ByteArrayInputStream(bytes))) {
+                    bytes = in.readAllBytes();
+                }
+            } else if (encoding.contains("deflate")) {
+                try (java.util.zip.InflaterInputStream in = new java.util.zip.InflaterInputStream(
+                        new java.io.ByteArrayInputStream(bytes))) {
+                    bytes = in.readAllBytes();
+                }
+            }
+        } catch (IOException e) {
+            throw new ZsxqApiException(response.statusCode(), "知识星球响应解压失败：" + e.getMessage());
+        }
+        return new String(bytes, StandardCharsets.UTF_8);
     }
 
     /**
@@ -265,6 +302,10 @@ public class ZsxqApiClient {
 
     private static boolean isTransientRisk(int code) {
         return code == CODE_RISK_CONTROL || code == CODE_RATE_LIMIT;
+    }
+
+    private boolean canRetryRisk(int riskAttempt) {
+        return riskAttempt < riskRetryCount && totalRiskRetries < MAX_TOTAL_RISK_RETRIES;
     }
 
     private void notifyRetry(String requestPath, int code, String message, int attempt) {
