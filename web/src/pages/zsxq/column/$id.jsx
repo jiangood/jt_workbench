@@ -4,6 +4,7 @@ import {Input, Switch} from 'antd'
 import {HttpClient, history} from '@jiangood/open-admin'
 import SwipeReader from '../../../components/SwipeReader'
 import {fmtTime, imageSrc, topicImages} from '../media'
+import '../zsxq.css'
 
 export const pageMeta = {layout: 'blank', title: '专栏阅读'}
 
@@ -180,6 +181,7 @@ export default class ZsxqColumnReaderPage extends React.Component {
                     <span>只看星主</span>
                 </label>
             </div>}
+            articleClassName={(item) => (!!item.author && !!groupOwner && item.author === groupOwner ? 'zsxq-owner-post' : '')}
             renderArticle={(item) => {
                 const metaParts = [fmtTime(item.sourceCreateTime || item.lastCommentTime)].filter(Boolean)
                 const images = topicImages(item)
@@ -190,7 +192,7 @@ export default class ZsxqColumnReaderPage extends React.Component {
                 return <>
                     <div className='swipe-reader-article-meta'>
                         {metaParts.map((p, i) => <span key={i}>{p}</span>)}
-                        {item.author ? <span>作者 {item.author}{isOwner ? ' · 星主' : ''}</span> : null}
+                        {item.author ? <span>作者 {item.author}{isOwner ? <b className='zsxq-owner-badge'>星主</b> : null}</span> : null}
                         {Number(item.likesCount) > 0 ? <span>赞 {item.likesCount}</span> : null}
                         {Number(item.commentCount) > 0 ? <span>评论 {item.commentCount}</span> : null}
                         {item.lastCommentTime ? <span>最近回复 {fmtTime(item.lastCommentTime)}</span> : null}
@@ -211,9 +213,9 @@ export default class ZsxqColumnReaderPage extends React.Component {
                             </div>
                             <ul className='swipe-reader-comments-list'>
                                 {shownComments.map((c, i) => (
-                                    <li key={`${c.author}-${i}`} className='swipe-reader-comment'>
+                                    <li key={`${c.author}-${i}`} className={`swipe-reader-comment${c.owner ? ' is-owner' : ''}`}>
                                         <div className='swipe-reader-comment-head'>
-                                            <span className='swipe-reader-comment-author'>{c.author || '匿名'}{c.owner ? <b style={{color: '#d4380d', marginLeft: 6}}>星主</b> : null}</span>
+                                            <span className='swipe-reader-comment-author'>{c.author || '匿名'}{c.owner ? <b className='zsxq-owner-badge'>星主</b> : null}</span>
                                             {c.time ? <span className='swipe-reader-comment-time'>{fmtTime(c.time)}</span> : null}
                                         </div>
                                         <div className='swipe-reader-comment-text'>{c.text || ''}</div>
@@ -224,10 +226,13 @@ export default class ZsxqColumnReaderPage extends React.Component {
                     ) : null}
                 </>
             }}
-            renderListItem={(item, idx, active, onClick) => <button key={item.id} type='button' className={`swipe-reader-list-item${active ? ' active' : ''}`} onClick={onClick}>
-                <div className='swipe-reader-list-title'>{item.digest || '(无内容)'}</div>
-                <div className='swipe-reader-list-meta'>{[fmtTime(item.sourceCreateTime || item.lastCommentTime)].filter(Boolean).join(' · ')}</div>
-            </button>}
+            renderListItem={(item, idx, active, onClick) => {
+                const ownerItem = !!item.author && !!groupOwner && item.author === groupOwner
+                return <button key={item.id} type='button' className={`swipe-reader-list-item${active ? ' active' : ''}${ownerItem ? ' is-owner' : ''}`} onClick={onClick}>
+                    <div className='swipe-reader-list-title'>{item.digest || '(无内容)'}</div>
+                    <div className='swipe-reader-list-meta'>{[fmtTime(item.sourceCreateTime || item.lastCommentTime)].filter(Boolean).join(' · ')}</div>
+                </button>
+            }}
         />
     }
 }

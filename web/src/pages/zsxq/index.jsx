@@ -180,7 +180,7 @@ export default class ZsxqReaderPage extends React.Component {
         const longText = text.length > CLAMP_THRESHOLD
         const expanded = !!this.state.expandedById[key]
 
-        return <article className='zsxq-post' key={item.id}>
+        return <article className={`zsxq-post${isOwner ? ' is-owner' : ''}`} key={item.id}>
             <div className='zsxq-post-head'>
                 <div className='zsxq-post-author'>
                     <span>{author || '匿名'}</span>
@@ -223,7 +223,7 @@ export default class ZsxqReaderPage extends React.Component {
                 </div>
                 <ul className='zsxq-comments-list'>
                     {shownComments.map((c, i) => (
-                        <li key={`${c.author}-${i}`} className='zsxq-comment'>
+                        <li key={`${c.author}-${i}`} className={`zsxq-comment${c.owner ? ' is-owner' : ''}`}>
                             <div className='zsxq-comment-head'>
                                 <span className='zsxq-comment-author'>
                                     {c.author || '匿名'}

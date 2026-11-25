@@ -69,7 +69,7 @@ export default class SwipeReader extends React.Component {
             title, subtitle, badges = [], posText, progressPct = 0,
             onBack, moreItems, onMore, rightExtra,
             initialLoading, loading, hasMore, items,
-            renderArticle, renderListItem,
+            renderArticle, renderListItem, articleClassName,
             emptyDescription = '暂无内容',
             drawerTitle = '列表', drawerControls, drawerFooter,
             listEmptyDescription = '暂无内容',
@@ -112,11 +112,14 @@ export default class SwipeReader extends React.Component {
                     </div>
                 ) : (
                     <div className='swipe-reader-track' ref={this.swipeRef} onScroll={this.onSwipeScroll}>
-                        {list.map((item, idx) => <div className='swipe-reader-slide' key={item.id ?? idx}>
-                            <article className='swipe-reader-article'>
-                                {renderArticle(item, idx, idx === this.index)}
-                            </article>
-                        </div>)}
+                        {list.map((item, idx) => {
+                            const extraCls = typeof articleClassName === 'function' ? articleClassName(item, idx) : articleClassName
+                            return <div className='swipe-reader-slide' key={item.id ?? idx}>
+                                <article className={`swipe-reader-article${extraCls ? ` ${extraCls}` : ''}`}>
+                                    {renderArticle(item, idx, idx === this.index)}
+                                </article>
+                            </div>
+                        })}
                         {hasMore || loading ? (
                             <div className='swipe-reader-slide'><div className='swipe-reader-center' style={{height: '100%'}}>{loading ? <Spin /> : null}</div></div>
                         ) : null}
