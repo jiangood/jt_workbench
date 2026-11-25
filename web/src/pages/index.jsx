@@ -6,6 +6,7 @@ import {
     Col,
     Empty,
     Row,
+    Segmented,
     Space,
     Spin,
     Tag,
@@ -17,6 +18,7 @@ import {
     ArrowUpOutlined,
     BellOutlined,
     BookOutlined,
+    DollarOutlined,
     FileTextOutlined,
     FundOutlined,
     ReloadOutlined,
@@ -25,6 +27,7 @@ import {
 } from '@ant-design/icons';
 import {HttpClient, Page} from '@jiangood/open-admin';
 import {zsxqPlainText} from './zsxq/richText';
+import ExchangeRateChart from './index/exchangeRateChart';
 
 const {Text, Title, Paragraph} = Typography;
 
@@ -35,6 +38,14 @@ const REPEAT = {
     monthly: '每月',
     yearly: '每年',
 };
+
+const FX_RANGES = [
+    {label: '1月', value: '1m'},
+    {label: '3月', value: '3m'},
+    {label: '6月', value: '6m'},
+    {label: '1年', value: '1y'},
+];
+const FX_RANGE_LABELS = Object.fromEntries(FX_RANGES.map((item) => [item.value, item.label]));
 
 function pad(n) {
     return String(n).padStart(2, '0');
@@ -156,22 +167,33 @@ export default class HomePage extends React.Component {
         vixFailed: false,
         quotes: [],
         quoteFailed: false,
+        exchangeRate: null,
+        exchangeRange: '3m',
+        exchangeLoading: false,
+        exchangeFailed: false,
         updatedAt: null,
     };
+
+    exchangeRequestId = 0;
 
     componentDidMount() {
         this.load();
     }
 
+    componentWillUnmount() {
+        this.exchangeRequestId += 1;
+    }
+
     load = async () => {
-        this.setState({loading: true});
-        const [sumRs, vixRs, quoteRs] = await Promise.allSettled([
+        this.setState({loading: true, exchangeLoading: true});
+        const [sumRs, vixRs, quoteRs, exchangeRs] = await Promise.allSettled([
             HttpClient.get('admin/dashboard/summary'),
             HttpClient.get('admin/stock/vix'),
             HttpClient.get('admin/stock/quote'),
+            HttpClient.get(`admin/exchange/usd-cny?range=${this.state.exchangeRange}`),
         ]);
 
-        const next = {loading: false, updatedAt: new Date()};
+        const next = {loading: false, exchangeLoading: false, updatedAt: new Date()};
         if (sumRs.status === 'fulfilled') {
             next.summary = sumRs.value?.data || null;
         } else {
@@ -195,8 +217,106 @@ export default class HomePage extends React.Component {
             next.quoteFailed = true;
         }
 
+        if (exchangeRs.status === 'fulfilled') {
+            next.exchangeRate = exchangeRs.value?.data || null;
+            next.exchangeFailed = !next.exchangeRate?.available;
+        } else {
+            next.exchangeRate = null;
+            next.exchangeFailed = true;
+        }
+
         this.setState(next);
     };
+
+    loadExchangeRate = async (range) => {
+        const requestId = ++this.exchangeRequestId;
+        this.setState({exchangeRange: range, exchangeLoading: true, exchangeFailed: false});
+        try {
+            const response = await HttpClient.get(`admin/exchange/usd-cny?range=${range}`);
+            if (requestId !== this.exchangeRequestId) return;
+            const data = response?.data || null;
+            this.setState({
+                exchangeRate: data,
+                exchangeLoading: false,
+                exchangeFailed: !data?.available,
+            });
+        } catch (e) {
+            if (requestId !== this.exchangeRequestId) return;
+            this.setState({exchangeRate: null, exchangeLoading: false, exchangeFailed: true});
+        }
+    };
+
+    renderExchangeRateCard() {
+        const {exchangeRate: rate, exchangeRange, exchangeLoading, exchangeFailed} = this.state;
+        const available = rate && rate.available !== false && Number.isFinite(Number(rate.price));
+        const change = rate?.change == null ? null : Number(rate.change);
+        const changePct = rate?.changePct == null ? null : Number(rate.changePct);
+        const rising = change > 0;
+        const falling = change < 0;
+        const deltaColor = rising ? '#cf1322' : falling ? '#389e0d' : '#666';
+        const deltaIcon = rising ? <ArrowUpOutlined/> : falling ? <ArrowDownOutlined/> : null;
+        const history = (rate?.history || []).filter((point) => Number.isFinite(Number(point?.close)));
+        const values = history.map((point) => Number(point.close));
+        const low = values.length ? Math.min(...values) : null;
+        const high = values.length ? Math.max(...values) : null;
+        const loading = (this.state.loading && !rate) || (exchangeLoading && !rate);
+
+        return (
+            <Card bordered={false} style={{height: '100%'}} bodyStyle={{padding: 18}}>
+                <CardHead icon={<DollarOutlined style={{color: '#1677ff'}}/>} title="美元兑人民币" extra={<Tag>USD/CNY</Tag>}/>
+                {loading ? (
+                    <div style={{textAlign: 'center', padding: '52px 0'}}><Spin/></div>
+                ) : available ? (
+                    <div>
+                        <div style={{display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap'}}>
+                            <div>
+                                <div style={{fontSize: 32, fontWeight: 700, lineHeight: 1.1, color: '#222', fontFamily: 'monospace'}}>
+                                    {Number(rate.price).toFixed(4)}
+                                    <span style={{fontSize: 13, fontWeight: 400, color: '#999', marginLeft: 6}}>CNY</span>
+                                </div>
+                                <div style={{marginTop: 6, fontSize: 14, color: deltaColor, fontWeight: 500}}>
+                                    {deltaIcon} {Number.isFinite(change) ? `${change > 0 ? '+' : ''}${change.toFixed(4)}` : '—'}
+                                    {Number.isFinite(changePct) ? ` (${changePct > 0 ? '+' : ''}${changePct.toFixed(2)}%)` : ''}
+                                </div>
+                            </div>
+                            <Segmented
+                                size="small"
+                                value={exchangeRange}
+                                options={FX_RANGES}
+                                disabled={this.state.loading || exchangeLoading}
+                                onChange={this.loadExchangeRate}
+                            />
+                        </div>
+                        <div style={{marginTop: 8, color: '#999', fontSize: 12}}>
+                            较前一交易日{rate.asOf ? ` · 数据日期 ${rate.asOf}` : ' · 日线参考汇率'}
+                        </div>
+                        <div style={{marginTop: 12, opacity: exchangeLoading ? 0.55 : 1}} aria-busy={exchangeLoading}>
+                            <Spin spinning={exchangeLoading}>
+                                <ExchangeRateChart history={rate.history || []}/>
+                            </Spin>
+                        </div>
+                        <div style={{display: 'flex', justifyContent: 'space-between', gap: 12, color: '#999', fontSize: 12, marginTop: 4}}>
+                            <span>近 {FX_RANGE_LABELS[exchangeRange] || '3月'} · {low == null || high == null ? '—' : `${low.toFixed(4)} – ${high.toFixed(4)}`}</span>
+                            <span>{history.length} 个交易日</span>
+                        </div>
+                        <div style={{marginTop: 6, color: '#999', fontSize: 12}}>
+                            来源：{rate.sourceName || '欧洲央行参考汇率'} · 日线参考数据
+                        </div>
+                    </div>
+                ) : (
+                    <Empty
+                        image={Empty.PRESENTED_IMAGE_SIMPLE}
+                        description={
+                            <div>
+                                <div style={{marginBottom: 8}}>{exchangeFailed ? '汇率数据暂不可用（行情源连接失败）' : '暂无汇率趋势数据'}</div>
+                                <Button size="small" onClick={() => this.loadExchangeRate(exchangeRange)} loading={exchangeLoading}>重新加载</Button>
+                            </div>
+                        }
+                    />
+                )}
+            </Card>
+        );
+    }
 
     renderVixCard() {
         const {vix, vixFailed} = this.state;
@@ -442,6 +562,9 @@ export default class HomePage extends React.Component {
                         </Col>
                         <Col xs={24} lg={12} xl={8}>
                             {this.renderReminderCard()}
+                        </Col>
+                        <Col xs={24} lg={12} xl={8}>
+                            {this.renderExchangeRateCard()}
                         </Col>
                         <Col xs={24} lg={12} xl={8}>
                             {this.renderNoteCard()}
