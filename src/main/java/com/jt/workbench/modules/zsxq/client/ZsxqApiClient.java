@@ -28,7 +28,7 @@ import java.util.regex.Pattern;
  *
  * <p>按网页端（https://wx.zsxq.com）的真实请求方式构造：</p>
  * <ul>
- *     <li>认证走 Cookie {@code zsxq_access_token}，不发 SDK 的 {@code authorization} 头；</li>
+ *     <li>认证只走浏览器 Cookie（{@code zsxq_access_token} 等），不发 SDK 的 {@code authorization} 头；</li>
  *     <li>签名与浏览器一致：{@code SHA1(完整 URL + " " + 秒级时间戳 + " " + x-request-id)}；</li>
  *     <li>请求头带 {@code x-request-id / x-version / x-timestamp / x-signature / x-aduid}，
  *         并补上浏览器的 {@code Origin / Referer / Accept-Language / sec-ch-ua / sec-fetch-*}；
@@ -68,14 +68,10 @@ public class ZsxqApiClient {
      * 星球网页端的 ID 是自定义格式「9-4-4-4-11」位十六进制（不是标准 UUID），
      * 标准 UUID（8-4-4-4-12）也兼容。
      */
-    private static final Pattern DEVICE_ID_PATTERN = Pattern.compile(
-            "^[0-9a-fA-F]{8,9}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{11,12}$");
-
-    private final String token;
+    private final String cookie;
     private final String deviceId;
     private final String appVersion;
     private final String userAgent;
-    private final String extraCookie;
     private final int riskRetryCount;
     private final long riskRetryPauseMs;
     private final int transportRetryCount;
@@ -85,21 +81,19 @@ public class ZsxqApiClient {
     private Consumer<String> retryListener = message -> { };
     private int totalRiskRetries;
 
-    public ZsxqApiClient(String token, String deviceId, String appVersion, String userAgent, String cookie) {
-        this(token, deviceId, appVersion, userAgent, cookie, DEFAULT_RISK_RETRY, DEFAULT_RISK_RETRY_PAUSE_MS);
+    public ZsxqApiClient(String cookie) {
+        this(cookie, DEFAULT_RISK_RETRY, DEFAULT_RISK_RETRY_PAUSE_MS);
     }
 
     /**
      * @param riskRetryCount   1059/40001 的原地重试次数（0 表示不重试）
      * @param riskRetryPauseMs 首次退避毫秒数，之后按 2 倍递增并叠加 0~1 秒抖动
      */
-    public ZsxqApiClient(String token, String deviceId, String appVersion, String userAgent, String cookie,
-                         int riskRetryCount, long riskRetryPauseMs) {
-        this.token = token == null ? "" : token.trim();
-        this.extraCookie = cookie == null ? "" : cookie.trim();
-        this.deviceId = normalizeDeviceId(deviceId, this.token.isEmpty() ? this.extraCookie : this.token);
-        this.appVersion = blankToDefault(appVersion, DEFAULT_APP_VERSION);
-        this.userAgent = blankToDefault(userAgent, DEFAULT_USER_AGENT);
+    public ZsxqApiClient(String cookie, int riskRetryCount, long riskRetryPauseMs) {
+        this.cookie = cookie == null ? "" : cookie.trim();
+        this.deviceId = normalizeDeviceId(this.cookie);
+        this.appVersion = DEFAULT_APP_VERSION;
+        this.userAgent = DEFAULT_USER_AGENT;
         this.riskRetryCount = Math.max(0, riskRetryCount);
         this.riskRetryPauseMs = riskRetryPauseMs <= 0 ? DEFAULT_RISK_RETRY_PAUSE_MS : riskRetryPauseMs;
         this.transportRetryCount = DEFAULT_TRANSPORT_RETRY;
@@ -211,14 +205,10 @@ public class ZsxqApiClient {
         return builder.GET().build();
     }
 
-    /** 网页端认证 Cookie：直接使用配置的完整 Cookie；未配置时才用 token 拼；两者都补 abtest 标记。 */
+    /** 网页端认证 Cookie：使用配置的完整 Cookie，未带 A/B 标记时补上。 */
     String cookieHeader() {
-        if (!extraCookie.isEmpty()) {
-            String base = extraCookie.contains("abtest_env=") ? extraCookie : ABTEST_COOKIE + "; " + extraCookie;
-            if (token.isEmpty() || base.contains("zsxq_access_token=")) return base;
-            return base.endsWith(";") ? base + " zsxq_access_token=" + token : base + "; zsxq_access_token=" + token;
-        }
-        return ABTEST_COOKIE + "; zsxq_access_token=" + token;
+        if (cookie.isEmpty() || cookie.contains("abtest_env=")) return cookie;
+        return ABTEST_COOKIE + "; " + cookie;
     }
 
     private <T> T parse(HttpResponse<byte[]> response, Class<T> respType) {
@@ -350,16 +340,11 @@ public class ZsxqApiClient {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }
 
-    /**
-     * 设备号：优先用配置值（浏览器里 {@code XAduid} 的自定义 9-4-4-4-11 格式或标准 UUID）；
-     * 配置为空或格式不对时按 token 派生固定值，保证多轮同步看到的是同一设备。
-     */
-    private static String normalizeDeviceId(String configured, String token) {
-        String value = configured == null ? "" : configured.trim();
-        if (DEVICE_ID_PATTERN.matcher(value).matches()) return value;
+    /** 按 Cookie 派生固定的 {@code x-aduid}，保证多轮同步看到的是同一设备。 */
+    private static String normalizeDeviceId(String credential) {
         try {
             MessageDigest md5 = MessageDigest.getInstance("MD5");
-            byte[] digest = md5.digest(("jt-workbench-zsxq:" + token).getBytes(StandardCharsets.UTF_8));
+            byte[] digest = md5.digest(("jt-workbench-zsxq:" + credential).getBytes(StandardCharsets.UTF_8));
             return formatZsxqId(HexFormat.of().formatHex(digest));
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("生成知识星球设备号失败", e);
@@ -379,10 +364,6 @@ public class ZsxqApiClient {
     private static String chromeMajor(String userAgent) {
         java.util.regex.Matcher m = CHROME_VERSION.matcher(userAgent);
         return m.find() ? m.group(1) : "152";
-    }
-
-    private static String blankToDefault(String value, String def) {
-        return value == null || value.isBlank() ? def : value.trim();
     }
 
     private static String brief(String body) {

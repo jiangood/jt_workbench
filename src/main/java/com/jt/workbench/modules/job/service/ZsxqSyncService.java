@@ -28,12 +28,12 @@ import java.util.concurrent.ThreadLocalRandom;
 /**
  * 知识星球同步。
  *
- * <p>单一作业入口 {@link #syncAll}：每次执行先用星球列表接口校验凭据（Cookie/token），再依次完成
+ * <p>单一作业入口 {@link #syncAll}：每次执行先用星球列表接口校验 Cookie，再依次完成
  * 话题增量回溯（end_time 翻页 + topic_id 去重）→ 评论抓取 → 专栏增量 → 历史图片回填，落
  * zsxq_group / zsxq_topic / zsxq_comment / zsxq_sync_state。保留旧库的幂等键与游标语义，
  * 不做完整请求预算/删除探测（旧版高级对账逻辑可在后续迭代补齐）。</p>
  *
- * <p>凭据失效或校验异常时本轮直接结束并返回提示，不再发起后续抓取，避免过期 Cookie 持续刷失败日志。</p>
+ * <p>Cookie 失效或校验异常时本轮直接结束并返回提示，不再发起后续抓取，避免过期 Cookie 持续刷失败日志。</p>
  *
  * <p>评论接口报「主题已被删除」（15403 或删除类文案）时，把该帖标记为软删除（visible=false），
  * 后续同步不再为其请求评论。</p>
@@ -94,7 +94,8 @@ public class ZsxqSyncService {
 
     private static final String STATE_RISK_UNTIL = "risk_until";
     private static final String STATE_RISK_STRIKES = "risk_strikes";
-    private static final String STATE_RISK_TOKEN_HASH = "risk_token_hash";
+    /** 凭据（Cookie）哈希；状态键沿用旧值，兼容已有库数据。 */
+    private static final String STATE_RISK_CREDENTIAL_HASH = "risk_token_hash";
     private static final String STATE_COLUMNS_LAST_OK = "columns_last_ok";
 
     private final SysConfigService configService;
@@ -118,21 +119,20 @@ public class ZsxqSyncService {
     /**
      * 同步入口（定时任务唯一调用点）。
      *
-     * <p>认证优先用系统参数里粘贴的浏览器 Cookie；未配置 Cookie 时回退旧的 token。</p>
+     * <p>认证只使用系统参数里粘贴的浏览器 Cookie。</p>
      */
     public JobResult syncAll(Logger logger, java.util.function.Consumer<String> progress) {
-        String token = safe(configService.getString("zsxq.token")).trim();
         String cookie = safe(configService.getString("zsxq.cookie")).trim();
-        if (token.isEmpty() && cookie.isEmpty()) return JobResult.skip("未配置知识星球 Cookie，跳过");
+        if (cookie.isEmpty()) return JobResult.skip("未配置知识星球 Cookie，跳过");
         ensureTables();
-        resetCooldownOnTokenChange(token.isEmpty() ? cookie : token);
+        resetCooldownOnCookieChange(cookie);
 
         String cooling = cooldownMessage();
         if (cooling != null) return JobResult.skip(cooling);
 
         beginRun();
-        ZsxqApiClient client = buildClient(token, cookie);
-        progress.accept("校验凭据");
+        ZsxqApiClient client = buildClient(cookie);
+        progress.accept("校验 Cookie");
         List<String> parts = new ArrayList<>();
         try {
             List<Group> remoteGroups;
@@ -141,8 +141,8 @@ public class ZsxqSyncService {
             } catch (Exception e) {
                 rethrowBudget(e);
                 if (isRiskControl(e)) throw new RiskControlException(e);
-                logger.warn("知识星球凭据校验失败：{}", e.getMessage());
-                return JobResult.fail(tokenErrorText(e));
+                logger.warn("知识星球 Cookie 校验失败：{}", e.getMessage());
+                return JobResult.fail(cookieErrorText(e));
             }
 
             List<String> groupIds = resolveGroupIds(remoteGroups);
@@ -203,16 +203,16 @@ public class ZsxqSyncService {
         return result;
     }
 
-    /** 更换 Cookie/token 后说明用户已重新登录/修复配置：清空风控冷却，立即允许重试。 */
-    private void resetCooldownOnTokenChange(String credential) {
-        long hash = Integer.toUnsignedLong(credential.hashCode());
-        Long lastHash = getState(STATE_RISK_TOKEN_HASH);
+    /** 更换 Cookie 后说明用户已重新登录/修复配置：清空风控冷却，立即允许重试。 */
+    private void resetCooldownOnCookieChange(String cookie) {
+        long hash = Integer.toUnsignedLong(cookie.hashCode());
+        Long lastHash = getState(STATE_RISK_CREDENTIAL_HASH);
         if (lastHash != null && lastHash != hash) {
             setState(STATE_RISK_UNTIL, 0);
             setState(STATE_RISK_STRIKES, 0);
         }
         if (lastHash == null || lastHash != hash) {
-            setState(STATE_RISK_TOKEN_HASH, hash);
+            setState(STATE_RISK_CREDENTIAL_HASH, hash);
         }
     }
 
@@ -280,13 +280,13 @@ public class ZsxqSyncService {
     }
 
     /**
-     * 凭据（Cookie/token）校验失败时的任务结果提示。
+     * Cookie 校验失败时的任务结果提示。
      *
-     * <p>校验用 {@code /v2/groups} 而不是 {@code /v3/users/self}：后者对网页端 token 常返回
+     * <p>校验用 {@code /v2/groups} 而不是 {@code /v3/users/self}：后者对网页端 Cookie 常返回
      * 「设备状态异常」（1059，绑定浏览器设备），且 SDK 因响应字段是 {@code succeed} 而不会抛错，
      * 不能用于判断有效性。</p>
      */
-    private static String tokenErrorText(Exception e) {
+    private static String cookieErrorText(Exception e) {
         if (e instanceof ZsxqApiException api) {
             int code = api.getCode();
             if (code == 1009) {
@@ -298,9 +298,9 @@ public class ZsxqSyncService {
             if (code == CODE_RISK_CONTROL) {
                 return "知识星球拒绝了本次访问（code=1059）：" + api.getMessage();
             }
-            return "知识星球凭据校验失败（code=" + code + "）：" + api.getMessage();
+            return "知识星球 Cookie 校验失败（code=" + code + "）：" + api.getMessage();
         }
-        return "知识星球凭据校验失败：" + e.getMessage();
+        return "知识星球 Cookie 校验失败：" + e.getMessage();
     }
 
     private String syncTopics(ZsxqApiClient client, List<String> groupIds, Logger logger,
@@ -493,7 +493,7 @@ public class ZsxqSyncService {
      * 回填历史帖子的图片：按发帖时间从新到旧逐帖调用话题详情，下载图片到对象存储，
      * 并写入 {@code images}/{@code cover}。每轮条数由系统参数 {@code zsxq.image-backfill-batch} 控制。
      *
-     * <p>token 失效等致命错误会立即中止本轮，避免把后续帖子误记成失败；帖子已删除则标记为
+     * <p>Cookie 失效等致命错误会立即中止本轮，避免把后续帖子误记成失败；帖子已删除则标记为
      * 空图片列表并结束该帖，不再重试。</p>
      */
     private String backfillImages(ZsxqApiClient client, Logger logger,
@@ -707,10 +707,10 @@ public class ZsxqSyncService {
         return columnRepository.save(column);
     }
 
-    private ZsxqApiClient buildClient(String token, String cookie) {
+    private ZsxqApiClient buildClient(String cookie) {
         int riskRetry = intConfig("zsxq.risk-retry-count", RISK_RETRY_DEFAULT, 1, 6);
         long riskRetryPause = intConfig("zsxq.risk-retry-pause-seconds", RISK_RETRY_PAUSE_DEFAULT_SECONDS, 1, 60) * 1000L;
-        return new ZsxqApiClient(token, null, null, null, cookie, riskRetry, riskRetryPause)
+        return new ZsxqApiClient(cookie, riskRetry, riskRetryPause)
                 .onRetry(message -> {
                     log.info("[知识星球] {}", message);
                     TaskLog.info("[知识星球] {}", message);
@@ -840,7 +840,7 @@ public class ZsxqSyncService {
         return msg != null && GONE_MESSAGE.matcher(msg).find();
     }
 
-    /** token 失效、权限不足、限流等与单帖无关的错误：本轮直接中止。 */
+    /** Cookie 失效、权限不足、限流等与单帖无关的错误：本轮直接中止。 */
     private static boolean isAuthOrFatal(Exception e) {
         if (!(e instanceof ZsxqApiException api)) return false;
         int code = api.getCode();
@@ -874,7 +874,7 @@ public class ZsxqSyncService {
      * 同步游标与已入库正文图片，保留星球列表与启用设置。
      *
      * <p>清空后同时重置专栏同步节流时间，下一轮同步会重新抓取专栏；图片按剩余引用过滤后删除，
-     * 多个星球共用的对象不会被误删。风控冷却与 token 状态保持不变。</p>
+     * 多个星球共用的对象不会被误删。风控冷却与 Cookie 状态保持不变。</p>
      *
      * @return 各表删除数量（topics/comments/columns/images）
      */
