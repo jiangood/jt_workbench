@@ -52,6 +52,7 @@ menus:
     perms:
       - {name: 读取, code: zsxq:read}
   jt-zsxq-manage:
+    pid: sys
     name: 知识星球管理
     icon: SettingOutlined
     path: /zsxq/manage
