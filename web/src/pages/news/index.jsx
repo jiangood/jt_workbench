@@ -34,6 +34,9 @@ const PAGE_SIZE = 20
 /** 正文末尾滑过阅读区中心线后，才提交自动已读 */
 const READ_COMMIT_RATIO = 0.5
 
+/** 自动已读的最短可见停留，避免快速划过或最后一条立刻被标记 */
+const AUTO_READ_DWELL_MS = 800
+
 /** 正文纯文本超过该长度时默认折叠 */
 const CLAMP_TEXT_LENGTH = 600
 
@@ -86,7 +89,9 @@ export default class NewsReaderPage extends React.Component {
     feedRef = React.createRef()
     scrollRoot = null
     readMarkers = new Map()
-    readCompleteIds = new Set()
+    readMarkerRefs = new Map()
+    readCompleteAt = new Map()
+    readTimers = new Map()
     readObserver = null
     readRaf = null
     hasScrolled = false
@@ -110,8 +115,26 @@ export default class NewsReaderPage extends React.Component {
         this.scrollRoot?.removeEventListener('scroll', this.handleScroll)
         window.removeEventListener('resize', this.scheduleReadCheck)
         if (this.readRaf != null) cancelAnimationFrame(this.readRaf)
+        for (const timer of this.readTimers.values()) clearTimeout(timer)
+        this.readTimers.clear()
         this.readMarkers.clear()
-        this.readCompleteIds.clear()
+        this.readMarkerRefs.clear()
+        this.readCompleteAt.clear()
+    }
+
+    clearReadTimer = id => {
+        const timer = this.readTimers.get(id)
+        if (timer != null) clearTimeout(timer)
+        this.readTimers.delete(id)
+    }
+
+    getReadMarkerRef = key => {
+        let ref = this.readMarkerRefs.get(key)
+        if (!ref) {
+            ref = node => this.setReadMarkerRef(key, node)
+            this.readMarkerRefs.set(key, ref)
+        }
+        return ref
     }
 
     setReadMarkerRef = (key, node) => {
@@ -123,6 +146,9 @@ export default class NewsReaderPage extends React.Component {
             this.readObserver?.observe(node)
         } else {
             this.readMarkers.delete(key)
+            this.readMarkerRefs.delete(key)
+            this.readCompleteAt.delete(key)
+            this.clearReadTimer(key)
         }
     }
 
@@ -131,9 +157,11 @@ export default class NewsReaderPage extends React.Component {
         for (const entry of entries) {
             const id = entry.target.dataset.newsId
             if (this.readMarkers.get(id) !== entry.target) continue
-            if (entry.isIntersecting && entry.intersectionRatio >= 1) this.readCompleteIds.add(id)
+            if (entry.isIntersecting && entry.intersectionRatio >= 1 && !this.readCompleteAt.has(id)) {
+                this.readCompleteAt.set(id, Date.now())
+            }
         }
-        if (this.hasScrolled) this.scheduleReadCheck()
+        this.scheduleReadCheck()
     }
 
     handleScroll = () => {
@@ -146,14 +174,37 @@ export default class NewsReaderPage extends React.Component {
         this.readRaf = requestAnimationFrame(this.checkReadPositions)
     }
 
+    scheduleReadCommit = (id, delay) => {
+        if (this.readTimers.has(id)) return
+        const timer = setTimeout(() => {
+            this.readTimers.delete(id)
+            this.scheduleReadCheck()
+        }, delay)
+        this.readTimers.set(id, timer)
+    }
+
     checkReadPositions = () => {
         this.readRaf = null
-        if (!this.hasScrolled || this.state.tab !== 'unread' || !this.scrollRoot) return
+        if (this.state.tab !== 'unread' || !this.scrollRoot) return
         const rootRect = this.scrollRoot.getBoundingClientRect()
+        const canScroll = this.scrollRoot.scrollHeight - this.scrollRoot.clientHeight > 2
+        if (!this.hasScrolled && canScroll) return
+        const atBottom = this.scrollRoot.scrollHeight - this.scrollRoot.scrollTop - this.scrollRoot.clientHeight <= 2
         const centerY = rootRect.top + rootRect.height * READ_COMMIT_RATIO
         for (const [id, marker] of this.readMarkers) {
-            if (!this.readCompleteIds.has(id) || marker.getBoundingClientRect().bottom > centerY) continue
-            this.readCompleteIds.delete(id)
+            const seenAt = this.readCompleteAt.get(id)
+            if (seenAt == null) continue
+            const markerRect = marker.getBoundingClientRect()
+            const passedCenter = this.hasScrolled && markerRect.bottom <= centerY
+            const visibleAtBottom = atBottom && markerRect.bottom <= rootRect.bottom && markerRect.bottom >= rootRect.top
+            if (!passedCenter && !visibleAtBottom) continue
+            const remaining = AUTO_READ_DWELL_MS - (Date.now() - seenAt)
+            if (remaining > 0) {
+                this.scheduleReadCommit(id, remaining)
+                continue
+            }
+            this.readCompleteAt.delete(id)
+            this.clearReadTimer(id)
             const item = this.state.items.find(it => String(it.id) === id)
             if (item?.status === 'unread') this.markRead(item, {remove: false})
         }
@@ -189,7 +240,9 @@ export default class NewsReaderPage extends React.Component {
         this.loadSeq += 1
         this.loadMoreLock = false
         this.hasScrolled = false
-        this.readCompleteIds.clear()
+        for (const timer of this.readTimers.values()) clearTimeout(timer)
+        this.readTimers.clear()
+        this.readCompleteAt.clear()
         this.setState({
             items: [],
             page: 1,
@@ -417,7 +470,7 @@ export default class NewsReaderPage extends React.Component {
                 {safe.trim()
                     ? <div className='jt-news-content' dangerouslySetInnerHTML={{__html: safe}} />
                     : <Typography.Text type='secondary'>（无正文）</Typography.Text>}
-                <div ref={node => this.setReadMarkerRef(key, node)} data-news-id={key}
+                <div ref={this.getReadMarkerRef(key)} data-news-id={key}
                      className='news-post-read-marker' aria-hidden='true'/>
             </div>
             {longText ? <button type='button' className='news-post-toggle' onClick={() => this.toggleExpanded(key)}>
