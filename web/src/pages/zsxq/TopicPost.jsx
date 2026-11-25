@@ -1,5 +1,5 @@
 import React from 'react'
-import {Switch, Tag} from 'antd'
+import {Image, Switch, Tag} from 'antd'
 import {fmtTime, imageSrc, topicImages} from './media'
 
 /** 摘要超过该长度时默认折叠，避免单条帖子占满整屏 */
@@ -10,15 +10,18 @@ export default class TopicPost extends React.Component {
     state = {
         expanded: false,
         ownerCommentOnly: false,
+        previewIndex: -1,
     }
 
     toggleExpanded = () => this.setState(prev => ({expanded: !prev.expanded}))
 
     toggleOwnerComments = () => this.setState(prev => ({ownerCommentOnly: !prev.ownerCommentOnly}))
 
+    togglePreview = (index, open) => this.setState({previewIndex: open ? index : -1})
+
     render() {
         const {item, comments = [], isOwner = false, meta = null} = this.props
-        const {expanded, ownerCommentOnly} = this.state
+        const {expanded, ownerCommentOnly, previewIndex} = this.state
         const images = topicImages(item)
         const ownerComments = comments.filter(c => c.owner)
         const shownComments = ownerCommentOnly ? ownerComments : comments
@@ -60,9 +63,23 @@ export default class TopicPost extends React.Component {
             {images.length ? <div className='zsxq-post-images'>
                 {images.map((img, idx) => {
                     const src = imageSrc(img)
-                    return <a key={`${img}-${idx}`} href={src} target='_blank' rel='noreferrer'>
-                        <img src={src} alt='' loading='lazy'/>
-                    </a>
+                    const alt = `帖子图片 ${idx + 1}`
+                    return <Image
+                        key={`${img}-${idx}`}
+                        src={src}
+                        alt={alt}
+                        loading='lazy'
+                        classNames={{root: 'zsxq-post-image'}}
+                        preview={{
+                            open: previewIndex === idx,
+                            onOpenChange: open => this.togglePreview(idx, open),
+                            // 预览态下再次点击图片即关闭，回到信息流中的缩略图
+                            imageRender: (node, info) => React.cloneElement(node, {
+                                className: `${node.props.className || ''} zsxq-post-preview-img`,
+                                onClick: info.actions.onClose,
+                            }),
+                        }}
+                    />
                 })}
             </div> : null}
 
