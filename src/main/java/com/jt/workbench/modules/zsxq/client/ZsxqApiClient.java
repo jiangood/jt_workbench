@@ -96,10 +96,10 @@ public class ZsxqApiClient {
     public ZsxqApiClient(String token, String deviceId, String appVersion, String userAgent, String cookie,
                          int riskRetryCount, long riskRetryPauseMs) {
         this.token = token == null ? "" : token.trim();
-        this.deviceId = normalizeDeviceId(deviceId, this.token);
+        this.extraCookie = cookie == null ? "" : cookie.trim();
+        this.deviceId = normalizeDeviceId(deviceId, this.token.isEmpty() ? this.extraCookie : this.token);
         this.appVersion = blankToDefault(appVersion, DEFAULT_APP_VERSION);
         this.userAgent = blankToDefault(userAgent, DEFAULT_USER_AGENT);
-        this.extraCookie = cookie == null ? "" : cookie.trim();
         this.riskRetryCount = Math.max(0, riskRetryCount);
         this.riskRetryPauseMs = riskRetryPauseMs <= 0 ? DEFAULT_RISK_RETRY_PAUSE_MS : riskRetryPauseMs;
         this.transportRetryCount = DEFAULT_TRANSPORT_RETRY;
@@ -211,13 +211,14 @@ public class ZsxqApiClient {
         return builder.GET().build();
     }
 
-    /** 网页端认证 Cookie；带上浏览器同款 A/B 标记，并合并配置的额外 Cookie。 */
-    private String cookieHeader() {
-        String tokenCookie = "zsxq_access_token=" + token;
-        if (extraCookie.isEmpty()) return ABTEST_COOKIE + "; " + tokenCookie;
-        String base = extraCookie.contains("abtest_env=") ? extraCookie : ABTEST_COOKIE + "; " + extraCookie;
-        if (base.contains("zsxq_access_token=")) return base;
-        return base.endsWith(";") ? base + " " + tokenCookie : base + "; " + tokenCookie;
+    /** 网页端认证 Cookie：直接使用配置的完整 Cookie；未配置时才用 token 拼；两者都补 abtest 标记。 */
+    String cookieHeader() {
+        if (!extraCookie.isEmpty()) {
+            String base = extraCookie.contains("abtest_env=") ? extraCookie : ABTEST_COOKIE + "; " + extraCookie;
+            if (token.isEmpty() || base.contains("zsxq_access_token=")) return base;
+            return base.endsWith(";") ? base + " zsxq_access_token=" + token : base + "; zsxq_access_token=" + token;
+        }
+        return ABTEST_COOKIE + "; zsxq_access_token=" + token;
     }
 
     private <T> T parse(HttpResponse<byte[]> response, Class<T> respType) {

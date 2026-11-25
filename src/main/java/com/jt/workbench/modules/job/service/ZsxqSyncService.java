@@ -28,12 +28,12 @@ import java.util.concurrent.ThreadLocalRandom;
 /**
  * 知识星球同步。
  *
- * <p>单一作业入口 {@link #syncAll}：每次执行先用星球列表接口校验 token，再依次完成
+ * <p>单一作业入口 {@link #syncAll}：每次执行先用星球列表接口校验凭据（Cookie/token），再依次完成
  * 话题增量回溯（end_time 翻页 + topic_id 去重）→ 评论抓取 → 专栏增量 → 历史图片回填，落
  * zsxq_group / zsxq_topic / zsxq_comment / zsxq_sync_state。保留旧库的幂等键与游标语义，
  * 不做完整请求预算/删除探测（旧版高级对账逻辑可在后续迭代补齐）。</p>
  *
- * <p>token 失效或校验异常时本轮直接结束并返回提示，不再发起后续抓取，避免过期 token 持续刷失败日志。</p>
+ * <p>凭据失效或校验异常时本轮直接结束并返回提示，不再发起后续抓取，避免过期 Cookie 持续刷失败日志。</p>
  *
  * <p>评论接口报「主题已被删除」（15403 或删除类文案）时，把该帖标记为软删除（visible=false），
  * 后续同步不再为其请求评论。</p>
@@ -118,21 +118,21 @@ public class ZsxqSyncService {
     /**
      * 同步入口（定时任务唯一调用点）。
      *
-     * <p>先用星球列表接口校验 token，再依次执行话题、专栏（按间隔）、历史图片回填。
-     * 任一步触发风控（1059）或限流（40001）会立即中止本轮并进入冷却，避免持续请求加重风控。</p>
+     * <p>认证优先用系统参数里粘贴的浏览器 Cookie；未配置 Cookie 时回退旧的 token。</p>
      */
     public JobResult syncAll(Logger logger, java.util.function.Consumer<String> progress) {
-        String token = configService.getString("zsxq.token");
-        if (token == null || token.isBlank()) return JobResult.skip("未配置知识星球 token，跳过");
+        String token = safe(configService.getString("zsxq.token")).trim();
+        String cookie = safe(configService.getString("zsxq.cookie")).trim();
+        if (token.isEmpty() && cookie.isEmpty()) return JobResult.skip("未配置知识星球 Cookie，跳过");
         ensureTables();
-        resetCooldownOnTokenChange(token);
+        resetCooldownOnTokenChange(token.isEmpty() ? cookie : token);
 
         String cooling = cooldownMessage();
         if (cooling != null) return JobResult.skip(cooling);
 
         beginRun();
-        ZsxqApiClient client = buildClient(token);
-        progress.accept("校验 token");
+        ZsxqApiClient client = buildClient(token, cookie);
+        progress.accept("校验凭据");
         List<String> parts = new ArrayList<>();
         try {
             List<Group> remoteGroups;
@@ -141,7 +141,7 @@ public class ZsxqSyncService {
             } catch (Exception e) {
                 rethrowBudget(e);
                 if (isRiskControl(e)) throw new RiskControlException(e);
-                logger.warn("知识星球 token 校验失败：{}", e.getMessage());
+                logger.warn("知识星球凭据校验失败：{}", e.getMessage());
                 return JobResult.fail(tokenErrorText(e));
             }
 
@@ -203,9 +203,9 @@ public class ZsxqSyncService {
         return result;
     }
 
-    /** token 更换后说明用户已重新登录/修复配置：清空风控冷却，立即允许重试。 */
-    private void resetCooldownOnTokenChange(String token) {
-        long hash = Integer.toUnsignedLong(token.hashCode());
+    /** 更换 Cookie/token 后说明用户已重新登录/修复配置：清空风控冷却，立即允许重试。 */
+    private void resetCooldownOnTokenChange(String credential) {
+        long hash = Integer.toUnsignedLong(credential.hashCode());
         Long lastHash = getState(STATE_RISK_TOKEN_HASH);
         if (lastHash != null && lastHash != hash) {
             setState(STATE_RISK_UNTIL, 0);
@@ -280,7 +280,7 @@ public class ZsxqSyncService {
     }
 
     /**
-     * token 校验失败时的任务结果提示。
+     * 凭据（Cookie/token）校验失败时的任务结果提示。
      *
      * <p>校验用 {@code /v2/groups} 而不是 {@code /v3/users/self}：后者对网页端 token 常返回
      * 「设备状态异常」（1059，绑定浏览器设备），且 SDK 因响应字段是 {@code succeed} 而不会抛错，
@@ -289,15 +289,18 @@ public class ZsxqSyncService {
     private static String tokenErrorText(Exception e) {
         if (e instanceof ZsxqApiException api) {
             int code = api.getCode();
+            if (code == 1009) {
+                return "知识星球账号已在其它设备登录（code=1009），当前 Cookie 已失效；请重新登录后填写最新 Cookie";
+            }
             if (code == 401 || code == 10001 || code == 10002 || code == 10003) {
-                return "知识星球 token 已失效或鉴权失败（code=" + code + "），请更新系统参数 zsxq.token";
+                return "知识星球 Cookie 已失效或鉴权失败（code=" + code + "），请更新系统参数 zsxq.cookie";
             }
             if (code == CODE_RISK_CONTROL) {
                 return "知识星球拒绝了本次访问（code=1059）：" + api.getMessage();
             }
-            return "知识星球 token 校验失败（code=" + code + "）：" + api.getMessage();
+            return "知识星球凭据校验失败（code=" + code + "）：" + api.getMessage();
         }
-        return "知识星球 token 校验失败：" + e.getMessage();
+        return "知识星球凭据校验失败：" + e.getMessage();
     }
 
     private String syncTopics(ZsxqApiClient client, List<String> groupIds, Logger logger,
@@ -704,36 +707,14 @@ public class ZsxqSyncService {
         return columnRepository.save(column);
     }
 
-    private ZsxqApiClient buildClient(String token) {
+    private ZsxqApiClient buildClient(String token, String cookie) {
         int riskRetry = intConfig("zsxq.risk-retry-count", RISK_RETRY_DEFAULT, 1, 6);
         long riskRetryPause = intConfig("zsxq.risk-retry-pause-seconds", RISK_RETRY_PAUSE_DEFAULT_SECONDS, 1, 60) * 1000L;
-        return new ZsxqApiClient(
-                token,
-                configuredDeviceId(),
-                appVersion(),
-                safe(configService.getString("zsxq.user-agent")),
-                safe(configService.getString("zsxq.cookie")),
-                riskRetry,
-                riskRetryPause)
+        return new ZsxqApiClient(token, null, null, null, cookie, riskRetry, riskRetryPause)
                 .onRetry(message -> {
                     log.info("[知识星球] {}", message);
                     TaskLog.info("[知识星球] {}", message);
                 });
-    }
-
-    /** 星球 App 版本号（x-version/UA）：跟浏览器保持一致，默认取当前网页端版本。 */
-    private String appVersion() {
-        String configured = safe(configService.getString("zsxq.app-version")).trim();
-        return configured.isEmpty() ? "2.100.0" : configured;
-    }
-
-    /**
-     * 设备号：优先使用系统参数里浏览器真实的 {@code x-aduid}；留空时由客户端按 token 派生固定值。
-     *
-     * <p>注意 token 里 {@code _} 前面的部分不是 {@code x-aduid}，不能拿来当设备号。</p>
-     */
-    private String configuredDeviceId() {
-        return safe(configService.getString("zsxq.device-id")).trim();
     }
 
     // ---------- 星球接口：强类型直连，避免 SDK 的 Map/Double 中转导致 64 位 ID 精度丢失 ----------

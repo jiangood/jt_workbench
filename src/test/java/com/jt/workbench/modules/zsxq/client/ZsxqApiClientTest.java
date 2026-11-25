@@ -26,6 +26,25 @@ class ZsxqApiClientTest {
     }
 
     @Test
+    void cookieUsesFullBrowserCookieWhenConfigured() {
+        ZsxqApiClient client = new ZsxqApiClient("", null, null, null,
+                "zsxq_access_token=abc; zsxqsessionid=xyz; abtest_env=product");
+        assertEquals("zsxq_access_token=abc; zsxqsessionid=xyz; abtest_env=product", client.cookieHeader());
+    }
+
+    @Test
+    void cookieFallsBackToTokenAndAddsAbtest() {
+        ZsxqApiClient client = new ZsxqApiClient("tok", null, null, null, null);
+        assertEquals("abtest_env=product; zsxq_access_token=tok", client.cookieHeader());
+    }
+
+    @Test
+    void cookieMergesTokenOnlyOnce() {
+        ZsxqApiClient client = new ZsxqApiClient("tok", null, null, null, "zsxq_access_token=abc");
+        assertEquals("abtest_env=product; zsxq_access_token=abc", client.cookieHeader());
+    }
+
+    @Test
     void riskControlUsesInfoBecauseErrorIsGeneric() {
         JsonNode root = mapper.readTree("""
                 {"succeeded":false,"code":1059,"error":"内部错误",

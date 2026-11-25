@@ -59,7 +59,7 @@
 | 固定间隔 + 随机抖动 | 分页请求 8～10 秒、话题/评论之间 3～5 秒（固定值 + 0～2 秒随机），可用 `zsxq.page-pause-seconds` / `zsxq.topic-pause-seconds` 调整 |
 | 降低请求量 | 专栏默认 24 小时同步一次；话题每轮头部 2 页 + 回填 1 页；图片每轮 10 条；老帖新增评论默认不补抓 |
 | 单轮预算 | 每轮最多 40 次星球接口请求（`zsxq.request-budget`），达到即结束，避免一次跑太久 |
-| 设备号稳定 | 优先用 `zsxq.device-id`（填浏览器请求头里的 `x-aduid`，星球自定义 9-4-4-4-11 位或标准 UUID）；未配置/格式不对时按 token 派生固定值。注意 token 中 `_` 前面的部分不是 `x-aduid` |
+| 设备号稳定 | 无需手工配置：按 Cookie（或旧 token）派生固定的 `x-aduid`，多轮同步保持同一设备 |
 | ID 精度 | 话题/评论/专栏直接按强类型 DTO 解析，所有 ID 用字符串接收，避免 64 位 `topic_id` 被 `Double` 四舍五入 |
 | 避开高峰 | 作业每 3 小时一次，不并发（`ZsxqSyncJob` 显式标注 `@DisallowConcurrentExecution`） |
 
@@ -75,7 +75,7 @@
    - 评论接口触发风控只跳过该帖评论，不标记帖子删除
    - 图片回填触发风控不计入帖子失败次数（不会把帖子提前判死）
    - 已同步的游标/幂等键保留，冷却结束后从断点继续
-6. **自动恢复**：完整跑通一轮（未触发风控）后清零连续触发计数；更换 `zsxq.token` 会立即清空冷却
+6. **自动恢复**：完整跑通一轮（未触发风控）后清零连续触发计数；更换 Cookie/token 会立即清空冷却
 
 任务结果与任务日志中会记录「触发知识星球风控（code=1059，接口=…，返回=…），本轮中止；冷却 N 分钟后再试（连续第 K 次）」，
 可直接看出被拦的是哪个接口。请求预算用完时本轮正常结束（不进入冷却），结果提示「本轮达到请求预算上限」，下轮从游标继续。
@@ -83,7 +83,7 @@
 ## 五、人工处置
 
 - **想立即重试**：
-  - 更换系统参数 `zsxq.token`（会自动清除冷却），或
+  - 更换系统参数 `zsxq.cookie`（会自动清除冷却），或
   - 删除 `zsxq_job_state` 中 `risk_until`、`risk_strikes` 两行，例如：
     ```sql
     DELETE FROM zsxq_job_state WHERE state_key IN ('risk_until', 'risk_strikes');
@@ -97,11 +97,8 @@
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `zsxq.token` | 空 | 知识星球网页 Cookie 中的 `zsxq_access_token`；实测需整串 `<deviceId>_<accessToken>`，缺前缀会 401 |
-| `zsxq.device-id` | 空 | 设备号（`x-aduid`）；填浏览器请求头里的值（星球自定义 9-4-4-4-11 位或标准 UUID），留空/格式不对时按 token 派生固定值 |
-| `zsxq.app-version` | 2.100.0 | 请求头 `x-version` 使用的网页端版本，建议与当前网页端一致 |
-| `zsxq.user-agent` | 空 | 可选；留空使用网页端 Chrome UA |
-| `zsxq.cookie` | 空 | 可选；额外 Cookie，留空时自动发送 `zsxq_access_token=<token>`（含 token，按敏感信息保管） |
+| `zsxq.cookie` | 空 | **推荐只填这一项**：直接粘贴浏览器 `api.zsxq.com` 请求头里的完整 Cookie（含 `zsxq_access_token`，可含 `zsxqsessionid` 等）；填了它就不需要 token |
+| `zsxq.token` | 空 | 旧版兼容项：仅当 Cookie 为空时使用，自动拼成 `abtest_env=product; zsxq_access_token=<token>`；实测需整串 `<deviceId>_<accessToken>`，缺前缀会 401 |
 | `zsxq.risk-retry-count` | 3 | 命中 1059/40001 时同一请求的原地重试次数（1～6），不占用单轮请求预算 |
 | `zsxq.risk-retry-pause-seconds` | 3 | 首次重试等待秒数（1～60），之后按 2/4/8 倍退避并叠加 0～1 秒抖动；单轮累计重试上限 20 次 |
 | `zsxq.head-pages` | 2 | 每轮头部增量翻页数（1～10，每页 20 条） |
