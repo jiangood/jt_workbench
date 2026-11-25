@@ -4,19 +4,10 @@ import com.jt.workbench.modules.zsxq.entity.ZsxqColumn;
 import com.jt.workbench.modules.zsxq.entity.ZsxqTopic;
 import com.jt.workbench.modules.zsxq.repo.ZsxqColumnRepository;
 import com.jt.workbench.modules.zsxq.repo.ZsxqTopicRepository;
+import com.jt.workbench.modules.zsxq.client.ZsxqApiClient;
+import com.jt.workbench.modules.zsxq.client.ZsxqApiException;
+import com.jt.workbench.modules.zsxq.client.ZsxqModels.*;
 import com.jt.workbench.modules.zsxq.service.ZsxqImageService;
-import com.zsxq.sdk.client.ZsxqConfig;
-import com.zsxq.sdk.exception.AuthException;
-import com.zsxq.sdk.exception.TokenExpiredException;
-import com.zsxq.sdk.exception.TokenInvalidException;
-import com.zsxq.sdk.exception.ZsxqException;
-import com.zsxq.sdk.http.HttpClient;
-import com.zsxq.sdk.model.Column;
-import com.zsxq.sdk.model.Comment;
-import com.zsxq.sdk.model.Group;
-import com.zsxq.sdk.model.Image;
-import com.zsxq.sdk.model.TalkContent;
-import com.zsxq.sdk.model.Topic;
 import io.github.jiangood.openadmin.modules.config.service.SysConfigService;
 import io.github.jiangood.openadmin.modules.job.JobResult;
 import io.github.jiangood.openadmin.modules.logviewer.util.TaskLog;
@@ -133,7 +124,7 @@ public class ZsxqSyncService {
         if (cooling != null) return JobResult.skip(cooling);
 
         beginRun();
-        HttpClient client = buildClient(token);
+        ZsxqApiClient client = buildClient(token);
         progress.accept("校验 token");
         List<String> parts = new ArrayList<>();
         try {
@@ -189,7 +180,7 @@ public class ZsxqSyncService {
     }
 
     /** 专栏按配置间隔执行（默认 24 小时）；没到间隔时不发任何星球请求。 */
-    private String syncColumnsIfDue(HttpClient client, List<String> groupIds, Logger logger,
+    private String syncColumnsIfDue(ZsxqApiClient client, List<String> groupIds, Logger logger,
                                     java.util.function.Consumer<String> progress) {
         int hours = configService.getInt("zsxq.column-sync-interval-hours");
         if (hours <= 0) hours = COLUMN_SYNC_DEFAULT_HOURS;
@@ -251,8 +242,8 @@ public class ZsxqSyncService {
 
     /** 风控/限流：本轮立即中止，不重试、不计入单帖失败次数。 */
     private static boolean isRiskControl(Exception e) {
-        if (!(e instanceof ZsxqException zsxq)) return false;
-        int code = zsxq.getCode();
+        if (!(e instanceof ZsxqApiException api)) return false;
+        int code = api.getCode();
         return code == CODE_RISK_CONTROL || code == CODE_RATE_LIMIT;
     }
 
@@ -262,7 +253,7 @@ public class ZsxqSyncService {
 
         RiskControlException(Exception cause) {
             super(cause.getMessage(), cause);
-            this.code = cause instanceof ZsxqException zsxq ? zsxq.getCode() : 0;
+            this.code = cause instanceof ZsxqApiException api ? api.getCode() : 0;
         }
 
         int code() {
@@ -289,22 +280,20 @@ public class ZsxqSyncService {
      * 不能用于判断有效性。</p>
      */
     private static String tokenErrorText(Exception e) {
-        if (e instanceof TokenInvalidException || e instanceof TokenExpiredException) {
-            return "知识星球 token 已失效，请更新系统参数 zsxq.token";
-        }
-        if (e instanceof AuthException auth) {
-            return "知识星球 token 鉴权失败（code=" + auth.getCode() + "），请检查账号权限";
-        }
-        if (e instanceof ZsxqException zsxq) {
-            int code = zsxq.getCode();
-            if (code == 401) return "知识星球 token 已失效（401 Unauthorized），请更新系统参数 zsxq.token";
-            if (code == CODE_RISK_CONTROL) return "知识星球拒绝了本次访问（code=1059），可能触发非官方工具风控，请稍后重试";
-            return "知识星球 token 校验失败（code=" + code + "）：" + zsxq.getMessage();
+        if (e instanceof ZsxqApiException api) {
+            int code = api.getCode();
+            if (code == 401 || code == 10001 || code == 10002 || code == 10003) {
+                return "知识星球 token 已失效或鉴权失败（code=" + code + "），请更新系统参数 zsxq.token";
+            }
+            if (code == CODE_RISK_CONTROL) {
+                return "知识星球拒绝了本次访问（code=1059）：" + api.getMessage();
+            }
+            return "知识星球 token 校验失败（code=" + code + "）：" + api.getMessage();
         }
         return "知识星球 token 校验失败：" + e.getMessage();
     }
 
-    private String syncTopics(HttpClient client, List<String> groupIds, Logger logger,
+    private String syncTopics(ZsxqApiClient client, List<String> groupIds, Logger logger,
                               java.util.function.Consumer<String> progress) {
         if (groupIds.isEmpty()) return "话题同步跳过（没有可用星球）";
 
@@ -431,7 +420,7 @@ public class ZsxqSyncService {
      * 头部页里已存在的话题，如果接口返回的评论数比本地多，补抓一次评论并更新计数。
      * 这样星主/成员在旧帖下的新回复也能持续同步（评论按 comment_id 幂等去重）。
      */
-    private int refreshCommentsIfGrown(HttpClient client, String gid, Topic remote, ZsxqTopic local, Logger logger) {
+    private int refreshCommentsIfGrown(ZsxqApiClient client, String gid, Topic remote, ZsxqTopic local, Logger logger) {
         int remoteCount = safeInt(remote.getCommentsCount());
         int localCount = safeInt(local.getCommentCount());
         if (remoteCount <= localCount) return 0;
@@ -448,7 +437,7 @@ public class ZsxqSyncService {
      * <p>逐个星球拉取专栏列表，再按专栏游标增量拉取话题；已存在的普通话题只补写 column_id，
      * 不重复插入。专栏被删除时标记 visible=false，保留历史内容。</p>
      */
-    private String syncColumns(HttpClient client, List<String> groupIds, Logger logger,
+    private String syncColumns(ZsxqApiClient client, List<String> groupIds, Logger logger,
                                java.util.function.Consumer<String> progress) {
         if (groupIds.isEmpty()) return "专栏同步跳过（没有可用星球）";
 
@@ -497,7 +486,7 @@ public class ZsxqSyncService {
      * <p>token 失效等致命错误会立即中止本轮，避免把后续帖子误记成失败；帖子已删除则标记为
      * 空图片列表并结束该帖，不再重试。</p>
      */
-    private String backfillImages(HttpClient client, Logger logger,
+    private String backfillImages(ZsxqApiClient client, Logger logger,
                                   java.util.function.Consumer<String> progress) {
         int batch = intConfig("zsxq.image-backfill-batch", IMAGE_BACKFILL_DEFAULT_BATCH, 0, 500);
         if (batch == 0) return "图片回填跳过（已关闭）";
@@ -591,7 +580,7 @@ public class ZsxqSyncService {
     }
 
     /** 专栏话题同步：头部增量 + 历史回填；返回 [新话题数, 新评论数, 跳过数]。 */
-    private int[] syncColumnTopics(HttpClient client, ZsxqColumn column, Logger logger) {
+    private int[] syncColumnTopics(ZsxqApiClient client, ZsxqColumn column, Logger logger) {
         int topics = 0, comments = 0, skipped = 0;
         String gid = safe(column.getGroupId());
         String cid = safe(column.getColumnId());
@@ -702,21 +691,19 @@ public class ZsxqSyncService {
         column.setName(truncate(name.isEmpty() ? columnId : name, COLUMN_NAME_MAX_LENGTH));
         column.setDescription(truncate(safe(c.getDescription()), COLUMN_TEXT_MAX_LENGTH));
         column.setCoverUrl(truncate(safe(c.getCoverUrl()), COLUMN_TEXT_MAX_LENGTH));
-        column.setTopicsCount(safeInt(c.getTopicsCount()));
+        column.setTopicsCount(c.topicsCount());
         column.setVisible(true);
         column.setLastSyncAt(System.currentTimeMillis());
         return columnRepository.save(column);
     }
 
-    private HttpClient buildClient(String token) {
-        ZsxqConfig config = ZsxqConfig.builder()
-                .token(token)
-                .timeout(20000)
-                .retryCount(3)
-                .deviceId(stableDeviceId(token))
-                .appVersion(appVersion())
-                .build();
-        return new HttpClient(config);
+    private ZsxqApiClient buildClient(String token) {
+        return new ZsxqApiClient(
+                token,
+                stableDeviceId(token),
+                appVersion(),
+                safe(configService.getString("zsxq.user-agent")),
+                safe(configService.getString("zsxq.cookie")));
     }
 
     /** 星球 App 版本号（x-version/UA）：跟浏览器保持一致，默认取当前网页端版本。 */
@@ -740,13 +727,13 @@ public class ZsxqSyncService {
 
     // ---------- 星球接口：强类型直连，避免 SDK 的 Map/Double 中转导致 64 位 ID 精度丢失 ----------
 
-    private List<Group> listGroups(HttpClient client) {
+    private List<Group> listGroups(ZsxqApiClient client) {
         String path = "/v2/groups";
         GroupPage page = api("GET " + path, () -> client.get(path, GroupPage.class));
         return page == null || page.groups == null ? List.of() : page.groups;
     }
 
-    private List<Topic> listTopics(HttpClient client, String gid, String endTime) {
+    private List<Topic> listTopics(ZsxqApiClient client, String gid, String endTime) {
         Map<String, Object> query = new LinkedHashMap<>();
         query.put("count", TOPICS_PER_PAGE);
         query.put("scope", "all");
@@ -757,7 +744,7 @@ public class ZsxqSyncService {
         return page == null || page.topics == null ? List.of() : page.topics;
     }
 
-    private List<Topic> listColumnTopics(HttpClient client, String gid, String cid, String endTime) {
+    private List<Topic> listColumnTopics(ZsxqApiClient client, String gid, String cid, String endTime) {
         Map<String, Object> query = new LinkedHashMap<>();
         query.put("count", TOPICS_PER_PAGE);
         query.put("scope", "all");
@@ -768,13 +755,13 @@ public class ZsxqSyncService {
         return page == null || page.topics == null ? List.of() : page.topics;
     }
 
-    private Topic getTopic(HttpClient client, String tid) {
+    private Topic getTopic(ZsxqApiClient client, String tid) {
         String path = "/v2/topics/" + tid + "/info";
         TopicDetail detail = api("GET " + path, () -> client.get(path, TopicDetail.class));
         return detail == null ? null : detail.topic;
     }
 
-    private List<Comment> listComments(HttpClient client, String tid) {
+    private List<Comment> listComments(ZsxqApiClient client, String tid) {
         Map<String, Object> query = new LinkedHashMap<>();
         query.put("sort", "asc");
         query.put("count", COMMENTS_PER_TOPIC);
@@ -783,31 +770,10 @@ public class ZsxqSyncService {
         return page == null || page.comments == null ? List.of() : page.comments;
     }
 
-    private List<Column> listColumns(HttpClient client, String gid) {
+    private List<Column> listColumns(ZsxqApiClient client, String gid) {
         String path = "/v2/groups/" + gid + "/columns";
         ColumnPage page = api("GET " + path, () -> client.get(path, ColumnPage.class));
         return page == null || page.columns == null ? List.of() : page.columns;
-    }
-
-    /** SDK 的 resp_data 外壳；字段名与接口 JSON 一致，由 SDK 内的 Gson 直接映射（ID 按 Long 精确解析）。 */
-    private static class GroupPage {
-        List<Group> groups;
-    }
-
-    private static class TopicPage {
-        List<Topic> topics;
-    }
-
-    private static class CommentPage {
-        List<Comment> comments;
-    }
-
-    private static class ColumnPage {
-        List<Column> columns;
-    }
-
-    private static class TopicDetail {
-        Topic topic;
     }
 
     /**
@@ -837,7 +803,7 @@ public class ZsxqSyncService {
         return groupIds;
     }
 
-    private int fetchComments(HttpClient client, String groupId, String topicId, Logger logger) {
+    private int fetchComments(ZsxqApiClient client, String groupId, String topicId, Logger logger) {
         try {
             List<Comment> list = listComments(client, topicId);
             int n = 0;
@@ -873,19 +839,19 @@ public class ZsxqSyncService {
 
     /** 评论接口报「主题已被删除」（15403 或删除类文案）时视为已删除，不计为评论抓取失败。 */
     private static boolean isTopicGone(Exception e) {
-        if (!(e instanceof ZsxqException zsxq)) return false;
-        int code = zsxq.getCode();
+        if (!(e instanceof ZsxqApiException api)) return false;
+        int code = api.getCode();
         // Token 失效/权限/限流不是删除，避免误标
         if (code == 10001 || code == 10002 || code == 10003 || code == 40001) return false;
         if (code == CODE_TOPIC_GONE) return true;
-        String msg = zsxq.getMessage();
+        String msg = api.getMessage();
         return msg != null && GONE_MESSAGE.matcher(msg).find();
     }
 
     /** token 失效、权限不足、限流等与单帖无关的错误：本轮直接中止。 */
     private static boolean isAuthOrFatal(Exception e) {
-        if (!(e instanceof ZsxqException zsxq)) return false;
-        int code = zsxq.getCode();
+        if (!(e instanceof ZsxqApiException api)) return false;
+        int code = api.getCode();
         return code == 10001 || code == 10002 || code == 10003 || code == 40001;
     }
 
@@ -907,6 +873,64 @@ public class ZsxqSyncService {
                 + "group_id VARCHAR(64) PRIMARY KEY, cursor_value VARCHAR(100), last_sync_at BIGINT)");
         jdbc.execute("CREATE TABLE IF NOT EXISTS zsxq_job_state ("
                 + "state_key VARCHAR(64) PRIMARY KEY, long_value BIGINT)");
+    }
+
+    // ---------- 管理：清空抓取数据 ----------
+
+    /**
+     * 清空抓取数据（管理页调用）：删除指定星球（groupId 为空时全部星球）的话题、评论、专栏、
+     * 同步游标与已入库正文图片，保留星球列表与启用设置。
+     *
+     * <p>清空后同时重置专栏同步节流时间，下一轮同步会重新抓取专栏；图片按剩余引用过滤后删除，
+     * 多个星球共用的对象不会被误删。风控冷却与 token 状态保持不变。</p>
+     *
+     * @return 各表删除数量（topics/comments/columns/images）
+     */
+    public Map<String, Object> clearScrapedData(String groupId) {
+        ensureTables();
+        String group = groupId == null || groupId.isBlank() ? null : groupId.trim();
+        String where = group == null ? "" : " WHERE group_id = ?";
+        Object[] args = group == null ? new Object[0] : new Object[]{group};
+
+        List<String> imageKeys = new ArrayList<>();
+        for (Map<String, Object> row : jdbc.queryForList("SELECT images, cover FROM zsxq_topic" + where, args)) {
+            imageKeys.addAll(imageService.parseKeys(rowCell(row, "images")));
+            String cover = rowCell(row, "cover");
+            if (cover.startsWith(ZsxqImageService.KEY_PREFIX)) imageKeys.add(cover);
+        }
+
+        int comments = jdbc.update("DELETE FROM zsxq_comment" + where, args);
+        int columns = jdbc.update("DELETE FROM zsxq_column" + where, args);
+        int topics = jdbc.update("DELETE FROM zsxq_topic" + where, args);
+        jdbc.update("DELETE FROM zsxq_sync_state" + where, args);
+        // 清空专栏后解除全局节流，避免专栏要等 24 小时才重新入库
+        jdbc.update("DELETE FROM zsxq_job_state WHERE state_key = ?", STATE_COLUMNS_LAST_OK);
+
+        // 正文图片按剩余引用过滤：多个星球共用同一张图时不能误删
+        java.util.Set<String> retained = new java.util.HashSet<>();
+        for (Map<String, Object> row : jdbc.queryForList("SELECT images, cover FROM zsxq_topic")) {
+            retained.addAll(imageService.parseKeys(rowCell(row, "images")));
+            String cover = rowCell(row, "cover");
+            if (cover.startsWith(ZsxqImageService.KEY_PREFIX)) retained.add(cover);
+        }
+        List<String> deletable = new ArrayList<>();
+        for (String key : new java.util.LinkedHashSet<>(imageKeys)) {
+            if (!retained.contains(key)) deletable.add(key);
+        }
+        imageService.deleteKeys(deletable);
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("topics", topics);
+        result.put("comments", comments);
+        result.put("columns", columns);
+        result.put("images", deletable.size());
+        return result;
+    }
+
+    /** 读取查询行的字符串值，兼容 H2（大写列名）与 MySQL（小写列名）。 */
+    private static String rowCell(Map<String, Object> row, String name) {
+        Object value = row.containsKey(name) ? row.get(name) : row.get(name.toUpperCase(java.util.Locale.ROOT));
+        return value == null ? "" : String.valueOf(value).trim();
     }
 
     private Long getState(String key) {

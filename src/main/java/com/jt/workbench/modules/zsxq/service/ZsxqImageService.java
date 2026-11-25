@@ -1,7 +1,7 @@
 package com.jt.workbench.modules.zsxq.service;
 
-import com.zsxq.sdk.model.Image;
-import com.zsxq.sdk.model.TalkContent;
+import com.jt.workbench.modules.zsxq.client.ZsxqModels.Image;
+import com.jt.workbench.modules.zsxq.client.ZsxqModels.TalkContent;
 import io.github.jiangood.openadmin.framework.spi.FileOperator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;

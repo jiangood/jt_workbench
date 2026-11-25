@@ -9,6 +9,9 @@
 
 数据写入 `zsxq_group / zsxq_column / zsxq_topic / zsxq_comment`，游标存 `zsxq_sync_state`，运行状态存 `zsxq_job_state`。
 
+> 请求协议与模型已以源码形式内置在 `com.jt.workbench.modules.zsxq.client`，不再依赖 `zsxq-sdk`；
+> 所有 ID 按字符串解析，避免 17 位话题/评论 ID 被 `Double` 舍入。
+
 ## 一、抓取完整性
 
 ### 话题（星球主列表）
@@ -55,7 +58,7 @@
 | 降低请求量 | 专栏默认 24 小时同步一次；话题每轮头部 2 页 + 回填 1 页；图片每轮 10 条；老帖新增评论默认不补抓 |
 | 单轮预算 | 每轮最多 40 次星球接口请求（`zsxq.request-budget`），达到即结束，避免一次跑太久 |
 | 设备号稳定 | 优先用 `zsxq.device-id`（填浏览器请求头里的 `x-aduid`）；未配置时按 token 派生固定 UUID。注意 token 中 `_` 前面的部分不是 `x-aduid`，不能再当设备号 |
-| ID 精度 | 话题列表/评论/专栏直接按强类型 DTO 解析，避免 SDK 的 `Map/Double` 中转把 64 位 `topic_id` 四舍五入 |
+| ID 精度 | 话题/评论/专栏直接按强类型 DTO 解析，所有 ID 用字符串接收，避免 64 位 `topic_id` 被 `Double` 四舍五入 |
 | 避开高峰 | 作业每 3 小时一次，不并发（`ZsxqSyncJob` 显式标注 `@DisallowConcurrentExecution`） |
 
 ## 四、触发风控后的处理
@@ -83,7 +86,7 @@
     DELETE FROM zsxq_job_state WHERE state_key IN ('risk_until', 'risk_strikes');
     ```
 - **频繁触发**：先暂停作业几天，再按“`zsxq.request-budget` → `zsxq.head-pages`/`zsxq.backfill-pages` → `zsxq.page-pause-seconds`”逐项收紧，
-  并把 `zsxq.image-backfill-batch`、`zsxq.column-sync-interval-hours` 调到更低频率；仍频繁出现说明 SDK 通道已被收紧，
+  并把 `zsxq.image-backfill-batch`、`zsxq.column-sync-interval-hours` 调到更低频率；仍频繁出现说明非官方通道已被收紧，
   需要评估迁移到知识星球官方 `zsxq-cli`（`https://garden.zsxq.com/skill/`；注意：成员账号需要星主开启 Skill 权限才能读取星球内容）。
 
 ## 六、参数
@@ -93,6 +96,8 @@
 | `zsxq.token` | 空 | 知识星球网页 Cookie 中的 `zsxq_access_token`；也可写成 `<deviceId>_<accessToken>` |
 | `zsxq.device-id` | 空 | 设备号（`x-aduid`）；建议填浏览器实际值，留空时按 token 派生固定值 |
 | `zsxq.app-version` | 2.100.0 | 请求头 `x-version` / UA 使用的版本，建议与当前网页端一致 |
+| `zsxq.user-agent` | 空 | 可选；留空使用 `xiaomiquan/<app-version> SDK/1.0.0`，可填浏览器真实 UA |
+| `zsxq.cookie` | 空 | 可选；浏览器 Cookie 字符串，留空不发送 Cookie 头；包含 token，按敏感信息保管 |
 | `zsxq.head-pages` | 2 | 每轮头部增量翻页数（1～10，每页 20 条） |
 | `zsxq.backfill-pages` | 1 | 每轮历史回填翻页数（0～10，0=暂停回填） |
 | `zsxq.request-budget` | 40 | 单轮星球接口请求上限（10～500，不含图片下载） |

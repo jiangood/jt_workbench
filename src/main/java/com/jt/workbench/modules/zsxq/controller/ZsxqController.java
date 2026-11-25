@@ -7,6 +7,7 @@ import com.jt.workbench.modules.zsxq.repo.ZsxqColumnRepository;
 import com.jt.workbench.modules.zsxq.repo.ZsxqGroupRepository;
 import com.jt.workbench.modules.zsxq.repo.ZsxqTopicRepository;
 import com.jt.workbench.modules.zsxq.service.ZsxqImageService;
+import com.jt.workbench.modules.job.service.ZsxqSyncService;
 import io.github.jiangood.openadmin.framework.perm.HasPermission;
 import io.github.jiangood.openadmin.util.dto.AjaxResult;
 import io.github.jiangood.openadmin.util.dto.IdReq;
@@ -48,6 +49,9 @@ public class ZsxqController {
 
     @Autowired
     private ZsxqImageService imageService;
+
+    @Autowired
+    private ZsxqSyncService syncService;
 
     @Autowired
     private JdbcTemplate jdbc;
@@ -232,6 +236,20 @@ public class ZsxqController {
         group.setEnabled(input.getEnabled());
         groupRepository.save(group);
         return new AjaxResult().ok();
+    }
+
+    /**
+     * 管理：清空抓取数据（不传 id 时清空全部星球）。
+     *
+     * <p>删除话题、评论、专栏、正文图片并重置同步游标，保留星球列表与启用设置，
+     * 下一轮同步会重新抓取。星球不存在时返回成功。</p>
+     */
+    @HasPermission("zsxq:manage")
+    @PostMapping("clear")
+    public AjaxResult clear(@RequestBody(required = false) IdReq req) {
+        String id = req == null ? null : blankToNull(req.getId());
+        if (id != null && !groupRepository.existsById(id)) return new AjaxResult();
+        return new AjaxResult().ok().data(syncService.clearScrapedData(id));
     }
 
     /** IN 占位符串：(?,?,...) */
