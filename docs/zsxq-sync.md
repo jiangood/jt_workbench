@@ -54,7 +54,8 @@
 | 固定间隔 + 随机抖动 | 分页请求 8～10 秒、话题/评论之间 3～5 秒（固定值 + 0～2 秒随机），可用 `zsxq.page-pause-seconds` / `zsxq.topic-pause-seconds` 调整 |
 | 降低请求量 | 专栏默认 24 小时同步一次；话题每轮头部 2 页 + 回填 1 页；图片每轮 10 条；老帖新增评论默认不补抓 |
 | 单轮预算 | 每轮最多 40 次星球接口请求（`zsxq.request-budget`），达到即结束，避免一次跑太久 |
-| 设备号稳定 | 优先用 `zsxq.device-id`；其次取 token 的 `<deviceId>_` 前缀；都没有时按 token 派生固定 UUID，不会每轮随机换设备 |
+| 设备号稳定 | 优先用 `zsxq.device-id`（填浏览器请求头里的 `x-aduid`）；未配置时按 token 派生固定 UUID。注意 token 中 `_` 前面的部分不是 `x-aduid`，不能再当设备号 |
+| ID 精度 | 话题列表/评论/专栏直接按强类型 DTO 解析，避免 SDK 的 `Map/Double` 中转把 64 位 `topic_id` 四舍五入 |
 | 避开高峰 | 作业每 3 小时一次，不并发（`ZsxqSyncJob` 显式标注 `@DisallowConcurrentExecution`） |
 
 ## 四、触发风控后的处理
@@ -90,7 +91,8 @@
 | 参数 | 默认 | 说明 |
 |---|---|---|
 | `zsxq.token` | 空 | 知识星球网页 Cookie 中的 `zsxq_access_token`；也可写成 `<deviceId>_<accessToken>` |
-| `zsxq.device-id` | 空 | 设备号（`x-aduid`）；留空时自动取 token 前缀或派生固定值 |
+| `zsxq.device-id` | 空 | 设备号（`x-aduid`）；建议填浏览器实际值，留空时按 token 派生固定值 |
+| `zsxq.app-version` | 2.100.0 | 请求头 `x-version` / UA 使用的版本，建议与当前网页端一致 |
 | `zsxq.head-pages` | 2 | 每轮头部增量翻页数（1～10，每页 20 条） |
 | `zsxq.backfill-pages` | 1 | 每轮历史回填翻页数（0～10，0=暂停回填） |
 | `zsxq.request-budget` | 40 | 单轮星球接口请求上限（10～500，不含图片下载） |
