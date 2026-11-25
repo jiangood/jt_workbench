@@ -218,6 +218,70 @@
 .zsxq-post-images .zsxq-post-image:hover img { transform: scale(1.04); }
 .zsxq-post-preview-img { cursor: zoom-out; }
 
+/* 专栏完整正文：保留文章排版，图片统一自适应，长内容不截断。 */
+.zsxq-article-title {
+    margin: 18px 0 10px;
+    color: var(--oa-color-text, #1f1f1f);
+    font-size: 20px;
+    font-weight: 650;
+    line-height: 1.5;
+    word-break: break-word;
+}
+
+.zsxq-article-content {
+    margin-top: 14px;
+    color: var(--oa-color-text, #1f1f1f);
+    font-size: 16px;
+    line-height: 1.9;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+
+.zsxq-article-content > :first-child { margin-top: 0; }
+.zsxq-article-content > :last-child { margin-bottom: 0; }
+.zsxq-article-content p { margin: 0 0 1em; }
+.zsxq-article-content h1,
+.zsxq-article-content h2,
+.zsxq-article-content h3,
+.zsxq-article-content h4 { margin: 1.4em 0 .6em; line-height: 1.5; }
+.zsxq-article-content h1 { font-size: 1.5em; }
+.zsxq-article-content h2 { font-size: 1.3em; }
+.zsxq-article-content h3 { font-size: 1.15em; }
+.zsxq-article-content ul,
+.zsxq-article-content ol { margin: 0 0 1em; padding-left: 1.6em; }
+.zsxq-article-content blockquote {
+    margin: 1em 0;
+    padding: 4px 14px;
+    border-left: 3px solid rgba(235, 47, 150, .45);
+    background: var(--oa-color-fill, #f5f5f5);
+    color: var(--oa-color-text-secondary, #8c8c8c);
+}
+.zsxq-article-content a { color: #eb2f96; text-decoration: underline; }
+.zsxq-article-content a:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.zsxq-article-content img {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    margin: 14px auto;
+    border-radius: 6px;
+}
+.zsxq-article-content pre {
+    max-width: 100%;
+    padding: 12px;
+    overflow: auto;
+    border-radius: 6px;
+    background: var(--oa-color-fill, #f5f5f5);
+    white-space: pre-wrap;
+}
+.zsxq-article-content table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+}
+.zsxq-article-content th,
+.zsxq-article-content td { padding: 6px 10px; border: 1px solid var(--oa-color-border, #f0f0f0); }
+
 .zsxq-post-comments {
     margin-top: 14px;
     padding-top: 12px;

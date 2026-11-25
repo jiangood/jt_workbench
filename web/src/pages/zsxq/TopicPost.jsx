@@ -2,6 +2,7 @@ import React from 'react'
 import {Image, Switch, Tag} from 'antd'
 import {fmtTime, imageSrc, topicImages} from './media'
 import {parseZsxqText} from './richText'
+import {sanitizeArticleHtml} from './articleContent'
 
 /** 摘要超过该长度时默认折叠，避免单条帖子占满整屏 */
 const CLAMP_THRESHOLD = 600
@@ -31,7 +32,9 @@ export default class TopicPost extends React.Component {
     render() {
         const {item, comments = [], isOwner = false, meta = null} = this.props
         const {expanded, ownerCommentOnly, previewIndex} = this.state
-        const images = topicImages(item)
+        const articleHtml = sanitizeArticleHtml(item.articleContent, item.articleTitle)
+        const hasArticleContent = !!articleHtml.trim()
+        const images = hasArticleContent ? [] : topicImages(item)
         const ownerComments = comments.filter(c => c.owner)
         const shownComments = ownerCommentOnly ? ownerComments : comments
         const textParts = parseZsxqText(item.digest || '')
@@ -61,13 +64,16 @@ export default class TopicPost extends React.Component {
                 {item.lastCommentTime ? <span>最近回复 {fmtTime(item.lastCommentTime)}</span> : null}
             </div>
 
-            {text ? <>
+            {hasArticleContent ? <>
+                {item.articleTitle ? <h2 className='zsxq-article-title'>{item.articleTitle}</h2> : null}
+                <div className='zsxq-article-content' dangerouslySetInnerHTML={{__html: articleHtml}}/>
+            </> : text ? <>
                 <div className={`zsxq-post-text${longText && !expanded ? ' is-clamped' : ''}`}>{this.renderTextParts(textParts)}</div>
                 {longText ? <button type='button' className='zsxq-post-toggle' onClick={this.toggleExpanded}>
                     {expanded ? '收起' : '展开全文'}
                 </button> : null}
             </> : images.length ? null : <div className='zsxq-post-text'>
-                {sourceUrl ? '（长文章，点击「查看原文」阅读）' : '（无内容）'}
+                {item.columnId ? (sourceUrl ? '（正文待同步，可先查看原文）' : '（正文待同步）') : '（无内容）'}
             </div>}
 
             {images.length ? <div className='zsxq-post-images'>

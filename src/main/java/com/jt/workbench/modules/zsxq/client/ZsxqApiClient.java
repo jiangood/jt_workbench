@@ -100,6 +100,7 @@ public class ZsxqApiClient {
         this.timeout = Duration.ofSeconds(DEFAULT_TIMEOUT_SECONDS);
         this.http = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
+                .followRedirects(HttpClient.Redirect.NEVER)
                 .build();
         this.mapper = JsonMapper.builder()
                 .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
@@ -115,6 +116,94 @@ public class ZsxqApiClient {
     public <T> T get(String path, Map<String, Object> query, Class<T> respType) {
         return execute(path + queryString(query), respType);
     }
+
+    /**
+     * 获取专栏文章完整正文 HTML。正文页与 API 域名不同，只带 Cookie、不签名；
+     * 仅允许 HTTPS 的 articles.zsxq.com，且禁止重定向，避免把 Cookie 带到其它域名。
+     */
+    public String getArticleContent(String articleUrl) {
+        if (!isAllowedArticleUrl(articleUrl)) {
+            throw new ZsxqApiException(0, "专栏文章地址不受支持，仅允许 https://articles.zsxq.com/");
+        }
+        if (cookie.isBlank()) throw new ZsxqApiException(401, "知识星球 Cookie 为空，无法读取专栏正文");
+
+        String url = articleUrl.trim();
+        HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+                .timeout(timeout)
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                .header("Accept-Language", ACCEPT_LANGUAGE)
+                .header("User-Agent", userAgent)
+                .header("Referer", WEB_ORIGIN + "/")
+                .header("sec-fetch-dest", "document")
+                .header("sec-fetch-mode", "navigate")
+                .header("sec-fetch-site", "same-site")
+                .header("Cookie", cookieHeader())
+                .GET()
+                .build();
+        try {
+            HttpResponse<byte[]> response = http.send(request, HttpResponse.BodyHandlers.ofByteArray());
+            if (response.statusCode() >= 300 && response.statusCode() < 400) {
+                throw new ZsxqApiException(401, "专栏文章页面发生跳转，可能需重新登录知识星球");
+            }
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                throw new ZsxqApiException(response.statusCode(),
+                        "专栏文章页面请求失败（HTTP " + response.statusCode() + "）");
+            }
+            String html = bodyText(response);
+            if (html.contains("<app-root") || html.contains("<app-root>")) {
+                throw new ZsxqApiException(401, "专栏文章页面要求重新登录知识星球");
+            }
+            String content = extractArticleHtml(html);
+            if (content.isBlank()) {
+                throw new ZsxqApiException(0, "专栏文章页面未找到正文内容");
+            }
+            return content;
+        } catch (ZsxqApiException e) {
+            throw e;
+        } catch (IOException e) {
+            throw new ZsxqApiException(0, "专栏文章页面网络请求失败：" + e.getMessage());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ZsxqApiException(0, "专栏文章请求被中断");
+        }
+    }
+
+    /** 正文页地址白名单：精确域名 + HTTPS，拒绝 userinfo/非标准端口。 */
+    static boolean isAllowedArticleUrl(String articleUrl) {
+        if (articleUrl == null || articleUrl.isBlank()) return false;
+        try {
+            URI uri = URI.create(articleUrl.trim());
+            return "https".equalsIgnoreCase(uri.getScheme())
+                    && "articles.zsxq.com".equalsIgnoreCase(uri.getHost())
+                    && (uri.getPort() == -1 || uri.getPort() == 443)
+                    && uri.getUserInfo() == null;
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+    }
+
+    /** 从星球文章页提取正文容器；按 div 配对截取，避免正则在内层 div 处提前结束。 */
+    static String extractArticleHtml(String pageHtml) {
+        if (pageHtml == null || pageHtml.isBlank()) return "";
+        String html = pageHtml.replaceAll("(?s)<!--.*?-->", "");
+        java.util.regex.Matcher container = ARTICLE_CONTAINER.matcher(html);
+        if (!container.find()) return "";
+        int start = container.end();
+        int depth = 1;
+        java.util.regex.Matcher tags = ARTICLE_DIV_TAG.matcher(html);
+        tags.region(start, html.length());
+        while (tags.find()) {
+            if (tags.group(1) != null && tags.group(1).equalsIgnoreCase("/")) depth--;
+            else depth++;
+            if (depth == 0) return html.substring(start, tags.start()).trim();
+        }
+        return "";
+    }
+
+    private static final java.util.regex.Pattern ARTICLE_CONTAINER = java.util.regex.Pattern.compile(
+            "(?is)<div\\b[^>]*\\bclass\\s*=\\s*[\"'][^\"']*\\b(?:ql-editor|tiptap-preview)\\b[^\"']*[\"'][^>]*>");
+    private static final java.util.regex.Pattern ARTICLE_DIV_TAG = java.util.regex.Pattern.compile(
+            "(?is)<(/?)\\s*div\\b[^>]*>");
 
     /** 注册 1059/40001 原地重试的回调（用于任务日志），返回自身便于链式调用。 */
     public ZsxqApiClient onRetry(Consumer<String> listener) {

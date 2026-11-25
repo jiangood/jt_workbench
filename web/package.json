@@ -1,6 +1,6 @@
 {
   "name": "jt-workbench-web",
-  "version": "1.0.0",
+  "version": "2.0.73",
   "private": true,
   "scripts": {
     "dev": "vite",

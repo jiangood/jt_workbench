@@ -274,6 +274,12 @@ public final class ZsxqModels {
             return url.isEmpty() ? safeUrl(inlineArticleUrl) : url;
         }
 
+        /** 完整正文页地址：优先 inline_article_url，其次 article_url。 */
+        public String contentUrl() {
+            String url = safeUrl(inlineArticleUrl);
+            return url.isEmpty() ? safeUrl(articleUrl) : url;
+        }
+
         private static String safeUrl(String value) {
             String url = value == null ? "" : value.trim();
             if (url.isEmpty()) return "";

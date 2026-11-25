@@ -5,6 +5,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** 回归：请求签名与错误文案必须与网页端行为一致。 */
@@ -67,5 +68,38 @@ class ZsxqApiClientTest {
                 {"succeeded":false,"code":1234,"error":"参数错误","info":"end_time 格式不对","resp_data":{}}
                 """);
         assertEquals("参数错误：end_time 格式不对", ZsxqApiClient.errorMessage(root, 1234));
+    }
+
+    @Test
+    void articleUrlWhitelistRejectsOtherHostsAndInsecureSchemes() {
+        assertTrue(ZsxqApiClient.isAllowedArticleUrl("https://articles.zsxq.com/id_abc.html"));
+        assertFalse(ZsxqApiClient.isAllowedArticleUrl("http://articles.zsxq.com/id_abc.html"));
+        assertFalse(ZsxqApiClient.isAllowedArticleUrl("https://articles.zsxq.com.evil.test/id_abc.html"));
+        assertFalse(ZsxqApiClient.isAllowedArticleUrl("https://user@articles.zsxq.com/id_abc.html"));
+        assertFalse(ZsxqApiClient.isAllowedArticleUrl("https://articles.zsxq.com:8443/id_abc.html"));
+    }
+
+    @Test
+    void articleHtmlExtractionKeepsNestedMarkup() {
+        String html = """
+                <html><body>
+                <div class='content ql-editor'>
+                  <p>第一段<img src='https://images.zsxq.com/a.jpg'></p>
+                  <div><p>第二段<strong>加粗</strong></p></div>
+                </div>
+                <div class='footer'>页脚</div>
+                </body></html>
+                """;
+        String content = ZsxqApiClient.extractArticleHtml(html);
+        assertTrue(content.contains("第一段"));
+        assertTrue(content.contains("<div><p>第二段<strong>加粗</strong></p></div>"));
+        assertFalse(content.contains("页脚"));
+    }
+
+    @Test
+    void articleHtmlExtractionSupportsTiptapAndRejectsSpaShell() {
+        String html = "<div data-x='1' class=\"tiptap-preview other\"><p>正文</p></div>";
+        assertEquals("<p>正文</p>", ZsxqApiClient.extractArticleHtml(html));
+        assertEquals("", ZsxqApiClient.extractArticleHtml("<app-root></app-root>"));
     }
 }

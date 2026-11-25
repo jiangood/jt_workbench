@@ -31,7 +31,7 @@ import java.util.concurrent.locks.ReentrantLock;
  * 知识星球同步与历史回填。
  *
  * <p>{@link #syncAll} 负责每 30 分钟的头部增量；{@link #backfillAll} 负责每天 08:00 的历史回填，
- * 从游标连续翻到最早页，并补齐专栏、图片与专栏文章元数据。两个入口共享风控状态与同步游标，
+ * 从游标连续翻到最早页，并补齐专栏、图片与专栏文章完整正文。两个入口共享风控状态与同步游标，
  * 通过进程内锁互斥，避免并发执行时覆盖本轮状态。</p>
  *
  * <p>Cookie 失效或校验异常时本轮直接结束并返回提示，不再发起后续抓取，避免过期 Cookie 持续刷失败日志。</p>
@@ -54,8 +54,8 @@ public class ZsxqSyncService {
     private static final int HEAD_PAGES_DEFAULT = 2;
     private static final int IMAGE_BACKFILL_DEFAULT_BATCH = 10;
     private static final int IMAGE_BACKFILL_MAX_FAILS = 3;
-    /** 专栏文章元数据回填：默认每轮 10 条，连续失败 3 次后不再重试。 */
-    private static final int ARTICLE_BACKFILL_DEFAULT_BATCH = 10;
+    /** 专栏文章完整正文回填：默认每轮 50 条，连续失败 3 次后不再重试。 */
+    private static final int ARTICLE_BACKFILL_DEFAULT_BATCH = 50;
     private static final int ARTICLE_BACKFILL_MAX_FAILS = 3;
 
     /** 抓取间隔（反爬）：分页 8 秒、话题/评论 3 秒，再叠加 0~2 秒随机抖动。 */
@@ -449,17 +449,23 @@ public class ZsxqSyncService {
         jdbc.update("UPDATE zsxq_topic SET author = ?, author_id = ? WHERE topic_id = ?", author, authorId, tid);
     }
 
-    /** 已存在但正文为空的专栏条目：用列表/详情里拿到的标题、摘要与原文链接补齐。 */
+    /** 已存在但正文为空的专栏条目：用列表/详情里拿到的标题、摘要、正文与原文链接补齐。 */
     private void refreshTopicContentIfEmpty(String topicId, Topic t) {
         String digest = topicDigest(t);
+        String title = articleTitle(t);
         String articleUrl = articleUrlOf(t);
-        if (digest.isBlank() && articleUrl.isBlank()) return;
+        String content = articleContentOf(t);
+        if (digest.isBlank() && title.isBlank() && articleUrl.isBlank() && content.isBlank()) return;
+        long now = System.currentTimeMillis();
         jdbc.update("UPDATE zsxq_topic SET "
                         + "digest = CASE WHEN (digest IS NULL OR digest = '') AND ? <> '' THEN ? ELSE digest END, "
+                        + "article_title = CASE WHEN (article_title IS NULL OR article_title = '') AND ? <> '' THEN ? ELSE article_title END, "
                         + "article_url = CASE WHEN (article_url IS NULL OR article_url = '') AND ? <> '' THEN ? ELSE article_url END, "
-                        + "article_synced_at = COALESCE(article_synced_at, ?), update_time = ? WHERE topic_id = ?",
-                digest, digest, articleUrl, articleUrl, System.currentTimeMillis(),
-                LocalDateTime.now(), topicId);
+                        + "article_content = CASE WHEN (article_content IS NULL OR article_content = '') AND ? <> '' THEN ? ELSE article_content END, "
+                        + "article_synced_at = CASE WHEN (article_content IS NULL OR article_content = '') AND ? <> '' "
+                        + "THEN ? ELSE article_synced_at END, update_time = ? WHERE topic_id = ?",
+                digest, digest, title, title, articleUrl, articleUrl, content, content,
+                content, now, LocalDateTime.now(), topicId);
     }
 
     /**
@@ -580,71 +586,79 @@ public class ZsxqSyncService {
     }
 
     /**
-     * 回填专栏文章元数据：专栏话题列表接口只返回文章索引（无 talk 正文），
-     * 对仍为空的专栏条目逐篇调用话题详情，补齐标题/摘要、作者与原文链接。
+     * 回填专栏文章完整正文：专栏话题列表接口只返回文章索引（无 talk 正文），
+     * 先调用话题详情拿标题、摘要、作者与原文地址，再读取 articles.zsxq.com 正文页。
      *
-     * <p>每轮条数由 {@code zsxq.column-article-backfill-batch} 控制；接口不含可用信息时
+     * <p>每轮条数由 {@code zsxq.column-article-backfill-batch} 控制；正文为空时
      * 累计失败次数，连续 {@value #ARTICLE_BACKFILL_MAX_FAILS} 次后不再自动重试。</p>
      */
     private String backfillColumnArticles(ZsxqApiClient client, Logger logger,
                                           java.util.function.Consumer<String> progress) {
-        int batch = intConfig("zsxq.column-article-backfill-batch", ARTICLE_BACKFILL_DEFAULT_BATCH, 0, 50);
-        if (batch == 0) return "专栏文章回填跳过（已关闭）";
+        int batch = intConfig("zsxq.column-article-backfill-batch", ARTICLE_BACKFILL_DEFAULT_BATCH, 0, 200);
+        if (batch == 0) return "专栏正文回填跳过（已关闭）";
         List<Map<String, Object>> rows = jdbc.queryForList(
                 "SELECT topic_id FROM zsxq_topic WHERE column_id IS NOT NULL "
-                        + "AND (digest IS NULL OR digest = '') AND (article_url IS NULL OR article_url = '') "
-                        + "AND article_synced_at IS NULL AND COALESCE(article_fail_count, 0) < "
-                        + ARTICLE_BACKFILL_MAX_FAILS
+                        + "AND (article_content IS NULL OR article_content = '') "
+                        + "AND COALESCE(article_fail_count, 0) < " + ARTICLE_BACKFILL_MAX_FAILS
                         + " ORDER BY COALESCE(source_create_time, '') DESC LIMIT " + batch);
-        if (rows.isEmpty()) return "专栏文章回填跳过（没有待回填条目）";
+        if (rows.isEmpty()) return "专栏正文回填跳过（没有待回填条目）";
 
         int done = 0, failed = 0;
         for (int i = 0; i < rows.size(); i++) {
             Map<String, Object> row = rows.get(i);
             String tid = rowCell(row, "topic_id");
             if (tid.isBlank()) continue;
-            progress.accept("回填专栏文章 " + (i + 1) + "/" + rows.size());
+            progress.accept("回填专栏正文 " + (i + 1) + "/" + rows.size());
             pause(topicPauseMs);
             try {
                 Topic topic = getTopic(client, tid);
+                String title = articleTitle(topic);
                 String digest = topicDigest(topic);
                 String articleUrl = articleUrlOf(topic);
                 String author = topicAuthor(topic);
                 String authorId = topicAuthorId(topic);
-                if (digest.isBlank() && articleUrl.isBlank() && author.isBlank()) {
+                String content = articleContentOf(topic);
+                String contentUrl = articleContentUrlOf(topic);
+                if (content.isBlank() && !contentUrl.isBlank()) {
+                    pause(topicPauseMs);
+                    content = client.getArticleContent(contentUrl);
+                }
+                updateArticleContent(tid, title, digest, articleUrl, content, author, authorId);
+                if (content.isBlank()) {
                     markArticleFailed(tid);
                     failed++;
-                    logger.debug("专栏文章暂无可解析内容 topicId={}", tid);
+                    logger.debug("专栏文章暂无可解析正文 topicId={}", tid);
                     continue;
                 }
-                updateArticleContent(tid, digest, articleUrl, author, authorId);
                 markArticleSynced(tid);
                 done++;
             } catch (Exception e) {
                 if (isRiskControl(e)) throw new RiskControlException(e);
                 markArticleFailed(tid);
                 failed++;
-                logger.warn("专栏文章回填失败 topicId={} error={}", tid, e.getMessage());
+                logger.warn("专栏正文回填失败 topicId={} error={}", tid, e.getMessage());
                 if (isAuthOrFatal(e)) {
-                    logger.warn("知识星球授权/请求异常，中止本轮专栏文章回填");
+                    logger.warn("知识星球授权/请求异常，中止本轮专栏正文回填");
                     break;
                 }
             }
         }
-        return "专栏文章回填 " + done + " 条，失败 " + failed + " 条";
+        return "专栏正文回填 " + done + " 条，失败 " + failed + " 条";
     }
 
-    /** 写入专栏文章标题/原文链接，并补齐作者；空值不覆盖已有数据。 */
-    private void updateArticleContent(String topicId, String digest, String articleUrl,
-                                      String author, String authorId) {
+    /** 写入专栏文章标题、摘要、原文链接与完整正文，并补齐作者；空值不覆盖已有数据。 */
+    private void updateArticleContent(String topicId, String title, String digest, String articleUrl,
+                                      String content, String author, String authorId) {
         jdbc.update("UPDATE zsxq_topic SET "
+                        + "article_title = CASE WHEN (article_title IS NULL OR article_title = '') AND ? <> '' THEN ? ELSE article_title END, "
                         + "digest = CASE WHEN (digest IS NULL OR digest = '') AND ? <> '' THEN ? ELSE digest END, "
                         + "article_url = CASE WHEN (article_url IS NULL OR article_url = '') AND ? <> '' THEN ? ELSE article_url END, "
+                        + "article_content = CASE WHEN (article_content IS NULL OR article_content = '') AND ? <> '' THEN ? ELSE article_content END, "
                         + "author = CASE WHEN (author IS NULL OR author = '') AND ? <> '' THEN ? ELSE author END, "
                         + "author_id = CASE WHEN (author_id IS NULL OR author_id = '') AND ? <> '' THEN ? ELSE author_id END, "
                         + "update_time = ? WHERE topic_id = ?",
-                digest, digest, articleUrl, articleUrl, author, author, authorId, authorId,
-                LocalDateTime.now(), topicId);
+                title, title, digest, digest, articleUrl, articleUrl, content, content,
+                author, author, authorId, authorId, LocalDateTime.now(), topicId);
     }
 
     private void markArticleSynced(String topicId) {
@@ -958,7 +972,7 @@ public class ZsxqSyncService {
     private static boolean isAuthOrFatal(Exception e) {
         if (!(e instanceof ZsxqApiException api)) return false;
         int code = api.getCode();
-        return code == 10001 || code == 10002 || code == 10003 || code == 40001;
+        return code == 401 || code == 403 || code == 10001 || code == 10002 || code == 10003 || code == 40001;
     }
 
     /** 软删除：visible=false，保留正文与评论，只用于后续同步跳过该帖评论。 */
@@ -1070,6 +1084,21 @@ public class ZsxqSyncService {
         return article == null ? "" : safe(article.url()).trim();
     }
 
+    /** 长文章完整正文页地址（优先 inline_article_url）。 */
+    static String articleContentUrlOf(Topic t) {
+        Article article = articleOf(t);
+        return article == null ? "" : safe(article.contentUrl()).trim();
+    }
+
+    /** 长文章内嵌正文 HTML；没有时回退到话题顶层 content。 */
+    static String articleContentOf(Topic t) {
+        if (t == null) return "";
+        Article article = articleOf(t);
+        if (article == null) return "";
+        String content = safe(article.getContent()).trim();
+        return content.isEmpty() ? safe(t.getContent()).trim() : content;
+    }
+
     private static String articleTitle(Topic t) {
         Article article = articleOf(t);
         String title = article == null ? "" : safe(article.getTitle()).trim();
@@ -1122,8 +1151,10 @@ public class ZsxqSyncService {
 
     private void upsertTopic(String gid, String tid, Topic t, String columnId) {
         String digest = topicDigest(t);
+        String title = articleTitle(t);
         String articleUrl = articleUrlOf(t);
-        Long articleSyncedAt = digest.isBlank() && articleUrl.isBlank() ? null : System.currentTimeMillis();
+        String articleContent = articleContentOf(t);
+        Long articleSyncedAt = articleContent.isBlank() ? null : System.currentTimeMillis();
         TalkContent talk = t.getTalk();
 
         // 正文图片直接落对象存储，正文/封面不再依赖会过期的星球临时链接
@@ -1140,13 +1171,13 @@ public class ZsxqSyncService {
         String column = columnId == null || columnId.isBlank() ? null : columnId;
 
         jdbc.update("INSERT INTO zsxq_topic (id, topic_id, group_id, column_id, digest, comment_count, likes_count, "
-                        + "source_create_time, cover, images, image_synced_at, image_fail_count, article_url, "
-                        + "article_synced_at, article_fail_count, visible, create_time, update_time) "
-                        + "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, TRUE, ?, ? WHERE NOT EXISTS "
+                        + "source_create_time, cover, images, image_synced_at, image_fail_count, article_title, "
+                        + "article_url, article_content, article_synced_at, article_fail_count, visible, create_time, update_time) "
+                        + "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, TRUE, ?, ? WHERE NOT EXISTS "
                         + "(SELECT 1 FROM zsxq_topic WHERE topic_id = ?)",
                 UUID.randomUUID().toString().replace("-", ""), tid, gid, column, digest, comments, likes,
-                sourceTime, cover, imagesJson, imageSyncedAt, imageFailCount, articleUrl, articleSyncedAt,
-                LocalDateTime.now(), LocalDateTime.now(), tid);
+                sourceTime, cover, imagesJson, imageSyncedAt, imageFailCount, title, articleUrl, articleContent,
+                articleSyncedAt, LocalDateTime.now(), LocalDateTime.now(), tid);
 
         // 话题作者：来自话题内容的 owner（长文章可能只在话题顶层）；已有帖子也由此逐步补齐
         String author = topicAuthor(t);

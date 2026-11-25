@@ -17,7 +17,10 @@ public interface ZsxqTopicRepository extends JpaRepository<ZsxqTopic, String> {
      */
     @Query("""
             select t from ZsxqTopic t
-            where (:keyword is null or lower(coalesce(t.digest, '')) like lower(concat('%', :keyword, '%')))
+            where (:keyword is null
+                   or lower(coalesce(t.digest, '')) like lower(concat('%', :keyword, '%'))
+                   or lower(coalesce(t.articleTitle, '')) like lower(concat('%', :keyword, '%'))
+                   or lower(coalesce(t.articleContent, '')) like lower(concat('%', :keyword, '%')))
               and (:columnId is null or t.columnId = :columnId)
               and (:columnId is not null or t.columnId is null or t.columnId = '')
               and (:ownerOnly = false
