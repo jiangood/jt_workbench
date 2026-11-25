@@ -53,13 +53,13 @@
 
 | 措施 | 实现 |
 |---|---|
-| 浏览器同款请求 | Cookie `zsxq_access_token` 认证；签名 `MD5(完整 URL + " " + 秒级时间戳 + " " + x-request-id)`；带 `X-Version / X-Aduid / Origin / Referer / Accept-Language` 与 Chrome UA |
+| 浏览器同款请求 | Cookie `zsxq_access_token` 认证；签名 `SHA1(完整 URL + " " + 秒级时间戳 + " " + x-request-id)`；带 `X-Version / X-Aduid / Origin / Referer / Accept-Language / sec-ch-ua / sec-fetch-*` 与 Chrome UA |
 | 1059 原地重试 | 同一请求换 request-id 重试（默认 3 次，2/4/8 秒退避 + 抖动），仍失败才中止本轮；重试不额外占用请求预算 |
 | 复用请求 | token 校验与星球发现合并为一次 `/v2/groups`，不再额外请求 |
 | 固定间隔 + 随机抖动 | 分页请求 8～10 秒、话题/评论之间 3～5 秒（固定值 + 0～2 秒随机），可用 `zsxq.page-pause-seconds` / `zsxq.topic-pause-seconds` 调整 |
 | 降低请求量 | 专栏默认 24 小时同步一次；话题每轮头部 2 页 + 回填 1 页；图片每轮 10 条；老帖新增评论默认不补抓 |
 | 单轮预算 | 每轮最多 40 次星球接口请求（`zsxq.request-budget`），达到即结束，避免一次跑太久 |
-| 设备号稳定 | 优先用 `zsxq.device-id`（必须是标准 UUID，格式不对会自动忽略）；未配置时按 token 派生固定 UUID。注意 token 中 `_` 前面的部分不是 `x-aduid`，不能再当设备号 |
+| 设备号稳定 | 优先用 `zsxq.device-id`（填浏览器请求头里的 `x-aduid`，星球自定义 9-4-4-4-11 位或标准 UUID）；未配置/格式不对时按 token 派生固定值。注意 token 中 `_` 前面的部分不是 `x-aduid` |
 | ID 精度 | 话题/评论/专栏直接按强类型 DTO 解析，所有 ID 用字符串接收，避免 64 位 `topic_id` 被 `Double` 四舍五入 |
 | 避开高峰 | 作业每 3 小时一次，不并发（`ZsxqSyncJob` 显式标注 `@DisallowConcurrentExecution`） |
 
@@ -98,7 +98,7 @@
 | 参数 | 默认 | 说明 |
 |---|---|---|
 | `zsxq.token` | 空 | 知识星球网页 Cookie 中的 `zsxq_access_token`；实测需整串 `<deviceId>_<accessToken>`，缺前缀会 401 |
-| `zsxq.device-id` | 空 | 设备号（`x-aduid`）；须为标准 UUID（浏览器请求头里的值），格式不对会自动忽略并按 token 派生固定值 |
+| `zsxq.device-id` | 空 | 设备号（`x-aduid`）；填浏览器请求头里的值（星球自定义 9-4-4-4-11 位或标准 UUID），留空/格式不对时按 token 派生固定值 |
 | `zsxq.app-version` | 2.100.0 | 请求头 `x-version` 使用的网页端版本，建议与当前网页端一致 |
 | `zsxq.user-agent` | 空 | 可选；留空使用网页端 Chrome UA |
 | `zsxq.cookie` | 空 | 可选；额外 Cookie，留空时自动发送 `zsxq_access_token=<token>`（含 token，按敏感信息保管） |

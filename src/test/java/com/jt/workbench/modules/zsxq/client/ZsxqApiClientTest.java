@@ -5,6 +5,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** 回归：请求签名与错误文案必须与网页端行为一致。 */
 class ZsxqApiClientTest {
@@ -12,10 +13,16 @@ class ZsxqApiClientTest {
     private final JsonMapper mapper = JsonMapper.builder().build();
 
     @Test
-    void signatureMatchesBrowserMd5() {
+    void signatureMatchesBrowserSha1() {
         String url = "https://api.zsxq.com/v2/groups/48885445242158/topics?count=20&scope=all";
         String signature = ZsxqApiClient.signature(url, "1795583896", "5f0a1b2c-3d4e-4f50-8a9b-0c1d2e3f4a5b");
-        assertEquals("d00b8ad75c9aa5bcf7efa050a4a4a295", signature);
+        assertEquals("aaf00b3c83a2e096cada10165845f96ea967fece", signature);
+    }
+
+    @Test
+    void requestIdUsesWebFormat() {
+        String id = ZsxqApiClient.newZsxqId();
+        assertTrue(id.matches("^[0-9a-f]{9}(-[0-9a-f]{4}){3}-[0-9a-f]{11}$"), id);
     }
 
     @Test

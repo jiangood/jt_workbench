@@ -29,9 +29,10 @@ import java.util.regex.Pattern;
  * <p>按网页端（https://wx.zsxq.com）的真实请求方式构造：</p>
  * <ul>
  *     <li>认证走 Cookie {@code zsxq_access_token}，不发 SDK 的 {@code authorization} 头；</li>
- *     <li>签名与浏览器一致：{@code MD5(完整 URL + " " + 秒级时间戳 + " " + x-request-id)}；</li>
+ *     <li>签名与浏览器一致：{@code SHA1(完整 URL + " " + 秒级时间戳 + " " + x-request-id)}；</li>
  *     <li>请求头带 {@code x-request-id / x-version / x-timestamp / x-signature / x-aduid}，
- *         并补上浏览器的 {@code Origin / Referer / Accept / Accept-Language}。</li>
+ *         并补上浏览器的 {@code Origin / Referer / Accept-Language / sec-ch-ua / sec-fetch-*}；
+ *         {@code x-aduid} 与 {@code x-request-id} 使用星球自定义的 9-4-4-4-11 位格式。</li>
  * </ul>
  *
  * <p>知识星球对非官方通道的拦截（业务码 {@code 1059}）是**按请求随机命中**的：
@@ -44,9 +45,10 @@ public class ZsxqApiClient {
     private static final String WEB_ORIGIN = "https://wx.zsxq.com";
     private static final String DEFAULT_APP_VERSION = "2.100.0";
     private static final String DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+            + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.7977.167 Safari/537.36";
     private static final String ACCEPT = "application/json, text/plain, */*";
-    private static final String ACCEPT_LANGUAGE = "zh-CN,zh;q=0.9,en;q=0.8";
+    private static final String ACCEPT_LANGUAGE = "zh-CN";
+    private static final Pattern CHROME_VERSION = Pattern.compile("Chrome/(\\d+)");
     private static final int DEFAULT_TIMEOUT_SECONDS = 20;
     private static final int DEFAULT_TRANSPORT_RETRY = 3;
     private static final int DEFAULT_RISK_RETRY = 3;
@@ -54,8 +56,12 @@ public class ZsxqApiClient {
     private static final long MAX_RISK_RETRY_PAUSE_MS = 30_000L;
     private static final int CODE_RISK_CONTROL = 1059;
     private static final int CODE_RATE_LIMIT = 40001;
-    private static final Pattern UUID_PATTERN = Pattern.compile(
-            "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
+    /**
+     * 星球网页端的 ID 是自定义格式「9-4-4-4-11」位十六进制（不是标准 UUID），
+     * 标准 UUID（8-4-4-4-12）也兼容。
+     */
+    private static final Pattern DEVICE_ID_PATTERN = Pattern.compile(
+            "^[0-9a-fA-F]{8,9}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{11,12}$");
 
     private final String token;
     private final String deviceId;
@@ -160,11 +166,12 @@ public class ZsxqApiClient {
         }
     }
 
-    /** 按浏览器的方式构造 GET：Cookie 认证 + MD5 签名 + 网页端请求头。 */
+    /** 按浏览器的方式构造 GET：Cookie 认证 + SHA1 签名 + 网页端请求头。 */
     private HttpRequest buildGet(String requestPath) {
         String url = BASE_URL + requestPath;
         String timestamp = String.valueOf(System.currentTimeMillis() / 1000);
-        String requestId = UUID.randomUUID().toString();
+        String requestId = newZsxqId();
+        String chromeMajor = chromeMajor(userAgent);
 
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
                 .timeout(timeout)
@@ -173,6 +180,13 @@ public class ZsxqApiClient {
                 .header("User-Agent", userAgent)
                 .header("Origin", WEB_ORIGIN)
                 .header("Referer", WEB_ORIGIN + "/")
+                .header("sec-ch-ua", "\"Not?A_Brand\";v=\"24\", \"Chromium\";v=\"" + chromeMajor + "\"")
+                .header("sec-ch-ua-mobile", "?0")
+                .header("sec-ch-ua-platform", "\"Windows\"")
+                .header("sec-fetch-dest", "empty")
+                .header("sec-fetch-mode", "cors")
+                .header("sec-fetch-site", "same-site")
+                .header("priority", "u=1, i")
                 .header("x-request-id", requestId)
                 .header("x-version", appVersion)
                 .header("x-aduid", deviceId)
@@ -238,12 +252,12 @@ public class ZsxqApiClient {
         return "内部错误".equals(error) || "internal server error".equals(lower) || "error".equals(lower);
     }
 
-    /** 与网页端一致：MD5(完整 URL + " " + 秒级时间戳 + " " + x-request-id)。 */
+    /** 与网页端一致：SHA1(完整 URL + " " + 秒级时间戳 + " " + x-request-id) 的小写十六进制。 */
     static String signature(String url, String timestamp, String requestId) {
         String payload = url + " " + timestamp + " " + requestId;
         try {
-            MessageDigest md5 = MessageDigest.getInstance("MD5");
-            return HexFormat.of().formatHex(md5.digest(payload.getBytes(StandardCharsets.UTF_8)));
+            MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
+            return HexFormat.of().formatHex(sha1.digest(payload.getBytes(StandardCharsets.UTF_8)));
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("生成知识星球请求签名失败", e);
         }
@@ -295,13 +309,34 @@ public class ZsxqApiClient {
     }
 
     /**
-     * 设备号：优先用配置值（必须是浏览器里 {@code XAduid} 那样的标准 UUID）；
-     * 配置为空或格式不对时按 token 派生固定 UUID，保证多轮同步看到的是同一设备。
+     * 设备号：优先用配置值（浏览器里 {@code XAduid} 的自定义 9-4-4-4-11 格式或标准 UUID）；
+     * 配置为空或格式不对时按 token 派生固定值，保证多轮同步看到的是同一设备。
      */
     private static String normalizeDeviceId(String configured, String token) {
         String value = configured == null ? "" : configured.trim();
-        if (UUID_PATTERN.matcher(value).matches()) return value;
-        return UUID.nameUUIDFromBytes(("jt-workbench-zsxq:" + token).getBytes(StandardCharsets.UTF_8)).toString();
+        if (DEVICE_ID_PATTERN.matcher(value).matches()) return value;
+        try {
+            MessageDigest md5 = MessageDigest.getInstance("MD5");
+            byte[] digest = md5.digest(("jt-workbench-zsxq:" + token).getBytes(StandardCharsets.UTF_8));
+            return formatZsxqId(HexFormat.of().formatHex(digest));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("生成知识星球设备号失败", e);
+        }
+    }
+
+    /** 随机生成网页端同款 9-4-4-4-11 位 ID（用于 x-request-id）。 */
+    static String newZsxqId() {
+        return formatZsxqId(UUID.randomUUID().toString().replace("-", ""));
+    }
+
+    private static String formatZsxqId(String hex32) {
+        return hex32.substring(0, 9) + "-" + hex32.substring(9, 13) + "-"
+                + hex32.substring(13, 17) + "-" + hex32.substring(17, 21) + "-" + hex32.substring(21);
+    }
+
+    private static String chromeMajor(String userAgent) {
+        java.util.regex.Matcher m = CHROME_VERSION.matcher(userAgent);
+        return m.find() ? m.group(1) : "152";
     }
 
     private static String blankToDefault(String value, String def) {

@@ -23,7 +23,7 @@ public class WbConfigProvider implements ConfigProvider {
                                 .asSecret()
                                 .hint("知识星球网页端 Cookie 中的 zsxq_access_token；可写成 <deviceId>_<accessToken> 以复用登录设备号"))
                         .add(Configs.string("zsxq.device-id", "设备号（可选）")
-                                .hint("知识星球请求头里的 x-aduid；建议填浏览器实际值，留空则按 token 派生固定设备号"))
+                                .hint("浏览器请求头里的 x-aduid（星球自定义 9-4-4-4-11 位或标准 UUID）；留空则按 token 派生固定设备号"))
                         .add(Configs.string("zsxq.app-version", "App 版本号")
                                 .defaultValue("2.100.0")
                                 .hint("请求头 x-version / UA 使用的知识星球版本，建议与当前网页端一致"))

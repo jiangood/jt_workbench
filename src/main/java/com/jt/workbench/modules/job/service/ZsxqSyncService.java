@@ -17,7 +17,6 @@ import org.slf4j.Logger;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
-import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -710,7 +709,7 @@ public class ZsxqSyncService {
         long riskRetryPause = intConfig("zsxq.risk-retry-pause-seconds", RISK_RETRY_PAUSE_DEFAULT_SECONDS, 1, 60) * 1000L;
         return new ZsxqApiClient(
                 token,
-                stableDeviceId(token),
+                configuredDeviceId(),
                 appVersion(),
                 safe(configService.getString("zsxq.user-agent")),
                 safe(configService.getString("zsxq.cookie")),
@@ -729,16 +728,12 @@ public class ZsxqSyncService {
     }
 
     /**
-     * 稳定设备号：知识星球用 {@code x-aduid} 识别设备，随机设备号会被当作新设备。
+     * 设备号：优先使用系统参数里浏览器真实的 {@code x-aduid}；留空时由客户端按 token 派生固定值。
      *
-     * <p>优先用系统参数 {@code zsxq.device-id}（填浏览器请求头里的 x-aduid）；
-     * 未配置时按 token 派生固定 UUID。注意 token 里 {@code _} 前面的部分不是 x-aduid，
-     * 不能再拿它当设备号。</p>
+     * <p>注意 token 里 {@code _} 前面的部分不是 {@code x-aduid}，不能拿来当设备号。</p>
      */
-    private String stableDeviceId(String token) {
-        String configured = safe(configService.getString("zsxq.device-id")).trim();
-        if (!configured.isEmpty()) return configured;
-        return UUID.nameUUIDFromBytes(("jt-workbench-zsxq:" + token).getBytes(StandardCharsets.UTF_8)).toString();
+    private String configuredDeviceId() {
+        return safe(configService.getString("zsxq.device-id")).trim();
     }
 
     // ---------- 星球接口：强类型直连，避免 SDK 的 Map/Double 中转导致 64 位 ID 精度丢失 ----------
