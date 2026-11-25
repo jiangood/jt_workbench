@@ -10,7 +10,7 @@
     </parent>
     <groupId>com.jt</groupId>
     <artifactId>jt-workbench</artifactId>
-    <version>2.0.73</version>
+    <version>2.0.74</version>
     <name>jt-workbench</name>
     <description>个人工作台（open-admin 迁移版）：资讯/股票/笔记/音乐/书架/提醒/知识星球</description>
 
@@ -53,6 +53,12 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Spring Boot 4 的 JPA 切片测试支持独立 starter，用于仓库查询启动回归。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa-test</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>

@@ -10,17 +10,20 @@ import org.springframework.data.repository.query.Param;
 public interface ZsxqTopicRepository extends JpaRepository<ZsxqTopic, String> {
 
     /**
-     * 关键字匹配摘要，可按专栏过滤、只看星主。
+     * 关键字匹配摘要、标题和专栏正文，可按专栏过滤、只看星主。
      *
      * <p>不指定 {@code columnId} 时只返回星球话题，排除归档到专栏的文章
      * （专栏内容只在专栏页展示，避免混入主信息流）。</p>
+     *
+     * <p>正文列映射为 CLOB，需先转换为字符串再调用 {@code lower()}；
+     * 否则 Hibernate 7 会在启动校验仓库查询时因参数类型不匹配而失败。</p>
      */
     @Query("""
             select t from ZsxqTopic t
             where (:keyword is null
                    or lower(coalesce(t.digest, '')) like lower(concat('%', :keyword, '%'))
                    or lower(coalesce(t.articleTitle, '')) like lower(concat('%', :keyword, '%'))
-                   or lower(coalesce(t.articleContent, '')) like lower(concat('%', :keyword, '%')))
+                   or lower(cast(coalesce(t.articleContent, '') as string)) like lower(concat('%', :keyword, '%')))
               and (:columnId is null or t.columnId = :columnId)
               and (:columnId is not null or t.columnId is null or t.columnId = '')
               and (:ownerOnly = false
