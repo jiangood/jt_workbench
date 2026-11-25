@@ -1,5 +1,5 @@
-import {DeleteOutlined, ReloadOutlined} from '@ant-design/icons'
-import {Modal, Switch} from 'antd'
+import {ClearOutlined, DeleteOutlined, ReloadOutlined} from '@ant-design/icons'
+import {message, Modal, Switch} from 'antd'
 import React from 'react'
 import {HttpClient, Page, PermActions, ProTable} from '@jiangood/open-admin'
 
@@ -28,6 +28,25 @@ export default class ZsxqManagePage extends React.Component {
         })
     }
 
+    /** 清空抓取数据（group 为空时清空全部）：删除话题/评论/专栏/图片并重置游标，保留星球与启用设置 */
+    handleClear = (group) => {
+        const scope = group ? `星球「${group.name || group.id}」的` : '全部星球的'
+        Modal.confirm({
+            title: '清空抓取数据',
+            content: `确定清空${scope}抓取数据？将删除话题、评论、专栏与已入库正文图片，并重置同步游标；`
+                + '星球列表与启用设置保留，下一轮同步会重新抓取。此操作不可恢复。',
+            okText: '清空',
+            okButtonProps: {danger: true},
+            onOk: async () => {
+                const rs = await HttpClient.post('admin/zsxq/clear', group ? {id: group.id} : {})
+                const data = rs.data || {}
+                message.success(`已清空：话题 ${data.topics || 0} 条，评论 ${data.comments || 0} 条，`
+                    + `专栏 ${data.columns || 0} 个，图片 ${data.images || 0} 张`)
+                this.tableRef.current?.reload?.()
+            },
+        })
+    }
+
     render() {
         const columns = [
             {
@@ -43,11 +62,13 @@ export default class ZsxqManagePage extends React.Component {
                 ),
             },
             {
-                title: '操作', dataIndex: 'option', key: 'option', width: 110,
+                title: '操作', dataIndex: 'option', key: 'option', width: 140,
                 render: (_, g) => (
-                    <PermActions actions={[
+                    <PermActions more visibleCount={1} actions={[
                         {label: '删除', icon: <DeleteOutlined/>, perm: 'zsxq:manage', danger: true,
                          onClick: () => this.handleDelete(g)},
+                        {label: '清空数据', icon: <ClearOutlined/>, perm: 'zsxq:manage', danger: true,
+                         onClick: () => this.handleClear(g)},
                     ]}/>
                 ),
             },
@@ -67,6 +88,8 @@ export default class ZsxqManagePage extends React.Component {
                         <PermActions actions={[
                             {label: '刷新', type: 'default', icon: <ReloadOutlined/>, perm: 'zsxq:read',
                              onClick: () => this.tableRef.current?.reload?.()},
+                            {label: '清空全部数据', type: 'default', icon: <ClearOutlined/>, perm: 'zsxq:manage',
+                             danger: true, onClick: () => this.handleClear(null)},
                         ]}/>
                     )}
                 />
