@@ -1,7 +1,7 @@
-# 数据库为内置 H2（数据在挂载的 ./app-data）；:latest 镜像由 CI（每次 push main）与 release（tag）推送至阿里云 ACR
+# 数据库为内置 H2（数据在挂载的 ./app-data）；:latest 镜像由 ci/release 工作流（tag）推送至 GitHub Container Registry
 services:
   app:
-    image: registry.cn-hangzhou.aliyuncs.com/jiangood/jt_workbench:latest
+    image: ghcr.io/jiangood/jt_workbench:latest
     container_name: jt-workbench-app
     ports:
       - "8080:8080"

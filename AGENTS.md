@@ -8,7 +8,7 @@
 - `web/`：前端（Vite + React 19 + antd 6，`@jiangood/open-admin`/vite-plugin；页面 `web/src/pages/`）
 - `deploy/`：Docker Compose 基座（`docker-compose.yml`、`README.md`）；仓库根 `Dockerfile` 为多阶段构建（Maven + Vite + JRE）
 - `docs/`：项目文档与框架文档（`docs/open-admin/`、`docs/migration-open-admin.md`）
-- `.github/workflows/`：`ci.yml`（Docker 多阶段构建，在镜像内执行后端 `mvn verify` 与前端构建；触发：push `v*` tag / `workflow_dispatch`，tag push 时推送 `:latest`/`:sha-*` 至阿里云 ACR amd64）、`release.yml`（push `vX.Y.Z` tag 发布版本镜像与 GitHub Release）
+- `.github/workflows/`：`ci.yml`（Docker 多阶段构建，在镜像内执行后端 `mvn verify` 与前端构建；触发：push `v*` tag / `workflow_dispatch`，tag push 时推送 `:latest`/`:sha-*` 至 GitHub Container Registry amd64）、`release.yml`（push `vX.Y.Z` tag 发布版本镜像与 GitHub Release）
 - R2 bucket 为 `jt-workbench`（`zll-*` 属于另一个项目，勿混用）
 - 参考旧项目：`D:\ws\workbench`（只读）
 
@@ -32,7 +32,7 @@
 
 ## 发布与运维
 
-- `latest` 镜像：当前 **push 到 `main` 不会自动构建/推送镜像**。`ci.yml`/`release.yml` 在 push `v*` tag（或手动 `workflow_dispatch`）时执行 Docker 构建（内含后端测试/校验与前端构建）；tag push 时推送 `:latest`（及 `:sha-<commit>`/版本 tag，按工作流定义）至阿里云 ACR（仅 amd64，`provenance: false`）。
-- 版本发布：`release.yml` 在 push `vX.Y.Z` tag（或手动指定 tag）时构建并推送版本镜像（含 `:latest` 与 `:<tag>`）至阿里云 ACR，并创建 GitHub Release。
-- 部署 compose 使用 ACR 地址 `registry.cn-hangzhou.aliyuncs.com/jiangood/jt_workbench:latest`，`docker compose pull && up -d` 更新（详见 `deploy/README.md`）。
+- `latest` 镜像：当前 **push 到 `main` 不会自动构建/推送镜像**。`ci.yml`/`release.yml` 在 push `v*` tag（或手动 `workflow_dispatch`）时执行 Docker 构建（内含后端测试/校验与前端构建）；tag push 时推送 `:latest`（及 `:sha-<commit>`/版本 tag，按工作流定义）至 GitHub Container Registry（GHCR，仅 amd64，`provenance: false`）。
+- 版本发布：`release.yml` 在 push `vX.Y.Z` tag（或手动指定 tag）时构建并推送版本镜像（含 `:latest` 与 `:<tag>`）至 GHCR，并创建 GitHub Release。
+- 部署 compose 使用 GHCR 地址 `ghcr.io/jiangood/jt_workbench:latest`，`docker compose pull && up -d` 更新（包为私有时目标机需先 `docker login ghcr.io`；详见 `deploy/README.md`）。
 - **禁止直操作生产**：本地不对线上资源做写操作；线上变更走既定发布流程。

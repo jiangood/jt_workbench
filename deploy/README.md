@@ -2,9 +2,11 @@
 
 ## Spring Boot（open-admin，Docker Compose）
 
-`ci.yml` 在每次 push 到 `main` 且校验通过后自动构建并推送 `:latest`（及 `:sha-<commit>`）镜像至阿里云 ACR；`release.yml` 在 push `vX.Y.Z` tag（或手动触发）时构建并推送版本镜像至阿里云 ACR 并创建 GitHub Release。镜像地址为 `registry.cn-hangzhou.aliyuncs.com/jiangood/jt_workbench`（仅 amd64；`provenance: false` 以兼容 ACR 个人版），**本地不 docker build**；部署 compose 使用 ACR 地址拉取：
+`ci.yml` 在 push `v*` tag（或手动触发）时构建并推送 `:latest`/`:sha-<commit>` 镜像至 GitHub Container Registry（GHCR）；`release.yml` 在 push `vX.Y.Z` tag（或手动指定 tag）时构建并推送版本镜像并创建 GitHub Release。镜像地址为 `ghcr.io/jiangood/jt_workbench`（仅 amd64），**本地不 docker build**；部署 compose 使用 GHCR 地址拉取：
 
 ```bash
+# 包为私有（默认）时先登录：docker login ghcr.io -u <GitHub 用户名> -p <带 read:packages 的 PAT>
+# 也可以把包设为 public，之后无需登录
 cd deploy
 docker compose pull && docker compose up -d
 ```
