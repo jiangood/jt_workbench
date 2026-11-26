@@ -287,19 +287,49 @@ export default class NewsReaderPage extends React.Component {
             const size = data.size != null ? Number(data.size) : PAGE_SIZE
             const currentPage = data.number != null ? Number(data.number) + 1 : page
             const totalPages = data.totalPages != null ? Number(data.totalPages) : (totalElements ? Math.ceil(totalElements / size) : page)
-            const hasMore = currentPage < totalPages
+            const serverHasMore = currentPage < totalPages
             const visible = content.filter(i => !this.matchBlocks(i))
 
-            this.setState(prev => ({
-                items: replace ? visible : [...prev.items, ...visible],
-                page: currentPage,
-                hasMore,
-                loading: false,
-                initialLoading: false,
-            }), () => {
-                if (visible.length === 0 && hasMore) {
+            let newlyAdded = 0
+            this.setState(prev => {
+                const merged = replace ? visible : (() => {
+                    const seen = new Set(prev.items.map(i => i.id))
+                    const fresh = visible.filter(i => !seen.has(i.id))
+                    newlyAdded = fresh.length
+                    return [...prev.items, ...fresh]
+                })()
+                if (replace) newlyAdded = visible.length
+                const unreadInList = merged.filter(i => i.status === 'unread').length
+                const isUnreadTab = prev.tab === 'unread'
+                const nextStats = isUnreadTab ? {...prev.stats, unread: totalElements} : prev.stats
+                // 未读 tab 下自动已读会造成分页漂移；以服务端未读总数兜底，避免底部误判“已加载全部”
+                const hasMore = isUnreadTab ? (serverHasMore || unreadInList < totalElements) : serverHasMore
+                return {
+                    items: merged,
+                    page: currentPage,
+                    hasMore,
+                    loading: false,
+                    initialLoading: false,
+                    stats: nextStats,
+                }
+            }, () => {
+                if (seq !== this.loadSeq) return
+                if (visible.length === 0 && serverHasMore) {
                     this.loadMoreLock = false
                     this.loadPage(currentPage + 1, false)
+                    return
+                }
+                // 漂移补偿请求可能整页重复，若仍有未读缺口则推进到下一补偿页
+                if (this.state.tab === 'unread' && this.state.hasMore && newlyAdded === 0 && visible.length > 0) {
+                    const unreadInList = this.state.items.filter(i => i.status === 'unread').length
+                    const serverUnread = Number(this.state.stats.unread) || 0
+                    if (unreadInList < serverUnread) {
+                        const nextPage = Math.floor(unreadInList / PAGE_SIZE) + 1
+                        if (nextPage > currentPage) {
+                            this.loadMoreLock = false
+                            this.loadPage(nextPage, false)
+                        }
+                    }
                 }
             })
         } catch (_) {
@@ -310,9 +340,22 @@ export default class NewsReaderPage extends React.Component {
     }
 
     loadMore = () => {
-        const {loading, hasMore, page, initialLoading} = this.state
+        const {loading, hasMore, initialLoading, tab, items} = this.state
         if (loading || initialLoading || !hasMore) return
-        this.loadPage(page + 1, false)
+        // 未读 tab：已读项仍留在列表中但不再占用服务端未读分页，按当前未读数补偿页码
+        const nextPage = tab === 'unread'
+            ? Math.floor(items.filter(i => i.status === 'unread').length / PAGE_SIZE) + 1
+            : this.state.page + 1
+        this.loadPage(nextPage, false)
+    }
+
+    scrollToTop = () => {
+        const root = this.scrollRoot || this.feedRef.current?.closest('.oa-page')
+        if (root && typeof root.scrollTo === 'function') {
+            root.scrollTo({top: 0, behavior: 'smooth'})
+            return
+        }
+        window.scrollTo({top: 0, behavior: 'smooth'})
     }
 
     markRead = async (record, {remove = true} = {}) => {
@@ -521,6 +564,9 @@ export default class NewsReaderPage extends React.Component {
                 {loading ? <Spin size='small'/>
                     : hasMore ? <Button onClick={this.loadMore}>加载更多</Button>
                         : <span>已加载全部 {items.length} 条</span>}
+                {!loading && !hasMore && items.length > 0 ? (
+                    <Button type='link' size='small' onClick={this.scrollToTop}>回到顶部</Button>
+                ) : null}
             </div>
         </div>
     }
