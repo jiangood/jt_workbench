@@ -114,15 +114,13 @@ export default class NoteEditPage extends React.Component {
             <div className='note-edit-page'>
                     <Card
                         className='note-edit-card'
-                        title={isMobile ? title : (
+                        title={(
                             <Space>
                                 <Button type='text' icon={<ArrowLeftOutlined/>} onClick={this.handleBack} aria-label='返回笔记列表'/>
                                 <span>{title}</span>
                             </Space>
                         )}
-                        extra={isMobile ? (
-                            <Button type='primary' loading={saving} onClick={this.handleSave}>保存</Button>
-                        ) : (
+                        extra={isMobile ? null : (
                             <Space>
                                 <Button onClick={this.handleBack}>取消</Button>
                                 <Button type='primary' loading={saving} onClick={this.handleSave}>保存</Button>
@@ -130,9 +128,6 @@ export default class NoteEditPage extends React.Component {
                         )}
                     >
                         <Spin spinning={loading}>
-                            {isMobile && <div className='note-mobile-back'>
-                                <Button type='text' icon={<ArrowLeftOutlined/>} onClick={this.handleBack}>返回笔记列表</Button>
-                            </div>}
                             <Form ref={this.formRef} labelCol={{flex: '70px'}} style={{maxWidth: 900}}>
                                 <Form.Item name='id' hidden>
                                     <Input/>
@@ -144,11 +139,18 @@ export default class NoteEditPage extends React.Component {
                                     <Select allowClear placeholder='未分类' options={folderOptions}/>
                                 </Form.Item>
                                 <Form.Item label='正文' name='content'>
-                                    <Input.TextArea autoSize={{minRows: 16, maxRows: 40}} placeholder='请输入正文'/>
+                                    <Input.TextArea autoSize={isMobile ? {minRows: 12, maxRows: 40} : {minRows: 16, maxRows: 40}}
+                                                    placeholder='请输入正文'/>
                                 </Form.Item>
                             </Form>
                         </Spin>
                     </Card>
+                    {isMobile && (
+                        <div className='note-edit-actions'>
+                            <Button onClick={this.handleBack}>取消</Button>
+                            <Button type='primary' loading={saving} onClick={this.handleSave}>保存</Button>
+                        </div>
+                    )}
                 </div>
             </Page>
     }

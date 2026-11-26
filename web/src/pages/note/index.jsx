@@ -26,9 +26,20 @@ export default class NotePage extends React.Component {
 
     tableRef = React.createRef()
     folderModalRef = React.createRef()
+    mobileMediaQuery = null
+    handleMobileChange = null
 
     componentDidMount() {
+        if (typeof window.matchMedia === 'function') {
+            this.mobileMediaQuery = window.matchMedia(MOBILE_QUERY)
+            this.handleMobileChange = e => this.setState({isMobile: e.matches})
+            this.mobileMediaQuery.addEventListener('change', this.handleMobileChange)
+        }
         this.loadFolders()
+    }
+
+    componentWillUnmount() {
+        this.mobileMediaQuery?.removeEventListener('change', this.handleMobileChange)
     }
 
     loadFolders = () => {
@@ -167,7 +178,10 @@ export default class NotePage extends React.Component {
                     )}
                     toolBarRightRender={() => (
                         <PermActions actions={[
-                            {label: '新增笔记', type: 'primary', icon: <PlusOutlined/>, perm: 'note:edit', onClick: this.openAddNote},
+                            {
+                                label: isMobile ? <span className='note-sr-only'>新增笔记</span> : '新增笔记',
+                                type: 'primary', icon: <PlusOutlined/>, perm: 'note:edit', onClick: this.openAddNote,
+                            },
                         ]}/>
                     )}
                     request={(params) => HttpClient.post('admin/note/page', null, {
@@ -194,9 +208,9 @@ export default class NotePage extends React.Component {
                         {
                             title: '操作', dataIndex: 'option', width: 130, className: 'note-cell-actions',
                             render: (_, record) => (
-                                <PermActions actions={[
+                                <PermActions more={isMobile} actions={[
                                     {label: '编辑', perm: 'note:edit', onClick: () => this.openEditNote(record)},
-                                    {label: '删除', perm: 'note:edit', onClick: () => this.handleNoteDelete(record)},
+                                    {label: '删除', danger: true, perm: 'note:edit', onClick: () => this.handleNoteDelete(record)},
                                 ]}/>
                             ),
                         },
@@ -216,7 +230,7 @@ export default class NotePage extends React.Component {
             </FormModal>
 
             <Modal title='目录管理' open={folderManageOpen} onCancel={() => this.setState({folderManageOpen: false})}
-                   footer={null} width={isMobile ? 'calc(100vw - 24px)' : 520}>
+                   footer={null} rootClassName='note-folder-modal' width={isMobile ? 'calc(100vw - 24px)' : 520}>
                 <Space style={{marginBottom: 12}}>
                     <Button type='primary' size='small' icon={<FolderAddOutlined/>} perm='note:edit'
                             onClick={() => this.openAddFolder(null)}>新建根目录</Button>
@@ -226,15 +240,17 @@ export default class NotePage extends React.Component {
                     defaultExpandAll
                     treeData={this.buildFolderTree()}
                     titleRender={(node) => (
-                        <Space size={4}>
-                            <span>{node.title}</span>
-                            <Space size={0} style={{opacity: 0.85}}>
+                        <div className='note-folder-node'>
+                            <span className='note-folder-name'>{node.title}</span>
+                            <Space size={0} className='note-folder-actions'>
                                 <Button type='text' size='small' perm='note:edit' icon={<EditOutlined/>}
+                                        aria-label={`编辑目录 ${node.title}`}
                                         onClick={e => { e.stopPropagation(); this.openEditFolder(node.key) }}/>
                                 <Button type='text' size='small' danger perm='note:edit' icon={<DeleteOutlined/>}
+                                        aria-label={`删除目录 ${node.title}`}
                                         onClick={e => { e.stopPropagation(); this.handleFolderDelete(node.key) }}/>
                             </Space>
-                        </Space>
+                        </div>
                     )}
                 />
                 <Typography.Text type='secondary' style={{display: 'block', marginTop: 8}}>提示：删除目录后，其中笔记会变为未分类。</Typography.Text>

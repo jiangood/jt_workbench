@@ -12,6 +12,11 @@ export default defineConfig(({mode, command}) => {
     return {
         plugins: [react(), openAdmin()],
         base: command === 'build' ? './' : '/',
+        build: {
+            // 旧版 Android WebView / iOS Safari 不支持媒体查询范围语法（width<=768px），
+            // 指定 CSS 目标让压缩器回退为 max-width/min-width，保证移动端断点生效。
+            cssTarget: ['chrome100', 'safari15'],
+        },
         optimizeDeps: {
             entries: [
                 'index.html',
