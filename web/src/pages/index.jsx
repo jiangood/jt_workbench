@@ -19,7 +19,6 @@ import {
     BellOutlined,
     BookOutlined,
     DollarOutlined,
-    FileTextOutlined,
     FundOutlined,
     ReloadOutlined,
     StockOutlined,
@@ -410,35 +409,6 @@ export default class HomePage extends React.Component {
         );
     }
 
-    renderNoteCard() {
-        const notes = this.state.summary?.notes || {};
-        const items = notes.latest || [];
-        return (
-            <Card bordered={false} style={{height: '100%'}} bodyStyle={{padding: 18}}>
-                <CardHead icon={<FileTextOutlined style={{color: '#52c41a'}}/>} title="最近笔记" href="#/note"/>
-                {items.length ? (
-                    <div>
-                        {items.map((n) => (
-                            <a key={n.id} href={`#/note/edit?id=${encodeURIComponent(n.id)}`} style={{display: 'flex', justifyContent: 'space-between', gap: 12, padding: '10px 0', borderBottom: '1px solid #f5f5f5', color: 'inherit'}}>
-                                <div style={{minWidth: 0}}>
-                                    <div style={{fontSize: 14, color: '#222', lineHeight: 1.5}}>{n.title || '无标题'}</div>
-                                    <div style={{fontSize: 12, color: '#999', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>
-                                        {n.preview || '暂无内容'}
-                                    </div>
-                                </div>
-                                <div style={{flex: 'none', fontSize: 12, color: '#999', paddingTop: 2}}>
-                                    {fmtDateTime(n.updateTime)}
-                                </div>
-                            </a>
-                        ))}
-                    </div>
-                ) : (
-                    <EmptyHint text="还没有笔记，去记录一个想法" href="#/note/edit" action="新建笔记"/>
-                )}
-            </Card>
-        );
-    }
-
     renderZsxqCard() {
         const zsxq = this.state.summary?.zsxq || {};
         const items = zsxq.latest || [];
@@ -565,9 +535,6 @@ export default class HomePage extends React.Component {
                         </Col>
                         <Col xs={24} lg={12} xl={8}>
                             {this.renderExchangeRateCard()}
-                        </Col>
-                        <Col xs={24} lg={12} xl={8}>
-                            {this.renderNoteCard()}
                         </Col>
                         <Col xs={24} lg={12} xl={8}>
                             {this.renderZsxqCard()}
