@@ -400,13 +400,8 @@ public class BookController {
         if (cfi.length() > 4000) cfi = cfi.substring(0, 4000);
         String version = body.get("version") == null ? null : String.valueOf(body.get("version")).trim();
         Integer progress = normalizeProgress(body == null ? null : body.get("progress"));
-        long now = System.currentTimeMillis();
-        // 兼容旧版前端只传 CFI；新版同时传 progress，一次 UPDATE 保证两者一致。
-        if (progress == null) {
-            bookRepository.updatePosition(id, cfi, version, now);
-        } else {
-            bookRepository.updateReadingPosition(id, cfi, version, progress, now);
-        }
+        if (progress == null) return AjaxResult.err("进度无效");
+        bookRepository.updateReadingPosition(id, cfi, version, progress, System.currentTimeMillis());
         return new AjaxResult();
     }
 

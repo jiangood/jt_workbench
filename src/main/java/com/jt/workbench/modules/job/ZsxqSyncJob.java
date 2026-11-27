@@ -26,10 +26,6 @@ import org.slf4j.Logger;
 )
 public class ZsxqSyncJob extends BaseJob {
 
-    static final String JOB_KEY = "jt.zsxqSync";
-    static final String DEFAULT_CRON = "0 0/30 * * * ?";
-    static final String LEGACY_CRON = "0 0 0/3 * * ?";
-
     @Resource
     private ZsxqSyncService service;
 

@@ -7,7 +7,7 @@
 - `src/`：后端（`com.jt.workbench`，业务模块 `modules/*`、Quartz 作业等）；配置 `src/main/resources/application.yml`、`menu-jt.yml`
 - `web/`：前端（Vite + React 19 + antd 6，`@jiangood/open-admin`/vite-plugin；页面 `web/src/pages/`）
 - `deploy/`：Docker Compose 基座（`docker-compose.yml`、`README.md`）；仓库根 `Dockerfile` 为多阶段构建（Maven + Vite + JRE）
-- `docs/`：项目文档与框架文档（`docs/open-admin/`、`docs/migration-open-admin.md`）
+- `docs/`：项目文档与框架文档（`docs/open-admin/`、`docs/zsxq-sync.md`）
 - `.github/workflows/`：`release.yml`（Docker 多阶段构建，在镜像内执行后端 `mvn verify` 与前端构建；触发：push `v*` tag / `workflow_dispatch`，仅推送 `:latest` 至 GitHub Container Registry amd64，并创建 GitHub Release）
 - R2 bucket 为 `jt-workbench`（`zll-*` 属于另一个项目，勿混用）
 - 参考旧项目：`D:\ws\workbench`（只读）

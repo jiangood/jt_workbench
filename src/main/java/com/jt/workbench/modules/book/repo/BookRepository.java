@@ -61,15 +61,6 @@ public interface BookRepository extends JpaRepository<Book, String> {
             + "where b.id = :id and (b.status is null or b.status <> 'read')")
     int updateProgress(@Param("id") String id, @Param("progress") int progress, @Param("ts") long ts);
 
-    /** EPUB 阅读位置（CFI）与文件版本，跨设备续读；顺手把待读提升为阅读中 */
-    @Modifying(clearAutomatically = true)
-    @Transactional
-    @Query("update Book b set b.readCfi = :cfi, b.readCfiVersion = :version, b.lastReadAt = :ts, "
-            + "b.status = case when b.status = 'unread' then 'reading' else b.status end "
-            + "where b.id = :id")
-    int updatePosition(@Param("id") String id, @Param("cfi") String cfi,
-                       @Param("version") String version, @Param("ts") long ts);
-
     /** 阅读位置与进度同一次 UPDATE 落库，避免两个请求乱序导致 CFI 与百分比不一致。 */
     @Modifying(clearAutomatically = true)
     @Transactional

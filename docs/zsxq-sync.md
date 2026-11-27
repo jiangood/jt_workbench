@@ -147,8 +147,7 @@
 | `zsxq.column-sync-interval-hours` | 24 | 增量作业的专栏同步间隔（1～168 小时）；每日回填不受此间隔限制 |
 | `zsxq.risk-cooldown-minutes` | 240 | 风控冷却基数（30～720 分钟），连续触发翻倍 |
 
-> 旧版本使用 `zsxq.token`（以及更早 Node 版的 `zsxq_token`），现已移除，仅支持 Cookie；
-> 升级后请在「系统参数 → 知识星球」填写 `zsxq.cookie`。
+> 请在「系统参数 → 知识星球」填写 `zsxq.cookie`（仅支持 Cookie）。
 
 ## 八、已知限制
 

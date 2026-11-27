@@ -26,9 +26,6 @@ import org.slf4j.Logger;
 )
 public class ZsxqBackfillJob extends BaseJob {
 
-    static final String JOB_KEY = "jt.zsxqBackfill";
-    static final String DEFAULT_CRON = "0 0 8 * * ?";
-
     @Resource
     private ZsxqSyncService service;
 

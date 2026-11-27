@@ -3,7 +3,6 @@
 个人工作台：基于 [open-admin](https://github.com/jiangood/open-admin) 的 Spring Boot 应用（后端 `src/` + 前端 `web/`，内置 H2 / 可选 MySQL，对象存储走 R2 S3 兼容接口）。
 
 - 开发 / 约定：`AGENTS.md`
-- open-admin 迁移记录：`docs/migration-open-admin.md`
 - 旧系统参考（只读）：`D:\ws\workbench`
 
 ## 结构
@@ -14,7 +13,7 @@
 | `web/` | 前端（Vite + React 19 + antd 6） |
 | `deploy/` | 部署基座：`docker-compose.yml`（app 服务）与部署说明；Dockerfile 位于仓库根目录 |
 | `.github/workflows/` | 发布工作流：`release.yml`（Docker 构建校验 + GHCR 镜像发布 + GitHub Release） |
-| `docs/` | 项目与框架文档（含 `docs/open-admin/`、迁移记录） |
+| `docs/` | 项目与框架文档（`docs/open-admin/` 与业务文档） |
 
 ## 本地开发与验证
 
