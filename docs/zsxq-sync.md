@@ -65,7 +65,7 @@
 ### 附件
 
 - 话题列表/详情里的 `talk.files` 只保存**元数据**（file_id、文件名、大小、创建时间）到 `zsxq_file`，同步时不会批量下载文件内容
-- 文件下载地址需要用 `file_id` 调星球 `/v2/files/{file_id}/download_url` 换取，该接口有下载量/频率监控，因此下载按需进行：
+- 文件下载地址需要用 `file_id` 调星球 `/v2/files/{file_id}/download_url` 换取，该接口有下载量/频率监控，因此下载按需进行；鉴权走 **App 端 `authorization` token**（从 `zsxq.cookie` 中提取 `zsxq_access_token`，App 版本 `2.83.0`），因为「仅 App 可见」的附件用网页端 Cookie 请求会被拒绝，而更高版本 App UA 会命中 1059 风控：
   - 阅读页点击附件时，服务端换取地址、下载到对象存储 `zsxq-file/<file_id>_<文件名>`，再以原文件名返回给浏览器；同一文件只下载一次
   - 每日回填按 `zsxq.file-backfill-batch` 批量预下载，失败 3 次后不再自动重试（仍可手动点击重试）
   - 历史帖子没有附件清单时，每日回填按 `zsxq.file-meta-backfill-batch` 调用话题详情补齐；老帖在增量/回填翻页中重新出现时也会顺带补清单，不再额外请求
@@ -91,7 +91,7 @@
 
 | 措施 | 实现 |
 |---|---|
-| 浏览器同款请求 | Cookie `zsxq_access_token` + `abtest_env=product` 认证；签名 `SHA1(完整 URL + " " + 秒级时间戳 + " " + x-request-id)`；带 `X-Version / X-Aduid / Origin / Referer / Accept-Language / sec-ch-ua / sec-fetch-*` 与 Chrome UA；ID 用星球自定义 9-4-4-4-11 位格式 |
+| 浏览器同款请求 | Cookie `zsxq_access_token` + `abtest_env=product` 认证；签名 `SHA1(完整 URL + " " + 秒级时间戳 + " " + x-request-id)`；带 `X-Version / X-Aduid / Origin / Referer / Accept-Language / sec-ch-ua / sec-fetch-*` 与 Chrome UA；ID 用星球自定义 9-4-4-4-11 位格式（附件下载地址除外，见「附件」一节） |
 | 1059 原地重试 | 同一请求换 request-id 重试（默认 3 次，3/6/12 秒退避 + 抖动），成功后额外静默 2~3 秒；单轮累计重试上限 20 次，避免在风险窗口里靠重试放大请求量 |
 | 复用请求 | Cookie 校验与星球发现合并为一次 `/v2/groups`，不再额外请求 |
 | 固定间隔 + 随机抖动 | 分页请求 8～10 秒、话题/评论之间 3～5 秒（固定值 + 0～2 秒随机），可用 `zsxq.page-pause-seconds` / `zsxq.topic-pause-seconds` 调整 |

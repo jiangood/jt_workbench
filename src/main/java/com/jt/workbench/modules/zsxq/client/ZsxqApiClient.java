@@ -28,7 +28,9 @@ import java.util.regex.Pattern;
  *
  * <p>按网页端（https://wx.zsxq.com）的真实请求方式构造：</p>
  * <ul>
- *     <li>认证只走浏览器 Cookie（{@code zsxq_access_token} 等），不发 SDK 的 {@code authorization} 头；</li>
+ *     <li>普通接口走浏览器 Cookie（{@code zsxq_access_token} 等）；附件下载地址改用 App 端
+ *         {@code authorization} token（从 Cookie 中提取 {@code zsxq_access_token}），
+ *         因为「仅 App 可见」的附件用网页端请求会被拒绝；</li>
  *     <li>签名与浏览器一致：{@code SHA1(完整 URL + " " + 秒级时间戳 + " " + x-request-id)}；</li>
  *     <li>请求头带 {@code x-request-id / x-version / x-timestamp / x-signature / x-aduid}，
  *         并补上浏览器的 {@code Origin / Referer / Accept-Language / sec-ch-ua / sec-fetch-*}；
@@ -45,6 +47,8 @@ public class ZsxqApiClient {
     private static final String BASE_URL = "https://api.zsxq.com";
     private static final String WEB_ORIGIN = "https://wx.zsxq.com";
     private static final String DEFAULT_APP_VERSION = "2.100.0";
+    /** App 端附件下载地址接口实测可用的版本；2.100.0 会命中 1059 风控。 */
+    private static final String APP_TOKEN_VERSION = "2.83.0";
     private static final String DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.7977.167 Safari/537.36";
     private static final String ACCEPT = "application/json, text/plain, */*";
@@ -209,17 +213,59 @@ public class ZsxqApiClient {
      * 用附件 {@code file_id} 换取临时下载地址。
      *
      * <p>该接口在星球侧有下载量/频率监控，调用方需要控制节奏，不要批量并发请求。</p>
+     *
+     * <p>走 App 端 {@code authorization} token 鉴权：仅 App 可见的附件用网页端 Cookie 请求
+     * 会被拒绝（「权限不足，无权该请求」）；token 从 Cookie 中的 {@code zsxq_access_token}
+     * 提取，App 版本用实测可用的 {@value #APP_TOKEN_VERSION}（更高版本会命中 1059 风控）。</p>
      */
     public String fileDownloadUrl(String fileId) {
         String id = fileId == null ? "" : fileId.trim();
         if (id.isEmpty()) throw new ZsxqApiException(0, "知识星球附件 file_id 为空");
+        String token = accessTokenFromCookie(cookie);
+        if (token.isEmpty()) throw new ZsxqApiException(0, "zsxq.cookie 中未找到 zsxq_access_token，无法换取附件下载地址");
+
         String path = "/v2/files/" + URLEncoder.encode(id, StandardCharsets.UTF_8) + "/download_url";
-        ZsxqModels.FileDownloadUrl data = get(path, ZsxqModels.FileDownloadUrl.class);
-        String url = data == null ? "" : data.getDownloadUrl();
-        if (url == null || url.isBlank()) {
+        String url = BASE_URL + path;
+        String requestId = UUID.randomUUID().toString();
+        HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+                .timeout(timeout)
+                .header("Accept", ACCEPT)
+                .header("Accept-Language", ACCEPT_LANGUAGE)
+                .header("User-Agent", "xiaomiquan/" + APP_TOKEN_VERSION + " SDK/1.0.0")
+                .header("authorization", token)
+                .header("x-request-id", requestId)
+                .header("x-version", APP_TOKEN_VERSION)
+                .header("x-aduid", UUID.randomUUID().toString())
+                .GET()
+                .build();
+        ZsxqModels.FileDownloadUrl data;
+        try {
+            HttpResponse<byte[]> response = http.send(request, HttpResponse.BodyHandlers.ofByteArray());
+            data = parse(response, ZsxqModels.FileDownloadUrl.class);
+        } catch (java.io.IOException e) {
+            throw new ZsxqApiException(0, "知识星球附件地址网络请求失败：" + e.getMessage());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ZsxqApiException(0, "知识星球附件地址请求被中断");
+        }
+        String downloadUrl = data == null ? "" : data.getDownloadUrl();
+        if (downloadUrl == null || downloadUrl.isBlank()) {
             throw new ZsxqApiException(0, "知识星球未返回附件下载地址（file_id=" + id + "）");
         }
-        return url.trim();
+        return downloadUrl.trim();
+    }
+
+    /** 从完整 Cookie 中提取 zsxq_access_token；找不到时返回空串。 */
+    static String accessTokenFromCookie(String cookie) {
+        if (cookie == null || cookie.isBlank()) return "";
+        for (String part : cookie.split(";")) {
+            String item = part.trim();
+            int eq = item.indexOf('=');
+            if (eq > 0 && "zsxq_access_token".equals(item.substring(0, eq).trim())) {
+                return item.substring(eq + 1).trim();
+            }
+        }
+        return "";
     }
 
     /** 注册 1059/40001 原地重试的回调（用于任务日志），返回自身便于链式调用。 */

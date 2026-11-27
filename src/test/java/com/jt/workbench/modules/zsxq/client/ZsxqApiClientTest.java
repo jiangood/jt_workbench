@@ -45,6 +45,14 @@ class ZsxqApiClientTest {
     }
 
     @Test
+    void accessTokenIsExtractedFromCookie() {
+        assertEquals("tok_123", ZsxqApiClient.accessTokenFromCookie(
+                "abtest_env=product; zsxq_access_token=tok_123; zsxqsessionid=xyz"));
+        assertEquals("", ZsxqApiClient.accessTokenFromCookie("zsxqsessionid=xyz"));
+        assertEquals("", ZsxqApiClient.accessTokenFromCookie(null));
+    }
+
+    @Test
     void riskControlUsesInfoBecauseErrorIsGeneric() {
         JsonNode root = mapper.readTree("""
                 {"succeeded":false,"code":1059,"error":"内部错误",
