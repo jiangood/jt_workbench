@@ -218,6 +218,7 @@ export default class ZsxqReaderPage extends React.Component {
                                 {label: '全部', value: ''},
                                 {label: '干货', value: 'DRY'},
                                 {label: '水帖', value: 'WATER'},
+                                {label: '未标记', value: 'NONE'},
                             ]}
                             onChange={(v) => this.setState({quality: v}, () => this.reloadList(false))}
                         />
@@ -226,15 +227,14 @@ export default class ZsxqReaderPage extends React.Component {
                                     onChange={(v) => this.setState({ownerOnly: v}, () => this.reloadList(false))}/>
                             <span>只看星主</span>
                         </label>
-                        <Tooltip title='单击切换发布时间正序/倒序'>
+                        <Tooltip title={sortAsc ? '发布时间：正序' : '发布时间：倒序'}>
                             <Button className='zsxq-feed-sort'
+                                    aria-label={sortAsc ? '发布时间正序' : '发布时间倒序'}
                                     icon={sortAsc ? <ArrowUpOutlined/> : <ArrowDownOutlined/>}
                                     onClick={() => this.setState(
                                         s => ({sort: `${SORT_PROP}|${s.sort === `${SORT_PROP}|ASC` ? 'DESC' : 'ASC'}`}),
                                         () => this.reloadList(false),
-                                    )}>
-                                发布时间排序
-                            </Button>
+                                    )}/>
                         </Tooltip>
                         <Tooltip title='刷新'>
                             <Button icon={<ReloadOutlined/>} loading={loading && !initialLoading} aria-label='刷新'
