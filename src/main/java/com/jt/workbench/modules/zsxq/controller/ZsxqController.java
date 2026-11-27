@@ -161,8 +161,8 @@ public class ZsxqController {
         return new AjaxResult().ok().data(Map.of("id", topic.getId(), "quality", quality == null ? "" : quality));
     }
 
-    /** 话题转笔记请求：id 为本地话题主键，title/folderId 可在转换弹窗里调整 */
-    public record ConvertNoteReq(String id, String title, String folderId) {
+    /** 话题转笔记请求：id 为本地话题主键，title/folderId/sourceUrl 可在转换弹窗里调整 */
+    public record ConvertNoteReq(String id, String title, String folderId, String sourceUrl) {
     }
 
     /**
@@ -179,7 +179,7 @@ public class ZsxqController {
         ZsxqTopic topic = topicRepository.findById(id).orElse(null);
         if (topic == null) return AjaxResult.err("帖子不存在");
         try {
-            Note note = noteService.convert(topic, req.title(), req.folderId());
+            Note note = noteService.convert(topic, req.title(), req.folderId(), req.sourceUrl());
             return new AjaxResult().ok().data(note);
         } catch (Exception e) {
             log.error("知识星球转笔记失败 topicId={} error={}", topic.getTopicId(), e.getMessage(), e);

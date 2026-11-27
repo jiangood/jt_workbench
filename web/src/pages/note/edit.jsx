@@ -2,7 +2,7 @@ import {ArrowLeftOutlined, EyeOutlined} from '@ant-design/icons'
 import {Button, Card, Form, Input, Select, Space, Spin, message} from 'antd'
 import React from 'react'
 import {FieldEditor, FieldUploadFile, HttpClient, Page, PageUtils, history} from '@jiangood/open-admin'
-import {plainTextToHtml} from './html'
+import {plainTextToHtml, validateSourceUrl} from './html'
 import './note.css'
 
 export const pageMeta = {title: '笔记编辑'}
@@ -19,19 +19,6 @@ function readQueryParams() {
         })
     }
     return out
-}
-
-/** 原文链接：允许直接粘贴域名（后端补 https://），拒绝空白与危险协议 */
-function validateSourceUrl(_, value) {
-    const url = String(value ?? '').trim()
-    if (!url) return Promise.resolve()
-    if (/^(javascript|data|vbscript):/i.test(url)) {
-        return Promise.reject(new Error('仅支持 http(s) 链接'))
-    }
-    if (/\s/.test(url)) {
-        return Promise.reject(new Error('链接中不能包含空格'))
-    }
-    return Promise.resolve()
 }
 
 export default class NoteEditPage extends React.Component {

@@ -51,14 +51,22 @@ public class ZsxqNoteService {
     /**
      * 将话题转为笔记；同一话题重复转换时直接返回已有笔记。
      *
-     * @param titleOverride 用户可改的标题，为空时按文章标题/正文首行生成
-     * @param folderId      笔记目录，可为空（未分类）
+     * @param titleOverride    用户可改的标题，为空时按文章标题/正文首行生成
+     * @param folderId         笔记目录，可为空（未分类）
+     * @param sourceUrlOverride 用户可改的原文链接，为空时按专栏地址/话题详情自动生成
      */
-    public Note convert(ZsxqTopic topic, String titleOverride, String folderId) {
+    public Note convert(ZsxqTopic topic, String titleOverride, String folderId, String sourceUrlOverride) {
         String topicId = topic.getTopicId() == null ? "" : topic.getTopicId().trim();
+        String sourceUrl = blankToNull(sourceUrlOverride);
+        if (sourceUrl == null) sourceUrl = sourceUrl(topic);
+
         if (!topicId.isEmpty()) {
             Note existing = noteRepository.findFirstBySourceTopicId(topicId).orElse(null);
-            if (existing != null) return existing;
+            if (existing != null) {
+                // 历史转换的笔记可能还没有原文链接，重复转换时顺手补上
+                noteService.backfillSourceUrl(existing.getId(), sourceUrl);
+                return existing;
+            }
         }
 
         List<String> importedAttachments = new ArrayList<>();
@@ -74,7 +82,7 @@ public class ZsxqNoteService {
         note.setFolderId(blankToNull(folderId));
         note.setSourceType("zsxq");
         note.setSourceTopicId(topicId.isEmpty() ? null : topicId);
-        note.setSourceUrl(sourceUrl(topic));
+        note.setSourceUrl(sourceUrl);
         return noteService.create(note);
     }
 

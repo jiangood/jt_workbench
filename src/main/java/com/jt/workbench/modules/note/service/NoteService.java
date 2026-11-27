@@ -70,6 +70,15 @@ public class NoteService {
         noteRepository.delete(old);
     }
 
+    /** 转换/补登历史笔记时补原文链接：已有链接不覆盖 */
+    @Transactional
+    public void backfillSourceUrl(String id, String sourceUrl) {
+        Note note = id == null ? null : noteRepository.findById(id).orElse(null);
+        if (note == null || blankToNull(note.getSourceUrl()) != null) return;
+        note.setSourceUrl(normalizeSourceUrl(sourceUrl));
+        noteRepository.save(note);
+    }
+
     /** 填充目录名与附件展示元数据（info 接口使用） */
     public void enrich(Note note) {
         if (note == null) return;

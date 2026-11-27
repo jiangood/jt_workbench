@@ -44,6 +44,15 @@ export function fileDownloadUrl(topicId, fileId) {
     return UrlUtils.contextPath(`/admin/zsxq/file?topicId=${encodeURIComponent(t)}&fileId=${encodeURIComponent(f)}`)
 }
 
+/** 帖子原文地址：专栏长文优先 articleUrl，否则回退到星球话题详情 */
+export function topicSourceUrl(topic) {
+    const articleUrl = String(topic?.articleUrl || '').trim()
+    if (articleUrl) return articleUrl
+    const topicId = String(topic?.topicId || '').trim()
+    if (!topicId) return ''
+    return `https://wx.zsxq.com/dweb2/index/topic_detail/${encodeURIComponent(topicId)}`
+}
+
 /** 字节数 -> 可读大小 */
 export function fmtSize(bytes) {
     const n = Number(bytes)

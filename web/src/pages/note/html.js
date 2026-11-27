@@ -35,6 +35,19 @@ export function safeExternalUrl(value) {
     return ''
 }
 
+/** 原文链接表单校验：允许直接粘贴域名（后端补 https://），拒绝空白与危险协议 */
+export function validateSourceUrl(_, value) {
+    const url = String(value ?? '').trim()
+    if (!url) return Promise.resolve()
+    if (/^(javascript|data|vbscript):/i.test(url)) {
+        return Promise.reject(new Error('仅支持 http(s) 链接'))
+    }
+    if (/\s/.test(url)) {
+        return Promise.reject(new Error('链接中不能包含空格'))
+    }
+    return Promise.resolve()
+}
+
 /**
  * 笔记正文清洗：去掉脚本/内联样式，图片改走站内文件地址并补齐 context-path。
  *

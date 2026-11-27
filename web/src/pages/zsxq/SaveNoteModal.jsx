@@ -1,7 +1,9 @@
 import React from 'react'
 import {Form, Input, Modal, Select, message} from 'antd'
 import {HttpClient, history} from '@jiangood/open-admin'
+import {validateSourceUrl} from '../note/html'
 import {zsxqPlainText} from './richText'
+import {topicSourceUrl} from './media'
 
 function defaultTitle(topic) {
     const text = topic?.articleTitle || zsxqPlainText(topic?.digest || '')
@@ -31,6 +33,7 @@ export default class SaveNoteModal extends React.Component {
         this.formRef.current?.setFieldsValue({
             title: defaultTitle(this.props.topic),
             folderId: undefined,
+            sourceUrl: topicSourceUrl(this.props.topic),
         })
         if (!this.foldersLoaded) this.loadFolders()
     }
@@ -57,6 +60,7 @@ export default class SaveNoteModal extends React.Component {
                 id: topic.id,
                 title: values.title,
                 folderId: values.folderId,
+                sourceUrl: values.sourceUrl,
             })
             const note = rs.data
             this.props.onCancel?.()
@@ -99,6 +103,9 @@ export default class SaveNoteModal extends React.Component {
                 </Form.Item>
                 <Form.Item label='目录' name='folderId'>
                     <Select allowClear placeholder='未分类' options={folderOptions}/>
+                </Form.Item>
+                <Form.Item label='原文链接' name='sourceUrl' rules={[{validator: validateSourceUrl}]}>
+                    <Input placeholder='帖子原文地址' maxLength={1024} allowClear/>
                 </Form.Item>
             </Form>
             <div style={{color: 'var(--oa-color-text-secondary, #8c8c8c)', fontSize: 12, lineHeight: 1.7}}>
