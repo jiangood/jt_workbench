@@ -122,6 +122,17 @@ public class NewsController {
         return new AjaxResult();
     }
 
+    /** 批量标记已读 */
+    @HasPermission("news:read")
+    @PostMapping("read-batch")
+    public AjaxResult markReadBatch(@RequestBody java.util.List<String> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return new AjaxResult().ok().data(Map.of("updated", 0));
+        }
+        int updated = newsItemRepository.markReadByIds(ids);
+        return new AjaxResult().ok().data(Map.of("updated", updated));
+    }
+
     /** 收藏 / 取消收藏（在 fav 与 unread 之间切换） */
     @HasPermission("news:read")
     @PostMapping("{id}/fav")

@@ -38,6 +38,12 @@ public interface NewsItemRepository extends JpaRepository<NewsItem, String> {
     @Query("update NewsItem n set n.status = 'read' where n.status = 'unread'")
     int markAllRead();
 
+    /** 批量标记已读 */
+    @Modifying
+    @Transactional
+    @Query("update NewsItem n set n.status = 'read' where n.id in :ids and n.status = 'unread'")
+    int markReadByIds(@Param("ids") java.util.Collection<String> ids);
+
     /** 近 24 小时新增（pubTime 为北京墙钟，:since 同墙钟语义） */
     @Query("select count(n) from NewsItem n where n.pubTime >= :since")
     long countSince(@Param("since") java.time.LocalDateTime since);

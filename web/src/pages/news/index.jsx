@@ -31,12 +31,6 @@ export const pageMeta = {title: '资讯'}
 
 const PAGE_SIZE = 20
 
-/** 正文末尾完整可见并停留后提交自动已读，避免快速划过误标记 */
-const AUTO_READ_DWELL_MS = 800
-
-/** 兼容手机端亚像素布局，避免 1px 标记因 intersectionRatio 略小于 1 而不触发 */
-const READ_MARKER_THRESHOLD = 0.99
-
 /** 正文纯文本超过该长度时默认折叠 */
 const CLAMP_TEXT_LENGTH = 600
 
@@ -85,147 +79,11 @@ export default class NewsReaderPage extends React.Component {
 
     loadSeq = 0
     loadMoreLock = false
-    markingReadIds = new Set()
     feedRef = React.createRef()
-    scrollRoot = null
-    readMarkers = new Map()
-    readMarkerRefs = new Map()
-    readVisibleIds = new Set()
-    readTimers = new Map()
-    readObserver = null
-    readRaf = null
 
     componentDidMount() {
-        this.scrollRoot = this.feedRef.current?.closest('.oa-page') || null
-        if (typeof IntersectionObserver !== 'undefined') {
-            this.readObserver = new IntersectionObserver(this.handleReadMarkerIntersection, {
-                root: this.scrollRoot,
-                threshold: READ_MARKER_THRESHOLD,
-            })
-        }
-        this.scrollRoot?.addEventListener('scroll', this.handleScroll, {passive: true})
-        window.addEventListener('resize', this.scheduleReadCheck)
         this.loadBase()
         this.reloadList(true)
-    }
-
-    componentWillUnmount() {
-        this.readObserver?.disconnect()
-        this.scrollRoot?.removeEventListener('scroll', this.handleScroll)
-        window.removeEventListener('resize', this.scheduleReadCheck)
-        if (this.readRaf != null) cancelAnimationFrame(this.readRaf)
-        this.clearReadDwells()
-        this.readMarkers.clear()
-        this.readMarkerRefs.clear()
-    }
-
-    clearReadTimer = id => {
-        const timer = this.readTimers.get(id)
-        if (timer != null) clearTimeout(timer)
-        this.readTimers.delete(id)
-    }
-
-    stopReadDwell = id => {
-        this.readVisibleIds.delete(id)
-        this.clearReadTimer(id)
-    }
-
-    clearReadDwells = () => {
-        for (const timer of this.readTimers.values()) clearTimeout(timer)
-        this.readTimers.clear()
-        this.readVisibleIds.clear()
-    }
-
-    getReadMarkerRef = key => {
-        let ref = this.readMarkerRefs.get(key)
-        if (!ref) {
-            ref = node => this.setReadMarkerRef(key, node)
-            this.readMarkerRefs.set(key, ref)
-        }
-        return ref
-    }
-
-    setReadMarkerRef = (key, node) => {
-        const previous = this.readMarkers.get(key)
-        if (previous === node) return
-        if (previous) this.readObserver?.unobserve(previous)
-        if (node) {
-            this.readMarkers.set(key, node)
-            this.readObserver?.observe(node)
-        } else {
-            this.readMarkers.delete(key)
-            this.readMarkerRefs.delete(key)
-            this.stopReadDwell(key)
-        }
-    }
-
-    startReadDwell = id => {
-        if (this.readVisibleIds.has(id)) return
-        this.readVisibleIds.add(id)
-        this.scheduleReadCommit(id, AUTO_READ_DWELL_MS)
-    }
-
-    handleReadMarkerIntersection = entries => {
-        if (this.state.tab !== 'unread') return
-        for (const entry of entries) {
-            const id = entry.target.dataset.newsId
-            if (this.readMarkers.get(id) !== entry.target) continue
-            const item = this.state.items.find(it => String(it.id) === id)
-            const visible = item?.status === 'unread'
-                && entry.isIntersecting
-                && entry.intersectionRatio >= READ_MARKER_THRESHOLD
-            if (visible) this.startReadDwell(id)
-            else this.stopReadDwell(id)
-        }
-    }
-
-    handleScroll = () => {
-        this.scheduleReadCheck()
-    }
-
-    scheduleReadCheck = () => {
-        if (this.readRaf != null) return
-        this.readRaf = requestAnimationFrame(this.checkReadPositions)
-    }
-
-    scheduleReadCommit = (id, delay) => {
-        if (this.readTimers.has(id)) return
-        const timer = setTimeout(() => {
-            this.readTimers.delete(id)
-            this.commitRead(id)
-        }, delay)
-        this.readTimers.set(id, timer)
-    }
-
-    commitRead = id => {
-        if (!this.readVisibleIds.delete(id)) return
-        this.clearReadTimer(id)
-        const item = this.state.items.find(it => String(it.id) === id)
-        if (item?.status === 'unread') this.markRead(item, {remove: false})
-    }
-
-    isReadMarkerVisible = (marker, rootRect) => {
-        const rect = marker.getBoundingClientRect()
-        return rect.height > 0
-            && rect.top >= rootRect.top
-            && rect.bottom <= rootRect.bottom
-            && rect.left >= rootRect.left
-            && rect.right <= rootRect.right
-    }
-
-    checkReadPositions = () => {
-        this.readRaf = null
-        // 支持 IntersectionObserver 时由观察器负责可见性；下面仅作为旧浏览器回退。
-        if (this.readObserver || this.state.tab !== 'unread' || !this.scrollRoot) return
-        const rootRect = this.scrollRoot.getBoundingClientRect()
-        for (const [id, marker] of this.readMarkers) {
-            const item = this.state.items.find(it => String(it.id) === id)
-            if (item?.status === 'unread' && this.isReadMarkerVisible(marker, rootRect)) {
-                this.startReadDwell(id)
-            } else {
-                this.stopReadDwell(id)
-            }
-        }
     }
 
     loadBase = async () => {
@@ -257,7 +115,6 @@ export default class NewsReaderPage extends React.Component {
     reloadList = (initial = false) => {
         this.loadSeq += 1
         this.loadMoreLock = false
-        this.clearReadDwells()
         this.setState({
             items: [],
             page: 1,
@@ -339,50 +196,48 @@ export default class NewsReaderPage extends React.Component {
         }
     }
 
-    loadMore = () => {
+    loadMore = async () => {
         const {loading, hasMore, initialLoading, tab, items} = this.state
         if (loading || initialLoading || !hasMore) return
-        // 未读 tab：已读项仍留在列表中但不再占用服务端未读分页，按当前未读数补偿页码
-        const nextPage = tab === 'unread'
-            ? Math.floor(items.filter(i => i.status === 'unread').length / PAGE_SIZE) + 1
-            : this.state.page + 1
-        this.loadPage(nextPage, false)
+        if (tab === 'unread') {
+            const unreadIds = items.filter(i => i.status === 'unread').map(i => String(i.id))
+            if (unreadIds.length) {
+                this.setState({loading: true})
+                try {
+                    const rs = await HttpClient.post('admin/news/read-batch', unreadIds)
+                    const updated = Number(rs?.data?.updated) || 0
+                    await new Promise(resolve => this.setState(prev => {
+                        const idSet = new Set(unreadIds)
+                        const changed = prev.items.some(i => idSet.has(String(i.id)) && i.status === 'unread')
+                        if (!changed) {
+                            resolve()
+                            return null
+                        }
+                        return {
+                            items: prev.items.map(i => idSet.has(String(i.id)) && i.status === 'unread' ? {...i, status: 'read'} : i),
+                            stats: {...prev.stats, unread: Math.max(0, (Number(prev.stats.unread) || 0) - updated)},
+                        }
+                    }, resolve))
+                } catch (_) {
+                    await new Promise(resolve => this.setState({loading: false}, resolve))
+                }
+            }
+        }
+        const {tab: curTab, items: curItems, page} = this.state
+        const nextPage = curTab === 'unread'
+            ? Math.floor(curItems.filter(i => i.status === 'unread').length / PAGE_SIZE) + 1
+            : page + 1
+        await new Promise(resolve => this.setState({items: [], initialLoading: true}, resolve))
+        this.loadPage(nextPage, true)
     }
 
     scrollToTop = () => {
-        const root = this.scrollRoot || this.feedRef.current?.closest('.oa-page')
+        const root = this.feedRef.current?.closest('.oa-page')
         if (root && typeof root.scrollTo === 'function') {
             root.scrollTo({top: 0, behavior: 'smooth'})
             return
         }
         window.scrollTo({top: 0, behavior: 'smooth'})
-    }
-
-    markRead = async (record, {remove = true} = {}) => {
-        if (!record) return
-        const key = String(record.id)
-        const current = this.state.items.find(it => String(it.id) === key) || record
-        if (current.status !== 'unread') return
-        if (this.markingReadIds.has(key)) return
-        this.stopReadDwell(key)
-        this.markingReadIds.add(key)
-        try {
-            await HttpClient.post(`admin/news/${record.id}/read`, null, null, {toastError: false})
-            this.setState(prev => {
-                const cur = prev.items.find(it => String(it.id) === key)
-                if (!cur || cur.status !== 'unread') return null
-                let items
-                if (remove) items = prev.items.filter(it => String(it.id) !== key)
-                else items = prev.items.map(it => String(it.id) === key ? {...it, status: 'read'} : it)
-                return {
-                    items,
-                    stats: {...prev.stats, unread: Math.max(0, (Number(prev.stats.unread) || 0) - 1)},
-                }
-            }, () => {
-                if (remove && this.state.items.length === 0 && this.state.hasMore) this.loadMore()
-            })
-        } catch (_) {}
-        finally { this.markingReadIds.delete(key) }
     }
 
     toggleFav = async (record) => {
@@ -443,7 +298,7 @@ export default class NewsReaderPage extends React.Component {
     toggleExpanded = (key) => {
         this.setState(prev => ({
             expandedById: {...prev.expandedById, [key]: !prev.expandedById[key]},
-        }), this.scheduleReadCheck)
+        }))
     }
 
     // ---- 订阅源 ----
@@ -530,8 +385,6 @@ export default class NewsReaderPage extends React.Component {
                     ? <div className='jt-news-content' dangerouslySetInnerHTML={{__html: safe}} />
                     : <Typography.Text type='secondary'>（无正文）</Typography.Text>}
             </div>
-            {(!longText || expanded) ? <div ref={this.getReadMarkerRef(key)} data-news-id={key}
-                 className='news-post-read-marker' aria-hidden='true'/> : null}
             {longText ? <button type='button' className='news-post-toggle' onClick={() => this.toggleExpanded(key)}>
                 {expanded ? '收起' : '展开全文'}
             </button> : null}
@@ -540,9 +393,7 @@ export default class NewsReaderPage extends React.Component {
                         onClick={() => this.toggleFav(item)} aria-label={isFav ? '取消收藏' : '收藏'}>
                     {isFav ? <StarFilled/> : <StarOutlined/>}<span>{isFav ? '已收藏' : '收藏'}</span>
                 </button>
-                {isUnread
-                    ? <button type='button' className='news-post-readbtn' onClick={() => this.markRead(item, {remove: false})}>标记已读</button>
-                    : <span className='news-post-status'>{item.status === 'fav' ? '已收藏' : '已读'}</span>}
+                {!isUnread ? <span className='news-post-status'>{item.status === 'fav' ? '已收藏' : '已读'}</span> : null}
             </div>
         </article>
     }
@@ -562,7 +413,7 @@ export default class NewsReaderPage extends React.Component {
             {items.map(item => this.renderItem(item))}
             <div className='news-feed-more'>
                 {loading ? <Spin size='small'/>
-                    : hasMore ? <Button onClick={this.loadMore}>加载更多</Button>
+                    : hasMore ? <Button onClick={this.loadMore}>继续</Button>
                         : <span>已加载全部 {items.length} 条</span>}
                 {!loading && !hasMore && items.length > 0 ? (
                     <Button type='link' size='small' onClick={this.scrollToTop}>回到顶部</Button>
