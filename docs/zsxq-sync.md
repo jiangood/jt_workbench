@@ -142,7 +142,7 @@
 | `zsxq.refresh-old-comments` | false | 是否补抓老帖新增评论（会增加请求量） |
 | `zsxq.image-backfill-batch` | 10 | 每日历史回填处理的帖子数（0～500，0=关闭） |
 | `zsxq.file-backfill-batch` | 20 | 每日预下载到对象存储的附件数（0～500，0=关闭；点击下载不受限） |
-| `zsxq.file-meta-backfill-batch` | 10 | 每日补齐附件清单的历史帖子数（0～200，0=关闭） |
+| `zsxq.file-meta-backfill-batch` | 20000 | 每日补齐附件清单的历史帖子数（无上限，0=关闭；默认 20000 足以一次覆盖全库） |
 | `zsxq.column-article-backfill-batch` | 200 | 每日历史回填处理的专栏完整正文条数（0～200，0=关闭）；首次补齐存量时可保持默认一次跑完 |
 | `zsxq.column-sync-interval-hours` | 24 | 增量作业的专栏同步间隔（1～168 小时）；每日回填不受此间隔限制 |
 | `zsxq.risk-cooldown-minutes` | 240 | 风控冷却基数（30～720 分钟），连续触发翻倍 |

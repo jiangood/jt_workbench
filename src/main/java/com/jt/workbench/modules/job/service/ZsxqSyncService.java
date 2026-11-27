@@ -63,7 +63,7 @@ public class ZsxqSyncService {
     private static final int IMAGE_BACKFILL_MAX_FAILS = 3;
     /** 附件下载回填：默认每轮 20 个文件；附件清单回填：默认每轮 10 个话题。 */
     private static final int FILE_BACKFILL_DEFAULT_BATCH = 20;
-    private static final int FILE_META_BACKFILL_DEFAULT_BATCH = 10;
+    private static final int FILE_META_BACKFILL_DEFAULT_BATCH = 20000;
     private static final int FILE_BACKFILL_MAX_FAILS = 3;
     /** 专栏文章完整正文回填：默认每轮 200 条，连续失败 3 次后不再重试。 */
     private static final int ARTICLE_BACKFILL_DEFAULT_BATCH = 200;
@@ -675,7 +675,7 @@ public class ZsxqSyncService {
      */
     private String backfillFileMeta(ZsxqApiClient client, Logger logger,
                                     java.util.function.Consumer<String> progress) {
-        int batch = intConfig("zsxq.file-meta-backfill-batch", FILE_META_BACKFILL_DEFAULT_BATCH, 0, 200);
+        int batch = intConfig("zsxq.file-meta-backfill-batch", FILE_META_BACKFILL_DEFAULT_BATCH, 0, Integer.MAX_VALUE);
         if (batch == 0) return "附件清单回填跳过（已关闭）";
         List<Map<String, Object>> rows = jdbc.queryForList(
                 "SELECT topic_id, group_id FROM zsxq_topic WHERE (visible IS NULL OR visible = TRUE) "
@@ -690,7 +690,6 @@ public class ZsxqSyncService {
             String gid = rowCell(row, "group_id");
             if (tid.isBlank()) continue;
             progress.accept("回填附件清单 " + (i + 1) + "/" + rows.size());
-            pause(topicPauseMs);
             try {
                 Topic topic = getTopic(client, tid);
                 TalkContent talk = topic == null ? null : topic.getTalk();
@@ -717,6 +716,9 @@ public class ZsxqSyncService {
                     logger.warn("知识星球授权/请求异常，中止本轮附件清单回填");
                     break;
                 }
+            } finally {
+                // 下载/请求后再等待，让首个请求立即发出，同时保留每次请求之间的节流
+                pause(topicPauseMs);
             }
         }
         return "附件清单回填 " + done + " 条，失败 " + failed + " 条";
@@ -736,7 +738,6 @@ public class ZsxqSyncService {
         for (int i = 0; i < pending.size(); i++) {
             ZsxqFile file = pending.get(i);
             progress.accept("回填附件 " + (i + 1) + "/" + pending.size());
-            pause(topicPauseMs);
             try {
                 fileService.ensureStored(file);
                 done++;
@@ -749,6 +750,9 @@ public class ZsxqSyncService {
                     logger.warn("知识星球授权/请求异常，中止本轮附件下载回填");
                     break;
                 }
+            } finally {
+                // 下载后再等待，让首个请求立即发出，同时保留每次请求之间的节流
+                pause(topicPauseMs);
             }
         }
         return "附件下载回填 " + done + " 个，失败 " + failed + " 个";
