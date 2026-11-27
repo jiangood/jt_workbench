@@ -126,8 +126,12 @@ export default class BookPage extends React.Component {
         stats: {total: 0, unread: 0, reading: 0, read: 0},
         editing: null,
         uploadTarget: null,
+        uploadOpen: false,
         uploading: false,
         uploadPct: 0,
+        uploadTotal: 0,
+        uploadDone: 0,
+        uploadCurrent: '',
         doubanTarget: null,
         doubanLoading: false,
         doubanData: null,
@@ -136,6 +140,8 @@ export default class BookPage extends React.Component {
 
     loadSeq = 0
     searchTimer = null
+    uploadQueue = []
+    queueRunning = false
     modalRef = React.createRef()
 
     componentDidMount() {
@@ -291,13 +297,29 @@ export default class BookPage extends React.Component {
         history.push(`/book/read/${record.id}`)
     }
 
+    /** 打开发送 EPUB 弹窗：传 record 为更换某本书的文件，不传则为直接上传到书架 */
     openUpload = (record) => {
-        this.setState({uploadTarget: record, uploading: false, uploadPct: 0})
+        this.setState({
+            uploadTarget: record || null,
+            uploadOpen: true,
+            uploading: false,
+            uploadPct: 0,
+            uploadTotal: 0,
+            uploadDone: 0,
+            uploadCurrent: '',
+        })
     }
 
     closeUpload = () => {
         if (this.state.uploading) return
-        this.setState({uploadTarget: null, uploadPct: 0})
+        this.setState({
+            uploadOpen: false,
+            uploadTarget: null,
+            uploadPct: 0,
+            uploadTotal: 0,
+            uploadDone: 0,
+            uploadCurrent: '',
+        })
     }
 
     openDoubanSync = (record) => {
@@ -344,20 +366,71 @@ export default class BookPage extends React.Component {
         }
     }
 
-    /** EPUB 走独立上传接口（直接写对象存储，避免临时文件被清理），XHR 上报进度 */
+    /** EPUB 走独立上传接口（直接写对象存储，避免临时文件被清理），XHR 上报进度；多文件按队列顺序上传 */
     uploadEpub = ({file, onSuccess, onError}) => {
+        const name = String(file?.name || '').toLowerCase()
+        if (!name.endsWith('.epub')) {
+            message.error('仅支持 EPUB 文件')
+            onError?.(new Error('仅支持 EPUB 文件'))
+            return
+        }
+        this.uploadQueue.push({file, onSuccess, onError, bookId: this.state.uploadTarget?.id})
+        this.setState(prev => ({uploadTotal: prev.uploadTotal + 1}))
+        this.drainUploadQueue()
+    }
+
+    drainUploadQueue = async () => {
+        if (this.queueRunning) return
+        this.queueRunning = true
+        this.setState({uploading: true})
+
+        let ok = 0
+        let failed = 0
+        let firstError = ''
+
+        while (this.uploadQueue.length) {
+            const item = this.uploadQueue.shift()
+            this.setState({uploadPct: 0, uploadCurrent: item.file.name})
+            try {
+                await this.uploadOne(item.file, item.bookId, pct => this.setState({uploadPct: pct}))
+                ok++
+                item.onSuccess?.({})
+            } catch (e) {
+                failed++
+                if (!firstError) firstError = e?.message || '上传失败'
+                item.onError?.(e)
+            }
+            this.setState(prev => ({uploadDone: prev.uploadDone + 1}))
+        }
+
+        this.queueRunning = false
         const target = this.state.uploadTarget
-        if (!target) return
+        this.setState({uploading: false, uploadPct: 0, uploadCurrent: ''})
+
+        if (ok) {
+            message.success(target
+                ? 'EPUB 已上传，可以开始阅读'
+                : (ok === 1 ? '已上传 1 本书' : `已上传 ${ok} 本书`))
+            this.setState({uploadOpen: false, uploadTarget: null, uploadTotal: 0, uploadDone: 0})
+            this.reload()
+        }
+        if (failed) {
+            message.error(failed === 1 ? `上传失败：${firstError}` : `${failed} 个文件上传失败：${firstError}`)
+            if (!ok) this.setState({uploadTotal: 0, uploadDone: 0, uploadPct: 0})
+        }
+    }
+
+    uploadOne = (file, bookId, onProgress) => new Promise((resolve, reject) => {
         const form = new FormData()
         form.append('file', file)
-        form.append('bookId', target.id)
+        if (bookId) form.append('bookId', bookId)
+
         const xhr = new XMLHttpRequest()
         xhr.open('POST', UrlUtils.contextPath('/admin/book/upload'))
         xhr.withCredentials = true
-        this.setState({uploading: true, uploadPct: 0})
         xhr.upload.onprogress = e => {
             if (e.lengthComputable) {
-                this.setState({uploadPct: Math.min(100, Math.round((e.loaded / e.total) * 100))})
+                onProgress(Math.min(100, Math.round((e.loaded / e.total) * 100)))
             }
         }
         xhr.onload = () => {
@@ -367,26 +440,16 @@ export default class BookPage extends React.Component {
             } catch {
                 /* 非 JSON 响应 */
             }
-            this.setState({uploading: false})
             if (xhr.status >= 200 && xhr.status < 300 && body?.success) {
-                message.success('EPUB 已上传，可以开始阅读')
-                this.setState({uploadTarget: null, uploadPct: 0})
-                this.reload()
-                onSuccess?.(body)
+                resolve(body)
             } else {
-                const msg = body?.message || `上传失败（HTTP ${xhr.status}）`
-                message.error(msg)
-                this.setState({uploadPct: 0})
-                onError?.(new Error(msg))
+                reject(new Error(body?.message || `上传失败（HTTP ${xhr.status}）`))
             }
         }
-        xhr.onerror = () => {
-            this.setState({uploading: false, uploadPct: 0})
-            message.error('上传失败：网络异常')
-            onError?.(new Error('网络异常'))
-        }
+        xhr.onerror = () => reject(new Error('上传失败：网络异常'))
+        xhr.onabort = () => reject(new Error('上传已取消'))
         xhr.send(form)
-    }
+    })
 
     buildCardMenu(record) {
         const hasFile = !!record.r2Key
@@ -570,7 +633,11 @@ export default class BookPage extends React.Component {
                 >
                     {filtered
                         ? <Button onClick={this.clearFilters}>清除筛选</Button>
-                        : canEdit ? <Button type='primary' icon={<PlusOutlined/>} onClick={this.openAdd}>添加图书</Button> : null}
+                        : canEdit ? <Space>
+                            <Button type='primary' icon={<CloudUploadOutlined/>}
+                                    onClick={() => this.openUpload()}>上传 EPUB</Button>
+                            <Button icon={<PlusOutlined/>} onClick={this.openAdd}>添加图书</Button>
+                        </Space> : null}
                 </Empty>
             </div>
         }
@@ -664,9 +731,16 @@ export default class BookPage extends React.Component {
     }
 
     render() {
-        const {total, page, loading, editing, uploadTarget, uploading, uploadPct, stats} = this.state
+        const {total, page, loading, editing, uploadOpen, uploadTarget, uploading, uploadPct,
+            uploadTotal, uploadDone, uploadCurrent, stats} = this.state
         const start = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1
         const end = Math.min(page * PAGE_SIZE, total)
+        const overallPct = uploadTotal > 0
+            ? Math.min(100, Math.round(((uploadDone + uploadPct / 100) / uploadTotal) * 100))
+            : uploadPct
+        const uploadTitle = uploadTarget
+            ? `上传 EPUB · ${uploadTarget.title || '未命名'}`
+            : '上传 EPUB 到书架'
 
         return <Page>
             <div className='jt-book-shelf'>
@@ -679,7 +753,11 @@ export default class BookPage extends React.Component {
                             {stats.read ? ` · 已读完 ${stats.read} 本` : ''}
                         </p>
                     </div>
-                    {hasEditPerm() && <Button type='primary' icon={<PlusOutlined/>} onClick={this.openAdd}>添加图书</Button>}
+                    {hasEditPerm() && <Space>
+                        <Button type='primary' icon={<CloudUploadOutlined/>}
+                                onClick={() => this.openUpload()}>上传 EPUB</Button>
+                        <Button icon={<PlusOutlined/>} onClick={this.openAdd}>添加图书</Button>
+                    </Space>}
                 </header>
 
                 {this.renderToolbar()}
@@ -697,18 +775,35 @@ export default class BookPage extends React.Component {
                 </div>}
             </div>
 
-            <Modal open={!!uploadTarget} title={`上传 EPUB${uploadTarget?.title ? ` · ${uploadTarget.title}` : ''}`}
+            <Modal open={uploadOpen} title={uploadTitle}
                    footer={null} mask={{closable: !uploading}} closable={!uploading}
                    onCancel={this.closeUpload} destroyOnHidden>
-                <Upload.Dragger accept='.epub' showUploadList={false} disabled={uploading}
+                <Upload.Dragger accept='.epub' multiple={!uploadTarget} showUploadList={false} disabled={uploading}
                                 customRequest={this.uploadEpub}>
                     <p className='ant-upload-drag-icon'><InboxOutlined/></p>
-                    <p className='ant-upload-text'>点击或拖拽 EPUB 文件到此处</p>
+                    <p className='ant-upload-text'>
+                        {uploadTarget ? '点击或拖拽 EPUB 文件到此处' : '点击或拖拽 EPUB 文件到此处，可一次选择多个'}
+                    </p>
                     <p className='ant-upload-hint'>
-                        仅支持 .epub；上传后覆盖原有文件，会重新开始记录阅读位置
+                        {uploadTarget
+                            ? '仅支持 .epub；上传后覆盖原有文件，会重新开始记录阅读位置'
+                            : '仅支持 .epub；上传后自动创建书目，并自动读取书名 / 作者 / 出版社等信息'}
                     </p>
                 </Upload.Dragger>
-                {uploading && <Progress percent={uploadPct} size='small' style={{marginTop: 16}}/>}
+                {uploading && <>
+                    <Progress percent={overallPct} size='small' style={{marginTop: 16}}/>
+                    <div style={{
+                        marginTop: 6,
+                        fontSize: 12,
+                        color: 'var(--oa-color-text-secondary, #888)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                    }}>
+                        {uploadTotal > 1 ? `正在上传 ${Math.min(uploadDone + 1, uploadTotal)}/${uploadTotal}：` : '正在上传：'}
+                        {uploadCurrent}
+                    </div>
+                </>}
             </Modal>
 
             <FormModal ref={this.modalRef} title={editing ? '编辑图书' : '添加图书'}

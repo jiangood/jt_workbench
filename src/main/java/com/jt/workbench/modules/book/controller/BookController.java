@@ -221,7 +221,10 @@ public class BookController {
 
     // ---------- EPUB 文件：上传 / 在线阅读 ----------
 
-    /** EPUB 上传 / 更换文件：直接写对象存储（不建 sys_file 行，避免临时文件清理误删），key 沿用旧约定 book/{uuid}/{filename} */
+    /**
+     * EPUB 上传 / 更换文件：直接写对象存储（不建 sys_file 行，避免临时文件清理误删），key 沿用旧约定 book/{uuid}/{filename}。
+     * 不传 bookId 时为「直接上传」，自动创建书目并从 EPUB 元数据补全书名/作者等信息。
+     */
     @HasPermission("book:edit")
     @PostMapping("upload")
     public AjaxResult upload(@RequestParam(value = "file", required = false) MultipartFile file,
@@ -247,6 +250,12 @@ public class BookController {
         if (book == null) {
             book = new Book();
             book.setTitle(titleFromFilename(filename));
+            // 直接上传（未指定书籍）：尝试从 EPUB 元数据读取书名/作者等信息，失败则保留文件名
+            try (InputStream metaIn = file.getInputStream()) {
+                bookEpubService.fillMetadataFromEpub(book, metaIn);
+            } catch (IOException ignored) {
+                // 元数据读取失败不阻塞上传
+            }
             book.setStatus("unread");
             book.setProgress(0);
         }

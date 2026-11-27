@@ -2,6 +2,7 @@ package com.jt.workbench.modules.book.service;
 
 import com.jt.workbench.modules.book.entity.Book;
 import com.jt.workbench.modules.book.repo.BookRepository;
+import io.documentnode.epub4j.domain.Metadata;
 import io.documentnode.epub4j.domain.Resource;
 import io.documentnode.epub4j.domain.Spine;
 import io.documentnode.epub4j.domain.SpineReference;
@@ -19,9 +20,15 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -131,6 +138,134 @@ public class BookEpubService {
 
         log.info("已删除 EPUB 内容节 bookId={} target={} size {} -> {}", bookId, removedLabel, original.length, modified.length);
         return saved;
+    }
+
+    /**
+     * 从 EPUB 元数据中补全书名 / 作者 / 出版社 / 简介 / ISBN / 出版时间。
+     * 用于书架「直接上传」时自动建档；解析失败只记录日志，不影响文件上传。
+     */
+    public void fillMetadataFromEpub(Book book, InputStream input) {
+        if (book == null || input == null) return;
+        Path temp = null;
+        try {
+            temp = Files.createTempFile("book-meta-", ".epub");
+            Files.copy(input, temp, StandardCopyOption.REPLACE_EXISTING);
+            io.documentnode.epub4j.domain.Book epub;
+            // 懒加载只解析 OPF 元数据，不把整本书的资源读进内存
+            try (net.lingala.zip4j.ZipFile zip = new net.lingala.zip4j.ZipFile(temp.toFile())) {
+                epub = new EpubReader().readEpubLazy(zip, "UTF-8");
+            }
+            Metadata metadata = epub == null ? null : epub.getMetadata();
+            if (metadata == null) return;
+
+            String title = firstText(metadata.getTitles());
+            if (title != null) book.setTitle(title);
+
+            if (metadata.getAuthors() != null) {
+                String authors = metadata.getAuthors().stream()
+                        .map(BookEpubService::authorName)
+                        .filter(name -> name != null && !name.isEmpty())
+                        .distinct()
+                        .collect(Collectors.joining(" / "));
+                if (!authors.isEmpty()) book.setAuthor(authors);
+            }
+
+            String publisher = firstText(metadata.getPublishers());
+            if (publisher != null) book.setPublisher(publisher);
+
+            String summary = htmlToText(firstText(metadata.getDescriptions()));
+            if (summary != null) book.setSummary(summary);
+
+            String isbn = findIsbn(metadata);
+            if (isbn != null) book.setIsbn(isbn);
+
+            String pubYear = findPubYear(metadata);
+            if (pubYear != null) book.setPubYear(pubYear);
+        } catch (Exception e) {
+            log.warn("解析 EPUB 元数据失败，书名回退为文件名：{}", rootMessage(e));
+        } finally {
+            if (temp != null) {
+                try {
+                    Files.deleteIfExists(temp);
+                } catch (Exception ignored) {
+                    // 临时文件清理失败不影响上传结果
+                }
+            }
+        }
+    }
+
+    private static String firstText(List<String> values) {
+        if (values == null) return null;
+        for (String value : values) {
+            if (value != null && !value.isBlank()) return value.trim();
+        }
+        return null;
+    }
+
+    /** epub4j 的 Author.toString() 会拼出「姓, 名」并带多余逗号，这里只取有效姓名 */
+    private static String authorName(io.documentnode.epub4j.domain.Author author) {
+        if (author == null) return null;
+        String first = blankToNull(author.getFirstname());
+        String last = blankToNull(author.getLastname());
+        if (first != null && last != null) return last + " " + first;
+        return first != null ? first : last;
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    /** 简介在 EPUB 里常带 HTML 标签，书架按纯文本展示，这里做一次轻量清洗 */
+    private static String htmlToText(String html) {
+        if (html == null) return null;
+        String text = html.replaceAll("(?is)<(script|style)[^>]*>.*?</\\1>", " ")
+                .replaceAll("<[^>]+>", " ")
+                .replace("&nbsp;", " ")
+                .replace("&amp;", "&")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&#39;", "'")
+                .replaceAll("\\s+", " ")
+                .trim();
+        if (text.isEmpty()) return null;
+        return text.length() > 5000 ? text.substring(0, 5000) : text;
+    }
+
+    private static String findIsbn(Metadata metadata) {
+        if (metadata.getIdentifiers() == null) return null;
+        for (var identifier : metadata.getIdentifiers()) {
+            if (identifier == null || identifier.getValue() == null) continue;
+            String scheme = identifier.getScheme() == null ? "" : identifier.getScheme().toLowerCase();
+            String compact = identifier.getValue().replaceAll("[\\s-]", "");
+            if (scheme.contains("isbn") || compact.matches("(?i)((97[89])?\\d{9}[\\dX])")) {
+                return identifier.getValue().trim();
+            }
+        }
+        return null;
+    }
+
+    private static String findPubYear(Metadata metadata) {
+        if (metadata.getDates() == null) return null;
+        Pattern pattern = Pattern.compile("(\\d{4})(?:[-/](\\d{1,2}))?");
+        for (var date : metadata.getDates()) {
+            if (date == null || date.getValue() == null) continue;
+            Matcher matcher = pattern.matcher(date.getValue());
+            if (!matcher.find()) continue;
+            String year = matcher.group(1);
+            if (matcher.group(2) != null) {
+                try {
+                    int month = Integer.parseInt(matcher.group(2));
+                    if (month >= 1 && month <= 12) {
+                        return year + "-" + String.format("%02d", month);
+                    }
+                } catch (NumberFormatException ignored) {
+                    // 非法月份，仅保留年份
+                }
+            }
+            return year;
+        }
+        return null;
     }
 
     private byte[] download(String key) {
