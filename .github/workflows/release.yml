@@ -1,7 +1,7 @@
 name: release
 
 # push vX.Y.Z tag 自动发布；也可通过 workflow_dispatch 指定 tag 手动触发。
-# 构建并推送 GHCR 最新镜像，目标机 docker compose pull && docker compose up -d 手动部署。
+# 构建并推送 GHCR 最新镜像，目标机由 Watchtower 监控 :latest 自动更新。
 on:
   push:
     tags:
