@@ -9,6 +9,7 @@ import com.jt.workbench.modules.note.repo.NoteRepository;
 import com.jt.workbench.modules.note.util.NoteHtml;
 import io.github.jiangood.openadmin.modules.system.entity.SysFile;
 import io.github.jiangood.openadmin.modules.system.service.SysFileService;
+import io.github.jiangood.openadmin.util.BusinessException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -50,6 +51,7 @@ public class NoteService {
         old.setFolderId(blankToNull(input.getFolderId()));
         old.setContentHtml(input.getContentHtml());
         old.setAttachments(cleanAttachments(input.getAttachments()));
+        old.setSourceUrl(input.getSourceUrl());
         if (input.getReadState() != null) old.setReadState(input.getReadState());
         if (input.getCategory() != null) old.setCategory(input.getCategory());
         normalize(old);
@@ -93,7 +95,7 @@ public class NoteService {
     public NoteListItem toListItem(Note note) {
         return new NoteListItem(note.getId(), note.getTitle(), note.getFolderId(), note.getContent(),
                 note.getReadState(), note.getCategory(), note.getUpdateTime(),
-                splitObjectNames(note.getAttachments()).size());
+                splitObjectNames(note.getAttachments()).size(), note.getSourceUrl());
     }
 
     /** 富文本为主；兼容历史纯文本笔记，保存后纯文本字段始终由富文本派生 */
@@ -106,6 +108,24 @@ public class NoteService {
         note.setContentHtml(html);
         note.setContent(NoteHtml.toPlainText(html));
         note.setAttachments(cleanAttachments(note.getAttachments()));
+        note.setSourceUrl(normalizeSourceUrl(note.getSourceUrl()));
+    }
+
+    /**
+     * 原文链接：允许用户直接粘贴域名（补 https://），只保留 http(s)，避免 javascript: 等危险协议。
+     */
+    private static String normalizeSourceUrl(String value) {
+        String url = blankToNull(value);
+        if (url == null) return null;
+        url = url.replaceAll("[\\s\\p{Cntrl}]", "");
+        if (url.isEmpty()) return null;
+        if (url.startsWith("//")) {
+            url = "https:" + url;
+        } else if (!url.matches("(?i)^https?://.*")) {
+            url = "https://" + url;
+        }
+        if (url.length() > 1024) throw new BusinessException("原文链接过长");
+        return url;
     }
 
     private static String cleanAttachments(String value) {

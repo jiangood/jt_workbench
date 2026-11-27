@@ -1,6 +1,7 @@
 import React from 'react'
 import {DownloadOutlined, FileTextOutlined, PaperClipOutlined} from '@ant-design/icons'
-import {Button, Image, Switch, Tag} from 'antd'
+import {Button, Dropdown, Image, Switch, Tag} from 'antd'
+import {HttpClient} from '@jiangood/open-admin'
 import {fileDownloadUrl, fmtSize, fmtTime, imageSrc, topicImages} from './media'
 import {parseZsxqText} from './richText'
 import {sanitizeArticleHtml} from './articleContent'
@@ -26,6 +27,13 @@ export default class TopicPost extends React.Component {
     toggleCommentsExpanded = () => this.setState(prev => ({commentsExpanded: !prev.commentsExpanded}))
 
     togglePreview = (index, open) => this.setState({previewIndex: open ? index : -1})
+
+    setQuality = async (quality) => {
+        const {item, onQualityChange} = this.props
+        const rs = await HttpClient.post('admin/zsxq/quality', {id: item.id, quality: quality || ''})
+        const next = rs?.data?.quality ?? (quality || '')
+        if (onQualityChange) onQualityChange(item.id, next || null)
+    }
 
     renderTextParts = (parts) => parts.map((part, index) => part.href
         ? <a key={index} className='zsxq-rich-link' href={part.href} target='_blank' rel='noreferrer'>
@@ -71,6 +79,8 @@ export default class TopicPost extends React.Component {
                 <div className='zsxq-post-author'>
                     <span>{item.author || '匿名'}</span>
                     {markedIsOwner ? <Tag color='magenta' bordered={false}>星主</Tag> : null}
+                    {item.quality === 'DRY' ? <Tag color='gold' bordered={false}>干货</Tag> : null}
+                    {item.quality === 'WATER' ? <Tag bordered={false}>水帖</Tag> : null}
                 </div>
                 <span className='zsxq-post-time'>{fmtTime(item.sourceCreateTime)}</span>
             </div>
@@ -82,6 +92,18 @@ export default class TopicPost extends React.Component {
                 {Number(item.likesCount) > 0 ? <span>赞 {item.likesCount}</span> : null}
                 {Number(item.commentCount) > 0 ? <span>评论 {item.commentCount}</span> : null}
                 {item.lastCommentTime ? <span>最近回复 {fmtTime(item.lastCommentTime)}</span> : null}
+                <Dropdown
+                    menu={{
+                        items: [
+                            {key: 'DRY', label: '干货帖'},
+                            {key: 'WATER', label: '水帖'},
+                            ...(item.quality ? [{type: 'divider'}, {key: 'CLEAR', label: '清除标识'}] : []),
+                        ],
+                        onClick: ({key}) => this.setQuality(key === 'CLEAR' ? '' : key),
+                    }}
+                >
+                    <Button className='zsxq-post-note' type='link' size='small' perm='zsxq:manage'>标识</Button>
+                </Dropdown>
                 <Button className='zsxq-post-note' type='link' size='small'
                         icon={<FileTextOutlined/>} perm='note:edit'
                         onClick={() => this.setState({noteModalOpen: true})}>转为笔记</Button>

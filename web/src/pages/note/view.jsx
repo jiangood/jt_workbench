@@ -2,7 +2,7 @@ import {ArrowLeftOutlined, DownloadOutlined, EditOutlined, PaperClipOutlined} fr
 import {Button, Card, Empty, Space, Spin, Tag, Typography, message} from 'antd'
 import React from 'react'
 import {HttpClient, Page, PageUtils, UrlUtils, history} from '@jiangood/open-admin'
-import {isEmptyHtml, sanitizeNoteHtml} from './html'
+import {isEmptyHtml, safeExternalUrl, sanitizeNoteHtml} from './html'
 import './note.css'
 
 export const pageMeta = {title: '笔记详情'}
@@ -129,6 +129,7 @@ export default class NoteViewPage extends React.Component {
         const html = note ? sanitizeNoteHtml(note.contentHtml || '') : ''
         const hasContent = html && !isEmptyHtml(html)
         const folderName = note?.folderName || (note?.folderId ? '已删除目录' : '未分类')
+        const sourceUrl = safeExternalUrl(note?.sourceUrl)
 
         return <Page padding={false}>
             <div className='note-view-page'>
@@ -152,8 +153,8 @@ export default class NoteViewPage extends React.Component {
                                 <div className='note-view-meta'>
                                     <Tag bordered={false}>{folderName}</Tag>
                                     {note.updateTime ? <span>更新于 {fmtTime(note.updateTime)}</span> : null}
-                                    {note.sourceUrl ? <a href={note.sourceUrl} target='_blank'
-                                                        rel='noreferrer'>查看来源</a> : null}
+                                    {sourceUrl ? <a href={sourceUrl} target='_blank'
+                                                    rel='noreferrer'>查看原文</a> : null}
                                 </div>
                                 {hasContent
                                     ? <div className='note-rich-content' dangerouslySetInnerHTML={{__html: html}}/>

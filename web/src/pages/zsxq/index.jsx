@@ -1,6 +1,6 @@
 import React from 'react'
 import {ArrowDownOutlined, ArrowUpOutlined, ReloadOutlined, SearchOutlined} from '@ant-design/icons'
-import {Button, Empty, Input, Spin, Switch, Tooltip} from 'antd'
+import {Button, Empty, Input, Segmented, Spin, Switch, Tooltip} from 'antd'
 import {HttpClient, Page} from '@jiangood/open-admin'
 import TopicPost from './TopicPost'
 import './zsxq.css'
@@ -18,6 +18,7 @@ export default class ZsxqReaderPage extends React.Component {
         keyword: '',
         sort: `${SORT_PROP}|DESC`,
         ownerOnly: false,
+        quality: '',
         items: [],
         page: 1,
         hasMore: true,
@@ -77,6 +78,7 @@ export default class ZsxqReaderPage extends React.Component {
             const kw = this.state.keyword?.trim()
             if (kw) params.keyword = kw
             if (this.state.ownerOnly) params.ownerOnly = true
+            if (this.state.quality) params.quality = this.state.quality
             const [sortProp, sortDir] = (this.state.sort || `${SORT_PROP}|DESC`).split('|')
             params.sort = sortProp || SORT_PROP
             params.direction = sortDir || 'DESC'
@@ -148,6 +150,12 @@ export default class ZsxqReaderPage extends React.Component {
         this.searchTimer = setTimeout(() => this.reloadList(false), 350)
     }
 
+    onQualityChange = (id, quality) => {
+        this.setState(prev => ({
+            items: (prev.items || []).map(it => it.id === id ? {...it, quality} : it),
+        }))
+    }
+
     renderPost(item) {
         const group = this.state.groups.find(g => String(g.id) === String(item.groupId))
         const author = item.author
@@ -156,7 +164,8 @@ export default class ZsxqReaderPage extends React.Component {
         const files = this.state.filesByTopicId[String(item.topicId)] || []
 
         return <TopicPost key={item.id} item={item} comments={comments} files={files} isOwner={isOwner}
-                          collapseCommentsWithoutOwner={this.state.ownerOnly}/>
+                          collapseCommentsWithoutOwner={this.state.ownerOnly}
+                          onQualityChange={this.onQualityChange}/>
     }
 
     renderList() {
@@ -201,6 +210,16 @@ export default class ZsxqReaderPage extends React.Component {
                             placeholder='搜索帖子内容'
                             value={keyword}
                             onChange={this.onKeywordChange}
+                        />
+                        <Segmented
+                            size='middle'
+                            value={this.state.quality}
+                            options={[
+                                {label: '全部', value: ''},
+                                {label: '干货', value: 'DRY'},
+                                {label: '水帖', value: 'WATER'},
+                            ]}
+                            onChange={(v) => this.setState({quality: v}, () => this.reloadList(false))}
                         />
                         <label className='zsxq-feed-switch'>
                             <Switch size='small' checked={ownerOnly}

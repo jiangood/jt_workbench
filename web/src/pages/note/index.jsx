@@ -1,8 +1,8 @@
-import {DeleteOutlined, EditOutlined, FolderAddOutlined, PaperClipOutlined, PlusOutlined, SearchOutlined, SettingOutlined} from '@ant-design/icons'
-import {Button, Form, Input, Modal, Select, Segmented, Space, Tree, Typography} from 'antd'
+import {DeleteOutlined, EditOutlined, FolderAddOutlined, LinkOutlined, PaperClipOutlined, PlusOutlined, SearchOutlined, SettingOutlined} from '@ant-design/icons'
+import {Button, Form, Input, Modal, Select, Segmented, Space, Tooltip, Tree, Typography} from 'antd'
 import React from 'react'
 import {FormModal, HttpClient, Page, PermActions, ProTable, history} from '@jiangood/open-admin'
-import {htmlToPlainText} from './html'
+import {htmlToPlainText, safeExternalUrl} from './html'
 import './note.css'
 
 const MOBILE_QUERY = '(max-width: 768px)'
@@ -197,12 +197,22 @@ export default class NotePage extends React.Component {
                     columns={[
                         {
                             title: '标题', dataIndex: 'title', className: 'note-cell-title',
-                            render: (v, record) => <a onClick={() => this.openViewNote(record)}>
-                                {v}
-                                {Number(record.attachmentCount) > 0
-                                    ? <PaperClipOutlined className='note-title-attachment' aria-label={`${record.attachmentCount} 个附件`}/>
-                                    : null}
-                            </a>,
+                            render: (v, record) => {
+                                const sourceUrl = safeExternalUrl(record.sourceUrl)
+                                return <span className='note-title-cell'>
+                                    <a className='note-title-link' onClick={() => this.openViewNote(record)}>{v}</a>
+                                    {Number(record.attachmentCount) > 0
+                                        ? <PaperClipOutlined className='note-title-attachment'
+                                                             aria-label={`${record.attachmentCount} 个附件`}/>
+                                        : null}
+                                    {sourceUrl ? <Tooltip title='查看原文'>
+                                        <a className='note-title-source' href={sourceUrl} target='_blank'
+                                           rel='noreferrer' aria-label='查看原文'>
+                                            <LinkOutlined/>
+                                        </a>
+                                    </Tooltip> : null}
+                                </span>
+                            },
                         },
                         {
                             title: '目录', dataIndex: 'folderId', width: 140, className: 'note-cell-folder',

@@ -412,6 +412,40 @@
     font-size: 12px;
 }
 
+.note-title-cell {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.note-title-link {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.note-title-source {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    padding: 2px;
+    color: var(--oa-color-text-tertiary, #999);
+    font-size: 13px;
+    line-height: 1;
+}
+
+.note-cell-title .note-title-source {
+    display: inline-flex;
+    padding: 2px;
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 1;
+}
+
+.note-title-source:hover {
+    color: var(--oa-color-primary, #1677ff);
+}
+
 /* ---------- 笔记详情 ---------- */
 
 .note-view-page {

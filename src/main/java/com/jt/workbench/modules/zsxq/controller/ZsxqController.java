@@ -77,17 +77,28 @@ public class ZsxqController {
     /** 可排序话题字段（限定取值，防止请求传入非法属性） */
     private static final Set<String> SORT_PROPERTIES = Set.of("sourceCreateTime", "lastCommentTime");
 
+    private static final Set<String> QUALITY_MARKS = Set.of("DRY", "WATER");
+
     @HasPermission("zsxq:read")
     @PostMapping("page")
     public AjaxResult page(@PageableDefault(sort = "sourceCreateTime", direction = Sort.Direction.DESC, size = 20) Pageable pageable,
                            @RequestParam(required = false) String keyword,
                            @RequestParam(required = false) String columnId,
                            @RequestParam(required = false) Boolean ownerOnly,
+                           @RequestParam(required = false) String quality,
                            @RequestParam(required = false) String sort,
                            @RequestParam(required = false) String direction) {
         Page<ZsxqTopic> page = topicRepository.search(blankToNull(keyword), blankToNull(columnId),
-                Boolean.TRUE.equals(ownerOnly), effectivePageable(pageable, sort, direction));
+                Boolean.TRUE.equals(ownerOnly), normalizeQuality(quality), effectivePageable(pageable, sort, direction));
         return new AjaxResult().ok().data(page);
+    }
+
+    /** 质量标识：只接受 DRY/WATER，其他值视为不过滤/清除。 */
+    private static String normalizeQuality(String quality) {
+        String v = blankToNull(quality);
+        if (v == null) return null;
+        String upper = v.toUpperCase(Locale.ROOT);
+        return QUALITY_MARKS.contains(upper) ? upper : null;
     }
 
     /** 取最终分页参数：请求显式指定 sort/direction 时优先；未指定时沿用默认（发布时间倒序） */
@@ -131,6 +142,23 @@ public class ZsxqController {
     public AjaxResult info(@PathVariable String id) {
         ZsxqTopic item = topicRepository.findById(id).orElse(null);
         return item != null ? new AjaxResult().ok().data(item) : new AjaxResult();
+    }
+
+    /** 话题质量标识：DRY=干货，WATER=水帖，空值=清除标识 */
+    public record QualityReq(String id, String quality) {
+    }
+
+    @HasPermission("zsxq:manage")
+    @PostMapping("quality")
+    public AjaxResult quality(@RequestBody QualityReq req) {
+        String id = req == null ? null : blankToNull(req.id());
+        if (id == null) return AjaxResult.err("参数错误");
+        ZsxqTopic topic = topicRepository.findById(id).orElse(null);
+        if (topic == null) return AjaxResult.err("帖子不存在");
+        String quality = normalizeQuality(req.quality());
+        topic.setQuality(quality);
+        topicRepository.save(topic);
+        return new AjaxResult().ok().data(Map.of("id", topic.getId(), "quality", quality == null ? "" : quality));
     }
 
     /** 话题转笔记请求：id 为本地话题主键，title/folderId 可在转换弹窗里调整 */

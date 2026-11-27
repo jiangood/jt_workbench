@@ -47,10 +47,48 @@ class ZsxqTopicRepositoryTest {
         entityManager.clear();
 
         Page<ZsxqTopic> result = repository.search(
-                "clob search", null, false, PageRequest.of(0, 10));
+                "clob search", null, false, null, PageRequest.of(0, 10));
 
         assertEquals(1, result.getTotalElements());
         assertTrue(result.getContent().stream().anyMatch(item -> "topic-1".equals(item.getId())));
+    }
+
+    @Test
+    void searchFiltersByQuality() {
+        ZsxqTopic dry = new ZsxqTopic();
+        dry.setId("topic-dry");
+        dry.setTopicId("1");
+        dry.setGroupId("g1");
+        dry.setDigest("干货内容");
+        dry.setQuality("DRY");
+        entityManager.persistAndFlush(dry);
+
+        ZsxqTopic water = new ZsxqTopic();
+        water.setId("topic-water");
+        water.setTopicId("2");
+        water.setGroupId("g1");
+        water.setDigest("水帖内容");
+        water.setQuality("WATER");
+        entityManager.persistAndFlush(water);
+
+        ZsxqTopic plain = new ZsxqTopic();
+        plain.setId("topic-plain");
+        plain.setTopicId("3");
+        plain.setGroupId("g1");
+        plain.setDigest("普通内容");
+        entityManager.persistAndFlush(plain);
+        entityManager.clear();
+
+        Page<ZsxqTopic> dryResult = repository.search(null, null, false, "DRY", PageRequest.of(0, 10));
+        assertEquals(1, dryResult.getTotalElements());
+        assertEquals("topic-dry", dryResult.getContent().get(0).getId());
+
+        Page<ZsxqTopic> waterResult = repository.search(null, null, false, "WATER", PageRequest.of(0, 10));
+        assertEquals(1, waterResult.getTotalElements());
+        assertEquals("topic-water", waterResult.getContent().get(0).getId());
+
+        Page<ZsxqTopic> allResult = repository.search(null, null, false, null, PageRequest.of(0, 10));
+        assertEquals(3, allResult.getTotalElements());
     }
 
     @Configuration(proxyBeanMethods = false)

@@ -27,6 +27,14 @@ export function escapeHtml(text) {
         .replace(/'/g, '&#39;')
 }
 
+/** 原文链接只允许 http(s)，兼容协议相对地址 */
+export function safeExternalUrl(value) {
+    const url = String(value ?? '').trim()
+    if (/^https?:\/\//i.test(url)) return url
+    if (url.startsWith('//')) return `https:${url}`
+    return ''
+}
+
 /**
  * 笔记正文清洗：去掉脚本/内联样式，图片改走站内文件地址并补齐 context-path。
  *

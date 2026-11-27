@@ -21,6 +21,19 @@ function readQueryParams() {
     return out
 }
 
+/** 原文链接：允许直接粘贴域名（后端补 https://），拒绝空白与危险协议 */
+function validateSourceUrl(_, value) {
+    const url = String(value ?? '').trim()
+    if (!url) return Promise.resolve()
+    if (/^(javascript|data|vbscript):/i.test(url)) {
+        return Promise.reject(new Error('仅支持 http(s) 链接'))
+    }
+    if (/\s/.test(url)) {
+        return Promise.reject(new Error('链接中不能包含空格'))
+    }
+    return Promise.resolve()
+}
+
 export default class NoteEditPage extends React.Component {
 
     state = {
@@ -78,6 +91,7 @@ export default class NoteEditPage extends React.Component {
                     // 历史笔记只有纯文本正文，编辑时转成简单 HTML 交给富文本编辑器
                     contentHtml: data.contentHtml || plainTextToHtml(data.content || ''),
                     attachments: data.attachments || undefined,
+                    sourceUrl: data.sourceUrl || undefined,
                 })
             } else {
                 message.error('笔记不存在或已删除')
@@ -146,6 +160,9 @@ export default class NoteEditPage extends React.Component {
                             </Form.Item>
                             <Form.Item label='目录' name='folderId'>
                                 <Select allowClear placeholder='未分类' options={folderOptions}/>
+                            </Form.Item>
+                            <Form.Item label='原文链接' name='sourceUrl' rules={[{validator: validateSourceUrl}]}>
+                                <Input placeholder='可粘贴 https://... 或域名' maxLength={1024} allowClear/>
                             </Form.Item>
                             <Form.Item label='正文' name='contentHtml'>
                                 <FieldEditor height={isMobile ? 360 : 480} isPublic={false}/>

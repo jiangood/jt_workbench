@@ -12,5 +12,6 @@ public record NoteListItem(String id,
                            Integer readState,
                            Integer category,
                            LocalDateTime updateTime,
-                           int attachmentCount) {
+                           int attachmentCount,
+                           String sourceUrl) {
 }

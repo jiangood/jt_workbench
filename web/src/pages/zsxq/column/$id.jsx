@@ -150,12 +150,19 @@ export default class ZsxqColumnReaderPage extends React.Component {
         } catch (_) {}
     }
 
+    onQualityChange = (id, quality) => {
+        this.setState(prev => ({
+            items: (prev.items || []).map(it => it.id === id ? {...it, quality} : it),
+        }))
+    }
+
     renderPost(item) {
         const {commentsByTopicId, filesByTopicId} = this.state
         const comments = commentsByTopicId[String(item.topicId)] || []
         const files = filesByTopicId[String(item.topicId)] || []
         return <TopicPost key={item.id} item={item} comments={comments} files={files}
-                          distinguishOwner={false} showSourceLink={false}/>
+                          distinguishOwner={false} showSourceLink={false}
+                          onQualityChange={this.onQualityChange}/>
     }
 
     renderList() {
