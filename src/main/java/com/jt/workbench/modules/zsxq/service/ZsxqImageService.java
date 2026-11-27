@@ -175,16 +175,7 @@ public class ZsxqImageService {
     }
 
     private static String firstUrl(Image image) {
-        if (image.getOriginal() != null && notBlank(image.getOriginal().getUrl())) {
-            return image.getOriginal().getUrl().trim();
-        }
-        if (image.getLarge() != null && notBlank(image.getLarge().getUrl())) {
-            return image.getLarge().getUrl().trim();
-        }
-        if (image.getThumbnail() != null && notBlank(image.getThumbnail().getUrl())) {
-            return image.getThumbnail().getUrl().trim();
-        }
-        return "";
+        return image == null ? "" : image.primaryUrl();
     }
 
     /** 旧实现只区分 png / jpg；这里连同 webp/gif 一起探测，命中即复用。 */
@@ -270,10 +261,6 @@ public class ZsxqImageService {
         } catch (Exception e) {
             throw new IllegalStateException("SHA-1 不可用", e);
         }
-    }
-
-    private static boolean notBlank(String v) {
-        return v != null && !v.isBlank();
     }
 
     private static String brief(String url) {

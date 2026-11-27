@@ -243,6 +243,8 @@ public final class ZsxqModels {
         public String inlineArticleUrl;
         public String summary;
         public String content;
+        /** 部分详情接口把长文正文放在 article_content。 */
+        public String articleContent;
 
         public String getArticleId() {
             return articleId;
@@ -265,7 +267,8 @@ public final class ZsxqModels {
         }
 
         public String getContent() {
-            return content;
+            if (content != null && !content.isBlank()) return content;
+            return articleContent;
         }
 
         /** 取可点击的原文地址：优先 article_url，其次 inline_article_url，并补全协议。 */
@@ -320,6 +323,20 @@ public final class ZsxqModels {
 
         public ImageSize getLarge() {
             return large;
+        }
+
+        /** 优先取原图，其次大图/缩略图；没有地址时返回空串。 */
+        public String primaryUrl() {
+            if (original != null && original.getUrl() != null && !original.getUrl().isBlank()) {
+                return original.getUrl().trim();
+            }
+            if (large != null && large.getUrl() != null && !large.getUrl().isBlank()) {
+                return large.getUrl().trim();
+            }
+            if (thumbnail != null && thumbnail.getUrl() != null && !thumbnail.getUrl().isBlank()) {
+                return thumbnail.getUrl().trim();
+            }
+            return "";
         }
 
         @Override

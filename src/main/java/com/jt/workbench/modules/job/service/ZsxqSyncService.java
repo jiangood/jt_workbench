@@ -7,6 +7,7 @@ import com.jt.workbench.modules.zsxq.repo.ZsxqTopicRepository;
 import com.jt.workbench.modules.zsxq.client.ZsxqApiClient;
 import com.jt.workbench.modules.zsxq.client.ZsxqApiException;
 import com.jt.workbench.modules.zsxq.client.ZsxqModels.*;
+import com.jt.workbench.modules.zsxq.client.ZsxqRichText;
 import com.jt.workbench.modules.zsxq.service.ZsxqImageService;
 import io.github.jiangood.openadmin.modules.config.service.SysConfigService;
 import io.github.jiangood.openadmin.modules.job.JobResult;
@@ -49,14 +50,20 @@ public class ZsxqSyncService {
     private static final int COMMENTS_PER_TOPIC = 30;
     private static final int COLUMN_NAME_MAX_LENGTH = 512;
     private static final int COLUMN_TEXT_MAX_LENGTH = 2048;
+    /** 用正文第一行补全标题时允许的最大长度，超过视为整段正文，保留原标题。 */
+    private static final int COLUMN_TITLE_FALLBACK_MAX_LENGTH = 80;
+    /** 专栏正文最多追加的图片数，防止异常数据拖垮渲染。 */
+    private static final int MAX_ARTICLE_IMAGES = 30;
 
     /** 头部增量默认 2 页（40 条/星球），碰到已同步帖子即提前停止。 */
     private static final int HEAD_PAGES_DEFAULT = 2;
     private static final int IMAGE_BACKFILL_DEFAULT_BATCH = 10;
     private static final int IMAGE_BACKFILL_MAX_FAILS = 3;
-    /** 专栏文章完整正文回填：默认每轮 50 条，连续失败 3 次后不再重试。 */
-    private static final int ARTICLE_BACKFILL_DEFAULT_BATCH = 50;
+    /** 专栏文章完整正文回填：默认每轮 200 条，连续失败 3 次后不再重试。 */
+    private static final int ARTICLE_BACKFILL_DEFAULT_BATCH = 200;
     private static final int ARTICLE_BACKFILL_MAX_FAILS = 3;
+    /** 专栏正文提取器版本：升级到 2 后把旧版本误判的失败次数清零，重新尝试。 */
+    private static final int ARTICLE_EXTRACTOR_VERSION = 2;
 
     /** 抓取间隔（反爬）：分页 8 秒、话题/评论 3 秒，再叠加 0~2 秒随机抖动。 */
     private static final int PAGE_PAUSE_DEFAULT_SECONDS = 8;
@@ -95,6 +102,7 @@ public class ZsxqSyncService {
     /** 凭据（Cookie）哈希；状态键沿用旧值，兼容已有库数据。 */
     private static final String STATE_RISK_CREDENTIAL_HASH = "risk_token_hash";
     private static final String STATE_COLUMNS_LAST_OK = "columns_last_ok";
+    private static final String STATE_ARTICLE_EXTRACTOR_VERSION = "article_extractor_version";
 
     private final SysConfigService configService;
     private final ZsxqTopicRepository topicRepository;
@@ -150,6 +158,7 @@ public class ZsxqSyncService {
             if (cookie.isEmpty()) return JobResult.skip("未配置知识星球 Cookie，跳过");
             ensureTables();
             resetCooldownOnCookieChange(cookie);
+            resetArticleFailuresOnExtractorChange();
 
             String cooling = cooldownMessage();
             if (cooling != null) return JobResult.skip(cooling);
@@ -238,6 +247,21 @@ public class ZsxqSyncService {
         if (lastHash == null || lastHash != hash) {
             setState(STATE_RISK_CREDENTIAL_HASH, hash);
         }
+    }
+
+    /**
+     * 正文提取规则升级后，旧版本把「talk 正文」误判成失败并累计了次数；
+     * 这里做一次性清零，让这些条目重新进入回填队列，避免永远停在失败上限。
+     */
+    private void resetArticleFailuresOnExtractorChange() {
+        Long version = getState(STATE_ARTICLE_EXTRACTOR_VERSION);
+        if (version != null && version >= ARTICLE_EXTRACTOR_VERSION) return;
+        int cleared = jdbc.update("UPDATE zsxq_topic SET article_fail_count = 0, update_time = ? "
+                        + "WHERE column_id IS NOT NULL AND (article_content IS NULL OR article_content = '') "
+                        + "AND COALESCE(article_fail_count, 0) > 0",
+                LocalDateTime.now());
+        if (cleared > 0) log.info("[知识星球] 正文提取升级，重置 {} 条专栏条目的失败计数", cleared);
+        setState(STATE_ARTICLE_EXTRACTOR_VERSION, ARTICLE_EXTRACTOR_VERSION);
     }
 
     /** 当前是否处于风控冷却期；是则返回任务结果提示。 */
@@ -452,14 +476,15 @@ public class ZsxqSyncService {
     /** 已存在但正文为空的专栏条目：用列表/详情里拿到的标题、摘要、正文与原文链接补齐。 */
     private void refreshTopicContentIfEmpty(String topicId, Topic t) {
         String digest = topicDigest(t);
-        String title = articleTitle(t);
+        String title = columnArticleTitle(t);
         String articleUrl = articleUrlOf(t);
-        String content = articleContentOf(t);
+        String content = columnArticleContentOf(t);
         if (digest.isBlank() && title.isBlank() && articleUrl.isBlank() && content.isBlank()) return;
         long now = System.currentTimeMillis();
         jdbc.update("UPDATE zsxq_topic SET "
                         + "digest = CASE WHEN (digest IS NULL OR digest = '') AND ? <> '' THEN ? ELSE digest END, "
-                        + "article_title = CASE WHEN (article_title IS NULL OR article_title = '') AND ? <> '' THEN ? ELSE article_title END, "
+                        + "article_title = CASE WHEN ? <> '' AND (article_title IS NULL OR article_title = '' "
+                        + "OR article_title LIKE '%...' OR article_title LIKE '%…') THEN ? ELSE article_title END, "
                         + "article_url = CASE WHEN (article_url IS NULL OR article_url = '') AND ? <> '' THEN ? ELSE article_url END, "
                         + "article_content = CASE WHEN (article_content IS NULL OR article_content = '') AND ? <> '' THEN ? ELSE article_content END, "
                         + "article_synced_at = CASE WHEN (article_content IS NULL OR article_content = '') AND ? <> '' "
@@ -587,10 +612,13 @@ public class ZsxqSyncService {
 
     /**
      * 回填专栏文章完整正文：专栏话题列表接口只返回文章索引（无 talk 正文），
-     * 先调用话题详情拿标题、摘要、作者与原文地址，再读取 articles.zsxq.com 正文页。
+     * 先调用话题详情拿标题、摘要、作者与原文地址，再按内容形态取正文：
+     * 长文章读取 articles.zsxq.com 正文页；普通长贴（{@code type=talk}）直接使用
+     * {@code talk.text}，把星球自定义 {@code <e>} 标记还原成 HTML。
      *
-     * <p>每轮条数由 {@code zsxq.column-article-backfill-batch} 控制；正文为空时
-     * 累计失败次数，连续 {@value #ARTICLE_BACKFILL_MAX_FAILS} 次后不再自动重试。</p>
+     * <p>每轮条数由 {@code zsxq.column-article-backfill-batch} 控制；优先处理从未尝试过的
+     * 条目，再按发帖时间从旧到新推进，避免老专栏永远排在队尾。正文为空时累计失败次数，
+     * 连续 {@value #ARTICLE_BACKFILL_MAX_FAILS} 次后不再自动重试。</p>
      */
     private String backfillColumnArticles(ZsxqApiClient client, Logger logger,
                                           java.util.function.Consumer<String> progress) {
@@ -600,7 +628,8 @@ public class ZsxqSyncService {
                 "SELECT topic_id FROM zsxq_topic WHERE column_id IS NOT NULL "
                         + "AND (article_content IS NULL OR article_content = '') "
                         + "AND COALESCE(article_fail_count, 0) < " + ARTICLE_BACKFILL_MAX_FAILS
-                        + " ORDER BY COALESCE(source_create_time, '') DESC LIMIT " + batch);
+                        + " ORDER BY COALESCE(article_fail_count, 0) ASC, "
+                        + "COALESCE(source_create_time, '') ASC LIMIT " + batch);
         if (rows.isEmpty()) return "专栏正文回填跳过（没有待回填条目）";
 
         int done = 0, failed = 0;
@@ -612,7 +641,7 @@ public class ZsxqSyncService {
             pause(topicPauseMs);
             try {
                 Topic topic = getTopic(client, tid);
-                String title = articleTitle(topic);
+                String title = columnArticleTitle(topic);
                 String digest = topicDigest(topic);
                 String articleUrl = articleUrlOf(topic);
                 String author = topicAuthor(topic);
@@ -623,6 +652,7 @@ public class ZsxqSyncService {
                     pause(topicPauseMs);
                     content = client.getArticleContent(contentUrl);
                 }
+                if (content.isBlank()) content = talkArticleContentOf(topic);
                 updateArticleContent(tid, title, digest, articleUrl, content, author, authorId);
                 if (content.isBlank()) {
                     markArticleFailed(tid);
@@ -650,7 +680,8 @@ public class ZsxqSyncService {
     private void updateArticleContent(String topicId, String title, String digest, String articleUrl,
                                       String content, String author, String authorId) {
         jdbc.update("UPDATE zsxq_topic SET "
-                        + "article_title = CASE WHEN (article_title IS NULL OR article_title = '') AND ? <> '' THEN ? ELSE article_title END, "
+                        + "article_title = CASE WHEN ? <> '' AND (article_title IS NULL OR article_title = '' "
+                        + "OR article_title LIKE '%...' OR article_title LIKE '%…') THEN ? ELSE article_title END, "
                         + "digest = CASE WHEN (digest IS NULL OR digest = '') AND ? <> '' THEN ? ELSE digest END, "
                         + "article_url = CASE WHEN (article_url IS NULL OR article_url = '') AND ? <> '' THEN ? ELSE article_url END, "
                         + "article_content = CASE WHEN (article_content IS NULL OR article_content = '') AND ? <> '' THEN ? ELSE article_content END, "
@@ -1106,6 +1137,60 @@ public class ZsxqSyncService {
     }
 
     /**
+     * 专栏标题：优先文章标题；星球把标题截断成「...」时，用正文第一行补全，
+     * 第一行过长（多半是整段正文）则保留原标题。
+     */
+    static String columnArticleTitle(Topic t) {
+        String title = articleTitle(t);
+        String text = talkText(t);
+        if (text.isBlank()) return title;
+        boolean truncated = title.endsWith("...") || title.endsWith("…");
+        if (!title.isBlank() && !truncated) return title;
+        String firstLine = firstLine(text);
+        if (firstLine.isBlank() || firstLine.length() > COLUMN_TITLE_FALLBACK_MAX_LENGTH) return title;
+        return firstLine;
+    }
+
+    /** 专栏正文：长文章取 article HTML；普通长贴把 talk.text 转成 HTML。 */
+    static String columnArticleContentOf(Topic t) {
+        String content = articleContentOf(t);
+        return content.isBlank() ? talkArticleContentOf(t) : content;
+    }
+
+    /** 普通长贴正文：talk.text 还原为 HTML，并把图片追加到正文末尾。 */
+    static String talkArticleContentOf(Topic t) {
+        TalkContent talk = t == null ? null : t.getTalk();
+        if (talk == null) return "";
+        StringBuilder html = new StringBuilder();
+        String text = safe(talk.getText()).trim();
+        if (!text.isEmpty()) html.append(ZsxqRichText.toHtml(text));
+        if (talk.getImages() != null) {
+            int count = 0;
+            for (Image image : talk.getImages()) {
+                if (image == null || count >= MAX_ARTICLE_IMAGES) continue;
+                String tag = ZsxqRichText.imageHtml(image.primaryUrl());
+                if (!tag.isEmpty()) {
+                    html.append(tag);
+                    count++;
+                }
+            }
+        }
+        return html.toString();
+    }
+
+    private static String talkText(Topic t) {
+        return t == null || t.getTalk() == null ? "" : safe(t.getTalk().getText()).trim();
+    }
+
+    private static String firstLine(String text) {
+        String s = safe(text).trim();
+        if (s.isEmpty()) return "";
+        int index = s.indexOf('\n');
+        if (index < 0) index = s.indexOf('\r');
+        return (index < 0 ? s : s.substring(0, index)).trim();
+    }
+
+    /**
      * 话题摘要：普通话题取 talk.text；长文章取标题 + 摘要/正文；
      * 都没有时返回空串（由专栏文章回填任务后续处理）。
      */
@@ -1150,10 +1235,13 @@ public class ZsxqSyncService {
     }
 
     private void upsertTopic(String gid, String tid, Topic t, String columnId) {
+        String column = columnId == null || columnId.isBlank() ? null : columnId;
         String digest = topicDigest(t);
-        String title = articleTitle(t);
+        String title = column == null ? articleTitle(t) : columnArticleTitle(t);
         String articleUrl = articleUrlOf(t);
         String articleContent = articleContentOf(t);
+        // 专栏里的普通长贴没有 article 元数据，列表/详情里的 talk.text 就是完整正文
+        if (articleContent.isBlank() && column != null) articleContent = talkArticleContentOf(t);
         Long articleSyncedAt = articleContent.isBlank() ? null : System.currentTimeMillis();
         TalkContent talk = t.getTalk();
 
@@ -1168,7 +1256,6 @@ public class ZsxqSyncService {
         String sourceTime = safe(t.getCreateTime());
         int comments = safeInt(t.getCommentsCount());
         int likes = safeInt(t.getLikesCount());
-        String column = columnId == null || columnId.isBlank() ? null : columnId;
 
         jdbc.update("INSERT INTO zsxq_topic (id, topic_id, group_id, column_id, digest, comment_count, likes_count, "
                         + "source_create_time, cover, images, image_synced_at, image_fail_count, article_title, "
