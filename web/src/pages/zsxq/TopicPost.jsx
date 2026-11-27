@@ -1,6 +1,7 @@
 import React from 'react'
+import {DownloadOutlined, PaperClipOutlined} from '@ant-design/icons'
 import {Image, Switch, Tag} from 'antd'
-import {fmtTime, imageSrc, topicImages} from './media'
+import {fileDownloadUrl, fmtSize, fmtTime, imageSrc, topicImages} from './media'
 import {parseZsxqText} from './richText'
 import {sanitizeArticleHtml} from './articleContent'
 
@@ -36,6 +37,7 @@ export default class TopicPost extends React.Component {
         const {
             item,
             comments = [],
+            files = [],
             isOwner = false,
             meta = null,
             distinguishOwner = true,
@@ -113,6 +115,28 @@ export default class TopicPost extends React.Component {
                         }}
                     />
                 })}
+            </div> : null}
+
+            {files.length ? <div className='zsxq-post-files'>
+                <div className='zsxq-post-files-head'>
+                    <PaperClipOutlined/>
+                    <span>附件 {files.length}</span>
+                </div>
+                <ul className='zsxq-post-file-list'>
+                    {files.map((file, idx) => {
+                        const href = fileDownloadUrl(item.topicId, file.fileId)
+                        if (!href) return null
+                        const label = file.name || `附件 ${idx + 1}`
+                        const size = fmtSize(file.size)
+                        return <li key={file.fileId || idx}>
+                            <a className='zsxq-post-file' href={href} title={`下载 ${label}`}>
+                                <DownloadOutlined className='zsxq-post-file-icon'/>
+                                <span className='zsxq-post-file-name'>{label}</span>
+                                {size ? <span className='zsxq-post-file-size'>{size}</span> : null}
+                            </a>
+                        </li>
+                    })}
+                </ul>
             </div> : null}
 
             {comments.length ? <div className='zsxq-post-comments'>

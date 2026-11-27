@@ -91,6 +91,25 @@ class ZsxqModelsTest {
         assertEquals("作者B", second.getOwner().getName());
     }
 
+    /** 附件元数据：file_id 同样必须按字符串精确解析。 */
+    @Test
+    void topicFilesAreParsed() {
+        String json = """
+                {"topics":[{"topic_id":22258421152844422,"type":"talk",
+                  "talk":{"text":"附件","files":[
+                    {"file_id":54825845551514422,"name":"研报.pdf","size":123456,"hash":"abc",
+                     "create_time":"2026-11-25T10:40:00.819+0800","download_count":9}
+                  ]}}]}
+                """;
+        ZsxqModels.Topic topic = mapper.treeToValue(mapper.readTree(json), ZsxqModels.TopicPage.class).topics.get(0);
+
+        ZsxqModels.TopicFile file = topic.getTalk().getFiles().get(0);
+        assertEquals("54825845551514422", file.getFileId());
+        assertEquals("研报.pdf", file.getName());
+        assertEquals(123456L, file.getSize());
+        assertTrue(topic.getTalk().toString().contains("files=1"), topic.getTalk().toString());
+    }
+
     /** 任务日志依赖 toString：ID 要完整、长正文截断、换行压平，避免刷屏。 */
     @Test
     void toStringIsReadableForJobLogs() {

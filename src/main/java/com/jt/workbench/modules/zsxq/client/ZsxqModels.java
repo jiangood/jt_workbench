@@ -208,6 +208,8 @@ public final class ZsxqModels {
         public User owner;
         public String text;
         public List<Image> images;
+        /** 话题附件（星球文件）；下载链接需按 file_id 另行换取。 */
+        public List<TopicFile> files;
         /** 长文章：正文需另行获取，这里通常只有标题与原文链接。 */
         public Article article;
 
@@ -223,6 +225,10 @@ public final class ZsxqModels {
             return images;
         }
 
+        public List<TopicFile> getFiles() {
+            return files;
+        }
+
         public Article getArticle() {
             return article;
         }
@@ -230,7 +236,66 @@ public final class ZsxqModels {
         @Override
         public String toString() {
             return "TalkContent{owner=" + owner + ", images=" + (images == null ? 0 : images.size())
+                    + ", files=" + (files == null ? 0 : files.size())
                     + ", article=" + article + ", text=" + brief(text) + "}";
+        }
+    }
+
+    /**
+     * 话题附件元数据（API 的 {@code talk.files}）。
+     *
+     * <p>列表接口即可拿到；真正的下载地址需要用 {@code file_id} 调
+     * {@code /v2/files/{file_id}/download_url} 换取，因此只保存元数据，下载按需进行。</p>
+     */
+    public static class TopicFile {
+        public String fileId;
+        public String name;
+        public String hash;
+        public Long size;
+        public String createTime;
+        public Integer downloadCount;
+
+        public String getFileId() {
+            return fileId;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public String getHash() {
+            return hash;
+        }
+
+        public Long getSize() {
+            return size;
+        }
+
+        public String getCreateTime() {
+            return createTime;
+        }
+
+        public Integer getDownloadCount() {
+            return downloadCount;
+        }
+
+        @Override
+        public String toString() {
+            return "TopicFile{fileId=" + fileId + ", name=" + brief(name) + ", size=" + size + "}";
+        }
+    }
+
+    /** 文件下载地址响应：{@code resp_data.download_url}。 */
+    public static class FileDownloadUrl {
+        public String downloadUrl;
+
+        public String getDownloadUrl() {
+            return downloadUrl;
+        }
+
+        @Override
+        public String toString() {
+            return "FileDownloadUrl{downloadUrl=" + brief(downloadUrl) + "}";
         }
     }
 

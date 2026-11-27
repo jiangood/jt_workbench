@@ -26,6 +26,7 @@ export default class ZsxqReaderPage extends React.Component {
         stats: {topics: 0, groups: 0},
         groups: [],
         commentsByTopicId: {},
+        filesByTopicId: {},
     }
 
     loadSeq = 0
@@ -96,12 +97,27 @@ export default class ZsxqReaderPage extends React.Component {
                 loading: false,
                 initialLoading: false,
             })
-            await this.loadComments(nextItems)
+            await Promise.all([this.loadComments(nextItems), this.loadFiles(nextItems)])
         } catch (_) {
             if (seq === this.loadSeq) this.setState({loading: false, initialLoading: false})
         } finally {
             if (seq === this.loadSeq) this.loadMoreLock = false
         }
+    }
+
+    loadFiles = async (items) => {
+        const ids = items
+            .map(it => (it && it.topicId != null ? String(it.topicId).trim() : ''))
+            .filter(id => id)
+        if (!ids.length) return
+        const seq = this.loadSeq
+        try {
+            const rs = await HttpClient.get('admin/zsxq/files', {topicIds: ids}, {toastError: false, toastSuccess: false})
+            if (seq !== this.loadSeq) return
+            const data = rs.data || {}
+            if (!data || typeof data !== 'object') return
+            this.setState(prev => ({filesByTopicId: {...prev.filesByTopicId, ...data}}))
+        } catch (_) {}
     }
 
     loadComments = async (items) => {
@@ -137,8 +153,9 @@ export default class ZsxqReaderPage extends React.Component {
         const author = item.author
         const isOwner = !!author && !!group?.owner && author === group.owner
         const comments = this.state.commentsByTopicId[String(item.topicId)] || []
+        const files = this.state.filesByTopicId[String(item.topicId)] || []
 
-        return <TopicPost key={item.id} item={item} comments={comments} isOwner={isOwner}
+        return <TopicPost key={item.id} item={item} comments={comments} files={files} isOwner={isOwner}
                           collapseCommentsWithoutOwner={this.state.ownerOnly}/>
     }
 

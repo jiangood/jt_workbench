@@ -8,6 +8,8 @@ import com.jt.workbench.modules.zsxq.client.ZsxqApiClient;
 import com.jt.workbench.modules.zsxq.client.ZsxqApiException;
 import com.jt.workbench.modules.zsxq.client.ZsxqModels.*;
 import com.jt.workbench.modules.zsxq.client.ZsxqRichText;
+import com.jt.workbench.modules.zsxq.entity.ZsxqFile;
+import com.jt.workbench.modules.zsxq.service.ZsxqFileService;
 import com.jt.workbench.modules.zsxq.service.ZsxqImageService;
 import io.github.jiangood.openadmin.modules.config.service.SysConfigService;
 import io.github.jiangood.openadmin.modules.job.JobResult;
@@ -59,6 +61,10 @@ public class ZsxqSyncService {
     private static final int HEAD_PAGES_DEFAULT = 2;
     private static final int IMAGE_BACKFILL_DEFAULT_BATCH = 10;
     private static final int IMAGE_BACKFILL_MAX_FAILS = 3;
+    /** 附件下载回填：默认每轮 20 个文件；附件清单回填：默认每轮 10 个话题。 */
+    private static final int FILE_BACKFILL_DEFAULT_BATCH = 20;
+    private static final int FILE_META_BACKFILL_DEFAULT_BATCH = 10;
+    private static final int FILE_BACKFILL_MAX_FAILS = 3;
     /** 专栏文章完整正文回填：默认每轮 200 条，连续失败 3 次后不再重试。 */
     private static final int ARTICLE_BACKFILL_DEFAULT_BATCH = 200;
     private static final int ARTICLE_BACKFILL_MAX_FAILS = 3;
@@ -108,6 +114,7 @@ public class ZsxqSyncService {
     private final ZsxqTopicRepository topicRepository;
     private final ZsxqColumnRepository columnRepository;
     private final ZsxqImageService imageService;
+    private final ZsxqFileService fileService;
     private final JdbcTemplate jdbc;
 
     // ---------- 本轮运行状态（两个 Quartz 作业通过共享锁互斥） ----------
@@ -185,6 +192,8 @@ public class ZsxqSyncService {
                     setState(STATE_COLUMNS_LAST_OK, System.currentTimeMillis());
                     parts.add(backfillColumnArticles(client, logger, progress));
                     parts.add(backfillImages(client, logger, progress));
+                    parts.add(backfillFileMeta(client, logger, progress));
+                    parts.add(backfillFiles(logger, progress));
                 } else {
                     parts.add(syncTopics(client, groupIds, logger, progress));
                     parts.add(syncColumnsIfDue(client, groupIds, logger, progress));
@@ -464,6 +473,8 @@ public class ZsxqSyncService {
      */
     private void fillAuthorIfMissing(String tid, Topic t, ZsxqTopic local) {
         if (local == null) return;
+        // 老帖如果在列表里重新出现，顺带补齐附件清单，避免再为它单独请求话题详情
+        fillFilesIfMissing(safe(local.getGroupId()), tid, t);
         boolean missingName = safe(local.getAuthor()).isEmpty();
         boolean missingId = safe(local.getAuthorId()).isEmpty();
         if (!missingName && !missingId) return;
@@ -471,6 +482,52 @@ public class ZsxqSyncService {
         if (author.isEmpty()) return;
         String authorId = topicAuthorId(t);
         jdbc.update("UPDATE zsxq_topic SET author = ?, author_id = ? WHERE topic_id = ?", author, authorId, tid);
+    }
+
+    /** 附件清单尚未确认过时，用列表接口里的 {@code talk.files} 补齐；没有 talk 的列表索引留给每日回填。 */
+    private void fillFilesIfMissing(String gid, String tid, Topic t) {
+        try {
+            Long checked = jdbc.query("SELECT file_synced_at FROM zsxq_topic WHERE topic_id = ?",
+                    ps -> ps.setString(1, tid),
+                    rs -> rs.next() ? (rs.getObject(1) == null ? null : rs.getLong(1)) : null);
+            if (checked != null) return;
+            syncTopicFiles(gid, tid, t == null ? null : t.getTalk());
+        } catch (Exception e) {
+            log.debug("附件清单补齐跳过 topicId={} error={}", tid, e.getMessage());
+        }
+    }
+
+    /**
+     * 保存附件元数据并标记清单已抓取。{@code talk} 为空表示列表接口只返回了索引
+     * （专栏常见），此时不标记，交给每日回填调用话题详情再补。
+     */
+    private void syncTopicFiles(String gid, String tid, TalkContent talk) {
+        if (talk == null) return;
+        try {
+            fileService.syncFromTalk(gid, tid, talk);
+            jdbc.update("UPDATE zsxq_topic SET file_synced_at = ?, file_fail_count = 0 WHERE topic_id = ?",
+                    System.currentTimeMillis(), tid);
+        } catch (Exception e) {
+            log.warn("附件清单保存失败 topicId={} error={}", tid, e.getMessage());
+        }
+    }
+
+    /** 用话题详情里的 talk 补附件清单（详情请求本来就要发，不再额外增加请求量）。 */
+    private void syncTopicFilesFromTopic(String tid, Topic topic) {
+        if (topic == null || topic.getTalk() == null) return;
+        try {
+            Long checked = jdbc.query("SELECT file_synced_at FROM zsxq_topic WHERE topic_id = ?",
+                    ps -> ps.setString(1, tid),
+                    rs -> rs.next() ? (rs.getObject(1) == null ? null : rs.getLong(1)) : null);
+            if (checked != null) return;
+            String gid = jdbc.query("SELECT group_id FROM zsxq_topic WHERE topic_id = ?",
+                    ps -> ps.setString(1, tid),
+                    rs -> rs.next() ? rs.getString(1) : "");
+            fileService.syncFromTalk(safe(gid), tid, topic.getTalk());
+            markFileMetaChecked(tid);
+        } catch (Exception e) {
+            log.debug("附件清单补齐跳过 topicId={} error={}", tid, e.getMessage());
+        }
     }
 
     /** 已存在但正文为空的专栏条目：用列表/详情里拿到的标题、摘要、正文与原文链接补齐。 */
@@ -584,6 +641,7 @@ public class ZsxqSyncService {
             try {
                 Topic topic = getTopic(client, tid);
                 TalkContent talk = topic == null ? null : topic.getTalk();
+                syncTopicFilesFromTopic(tid, topic);
                 List<String> keys = imageService.storeAll(tid, talk);
                 boolean complete = keys.size() >= imageService.sourceImageCount(talk);
                 saveTopicImages(tid, keys, complete);
@@ -608,6 +666,102 @@ public class ZsxqSyncService {
             }
         }
         return "图片回填 " + done + " 条，失败 " + failed + " 条，入库图片 " + stored + " 张";
+    }
+
+    /**
+     * 回填历史帖子的附件清单：列表接口只回填了最近/正在翻页的帖子，早期存量帖子需要
+     * 用话题详情确认一次 {@code talk.files}。每轮话题数由 {@code zsxq.file-meta-backfill-batch}
+     * 控制，确认过的帖子写入 {@code file_synced_at}，不会重复请求。
+     */
+    private String backfillFileMeta(ZsxqApiClient client, Logger logger,
+                                    java.util.function.Consumer<String> progress) {
+        int batch = intConfig("zsxq.file-meta-backfill-batch", FILE_META_BACKFILL_DEFAULT_BATCH, 0, 200);
+        if (batch == 0) return "附件清单回填跳过（已关闭）";
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT topic_id, group_id FROM zsxq_topic WHERE (visible IS NULL OR visible = TRUE) "
+                        + "AND file_synced_at IS NULL AND COALESCE(file_fail_count, 0) < " + FILE_BACKFILL_MAX_FAILS
+                        + " ORDER BY COALESCE(source_create_time, '') DESC LIMIT " + batch);
+        if (rows.isEmpty()) return "附件清单回填跳过（没有待确认的帖子）";
+
+        int done = 0, failed = 0;
+        for (int i = 0; i < rows.size(); i++) {
+            Map<String, Object> row = rows.get(i);
+            String tid = rowCell(row, "topic_id");
+            String gid = rowCell(row, "group_id");
+            if (tid.isBlank()) continue;
+            progress.accept("回填附件清单 " + (i + 1) + "/" + rows.size());
+            pause(topicPauseMs);
+            try {
+                Topic topic = getTopic(client, tid);
+                TalkContent talk = topic == null ? null : topic.getTalk();
+                if (talk == null) {
+                    markFileMetaFailed(tid);
+                    failed++;
+                    continue;
+                }
+                fileService.syncFromTalk(gid, tid, talk);
+                markFileMetaChecked(tid);
+                done++;
+            } catch (Exception e) {
+                if (isRiskControl(e)) throw new RiskControlException(e);
+                if (isTopicGone(e)) {
+                    markFileMetaChecked(tid);
+                    done++;
+                    logger.info("帖子已删除，附件清单回填跳过 topicId={}", tid);
+                    continue;
+                }
+                failed++;
+                markFileMetaFailed(tid);
+                logger.warn("附件清单回填失败 topicId={} error={}", tid, e.getMessage());
+                if (isAuthOrFatal(e)) {
+                    logger.warn("知识星球授权/请求异常，中止本轮附件清单回填");
+                    break;
+                }
+            }
+        }
+        return "附件清单回填 " + done + " 条，失败 " + failed + " 条";
+    }
+
+    /**
+     * 把待下载附件落到对象存储。下载地址接口有频率监控，因此每轮只处理
+     * {@code zsxq.file-backfill-batch} 个文件，并复用话题间隔做节流。
+     */
+    private String backfillFiles(Logger logger, java.util.function.Consumer<String> progress) {
+        int batch = intConfig("zsxq.file-backfill-batch", FILE_BACKFILL_DEFAULT_BATCH, 0, 500);
+        if (batch == 0) return "附件下载回填跳过（已关闭）";
+        List<ZsxqFile> pending = fileService.pending(FILE_BACKFILL_MAX_FAILS, batch);
+        if (pending.isEmpty()) return "附件下载回填跳过（没有待下载附件）";
+
+        int done = 0, failed = 0;
+        for (int i = 0; i < pending.size(); i++) {
+            ZsxqFile file = pending.get(i);
+            progress.accept("回填附件 " + (i + 1) + "/" + pending.size());
+            pause(topicPauseMs);
+            try {
+                fileService.ensureStored(file);
+                done++;
+            } catch (Exception e) {
+                if (isRiskControl(e)) throw new RiskControlException(e);
+                failed++;
+                logger.warn("附件下载失败 fileId={} name={} error={}",
+                        file.getFileId(), file.getName(), e.getMessage());
+                if (isAuthOrFatal(e)) {
+                    logger.warn("知识星球授权/请求异常，中止本轮附件下载回填");
+                    break;
+                }
+            }
+        }
+        return "附件下载回填 " + done + " 个，失败 " + failed + " 个";
+    }
+
+    private void markFileMetaChecked(String topicId) {
+        jdbc.update("UPDATE zsxq_topic SET file_synced_at = ?, file_fail_count = 0, update_time = ? WHERE topic_id = ?",
+                System.currentTimeMillis(), LocalDateTime.now(), topicId);
+    }
+
+    private void markFileMetaFailed(String topicId) {
+        jdbc.update("UPDATE zsxq_topic SET file_fail_count = COALESCE(file_fail_count, 0) + 1, update_time = ? "
+                + "WHERE topic_id = ?", LocalDateTime.now(), topicId);
     }
 
     /**
@@ -641,6 +795,7 @@ public class ZsxqSyncService {
             pause(topicPauseMs);
             try {
                 Topic topic = getTopic(client, tid);
+                syncTopicFilesFromTopic(tid, topic);
                 String title = columnArticleTitle(topic);
                 String digest = topicDigest(topic);
                 String articleUrl = articleUrlOf(topic);
@@ -1057,6 +1212,8 @@ public class ZsxqSyncService {
         // 清空专栏后解除全局节流，避免专栏要等 24 小时才重新入库
         jdbc.update("DELETE FROM zsxq_job_state WHERE state_key = ?", STATE_COLUMNS_LAST_OK);
 
+        List<String> fileKeys = fileService.deleteByGroup(group);
+
         // 正文图片按剩余引用过滤：多个星球共用同一张图时不能误删
         java.util.Set<String> retained = new java.util.HashSet<>();
         for (Map<String, Object> row : jdbc.queryForList("SELECT images, cover FROM zsxq_topic")) {
@@ -1069,12 +1226,14 @@ public class ZsxqSyncService {
             if (!retained.contains(key)) deletable.add(key);
         }
         imageService.deleteKeys(deletable);
+        fileService.deleteKeys(fileKeys);
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("topics", topics);
         result.put("comments", comments);
         result.put("columns", columns);
         result.put("images", deletable.size());
+        result.put("files", fileKeys.size());
         return result;
     }
 
@@ -1272,6 +1431,9 @@ public class ZsxqSyncService {
         if (!author.isEmpty()) {
             jdbc.update("UPDATE zsxq_topic SET author = ?, author_id = ? WHERE topic_id = ?", author, authorId, tid);
         }
+
+        // 附件只存元数据；内容由每日回填或用户点击下载时再落到对象存储
+        syncTopicFiles(gid, tid, talk);
     }
 
     private String cursor(String gid) {

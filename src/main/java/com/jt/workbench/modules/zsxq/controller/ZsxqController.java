@@ -1,28 +1,36 @@
 package com.jt.workbench.modules.zsxq.controller;
 
 import com.jt.workbench.modules.zsxq.entity.ZsxqColumn;
+import com.jt.workbench.modules.zsxq.entity.ZsxqFile;
 import com.jt.workbench.modules.zsxq.entity.ZsxqGroup;
 import com.jt.workbench.modules.zsxq.entity.ZsxqTopic;
 import com.jt.workbench.modules.zsxq.repo.ZsxqColumnRepository;
 import com.jt.workbench.modules.zsxq.repo.ZsxqGroupRepository;
 import com.jt.workbench.modules.zsxq.repo.ZsxqTopicRepository;
+import com.jt.workbench.modules.zsxq.service.ZsxqFileService;
 import com.jt.workbench.modules.zsxq.service.ZsxqImageService;
 import com.jt.workbench.modules.job.service.ZsxqSyncService;
 import io.github.jiangood.openadmin.framework.perm.HasPermission;
 import io.github.jiangood.openadmin.util.dto.AjaxResult;
 import io.github.jiangood.openadmin.util.dto.IdReq;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.io.InputStreamResource;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.CacheControl;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.*;
 
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -49,6 +57,9 @@ public class ZsxqController {
 
     @Autowired
     private ZsxqImageService imageService;
+
+    @Autowired
+    private ZsxqFileService fileService;
 
     @Autowired
     private ZsxqSyncService syncService;
@@ -176,6 +187,62 @@ public class ZsxqController {
         return value == null ? "" : String.valueOf(value).trim();
     }
 
+    /**
+     * 话题附件列表：按 topicIds 批量查询，返回 {@code Map<topicId, List<附件>>}。
+     *
+     * <p>只返回元数据，文件内容在用户点击下载时再按需落到对象存储；
+     * {@code stored=true} 表示已经进入对象存储。</p>
+     */
+    @HasPermission("zsxq:read")
+    @GetMapping("files")
+    public AjaxResult files(@RequestParam(required = false) List<String> topicIds) {
+        Map<String, List<Map<String, Object>>> result = new LinkedHashMap<>();
+        Map<String, List<ZsxqFile>> grouped = fileService.byTopicIds(topicIds);
+        for (Map.Entry<String, List<ZsxqFile>> entry : grouped.entrySet()) {
+            List<Map<String, Object>> list = new ArrayList<>();
+            for (ZsxqFile file : entry.getValue()) {
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("fileId", file.getFileId());
+                item.put("name", file.getName());
+                item.put("size", file.getFileSize());
+                item.put("contentType", file.getContentType());
+                item.put("stored", file.getS3Key() != null && !file.getS3Key().isBlank());
+                list.add(item);
+            }
+            result.put(entry.getKey(), list);
+        }
+        return new AjaxResult().ok().data(result);
+    }
+
+    /**
+     * 附件下载：首次访问时用 file_id 换取星球下载地址、写入对象存储，然后把 S3 流式返回。
+     * 同一附件后续直接读对象存储，不再请求星球。
+     */
+    @HasPermission("zsxq:read")
+    @GetMapping("file")
+    public ResponseEntity<InputStreamResource> file(@RequestParam String topicId,
+                                                    @RequestParam String fileId) {
+        ZsxqFile file = fileService.find(topicId, fileId);
+        if (file == null) return ResponseEntity.notFound().build();
+        try {
+            ZsxqFile stored = fileService.ensureStored(file);
+            InputStream in = fileService.open(stored);
+            ContentDisposition disposition = ContentDisposition.attachment()
+                    .filename(fileService.fileName(stored), StandardCharsets.UTF_8)
+                    .build();
+            ResponseEntity.BodyBuilder builder = ResponseEntity.ok()
+                    .header(HttpHeaders.CONTENT_DISPOSITION, disposition.toString())
+                    .contentType(MediaType.parseMediaType(fileService.contentType(stored)))
+                    .cacheControl(CacheControl.maxAge(365, TimeUnit.DAYS).cachePrivate().immutable());
+            if (stored.getFileSize() != null && stored.getFileSize() > 0) {
+                builder.contentLength(stored.getFileSize());
+            }
+            return builder.body(new InputStreamResource(in));
+        } catch (Exception e) {
+            return ResponseEntity.<InputStreamResource>status(HttpStatus.BAD_GATEWAY).build();
+        }
+    }
+
     /** 统计：帖子总数（不含专栏文章）/ 星球数 / 专栏数 */
     @HasPermission("zsxq:read")
     @GetMapping("stats")
@@ -221,8 +288,9 @@ public class ZsxqController {
         jdbc.update("DELETE FROM zsxq_column WHERE group_id = ?", id);
         jdbc.update("DELETE FROM zsxq_topic WHERE group_id = ?", id);
         groupRepository.deleteById(id);
-        // 正文图片对象与话题一起失效；删除失败只记日志，不阻塞
+        // 正文图片/附件对象与话题一起失效；删除失败只记日志，不阻塞
         imageService.deleteKeys(imageKeys);
+        fileService.deleteKeys(fileService.deleteByGroup(id));
         return new AjaxResult().ok();
     }
 

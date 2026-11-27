@@ -218,6 +218,62 @@
 .zsxq-post-images .zsxq-post-image:hover img { transform: scale(1.04); }
 .zsxq-post-preview-img { cursor: zoom-out; }
 
+/* 附件：文件名 + 大小，点击后由服务端按需下载并落对象存储 */
+.zsxq-post-files {
+    margin-top: 14px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: var(--oa-color-fill, #f5f5f5);
+}
+
+.zsxq-post-files-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--oa-color-text-secondary, #8c8c8c);
+}
+
+.zsxq-post-file-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.zsxq-post-file {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 4px;
+    color: var(--oa-color-text, #1f1f1f);
+    text-decoration: none;
+    border-radius: 6px;
+}
+
+.zsxq-post-file:hover,
+.zsxq-post-file:focus-visible {
+    background: rgba(235, 47, 150, .08);
+    color: #eb2f96;
+}
+
+.zsxq-post-file-icon { flex: none; color: #eb2f96; }
+
+.zsxq-post-file-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.zsxq-post-file-size {
+    flex: none;
+    font-size: 12px;
+    color: var(--oa-color-text-secondary, #8c8c8c);
+}
+
 /* 专栏完整正文：保留文章排版，图片统一自适应，长内容不截断。 */
 .zsxq-article-title {
     margin: 18px 0 10px;

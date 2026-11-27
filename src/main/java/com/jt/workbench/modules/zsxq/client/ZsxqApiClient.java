@@ -205,6 +205,23 @@ public class ZsxqApiClient {
     private static final java.util.regex.Pattern ARTICLE_DIV_TAG = java.util.regex.Pattern.compile(
             "(?is)<(/?)\\s*div\\b[^>]*>");
 
+    /**
+     * 用附件 {@code file_id} 换取临时下载地址。
+     *
+     * <p>该接口在星球侧有下载量/频率监控，调用方需要控制节奏，不要批量并发请求。</p>
+     */
+    public String fileDownloadUrl(String fileId) {
+        String id = fileId == null ? "" : fileId.trim();
+        if (id.isEmpty()) throw new ZsxqApiException(0, "知识星球附件 file_id 为空");
+        String path = "/v2/files/" + URLEncoder.encode(id, StandardCharsets.UTF_8) + "/download_url";
+        ZsxqModels.FileDownloadUrl data = get(path, ZsxqModels.FileDownloadUrl.class);
+        String url = data == null ? "" : data.getDownloadUrl();
+        if (url == null || url.isBlank()) {
+            throw new ZsxqApiException(0, "知识星球未返回附件下载地址（file_id=" + id + "）");
+        }
+        return url.trim();
+    }
+
     /** 注册 1059/40001 原地重试的回调（用于任务日志），返回自身便于链式调用。 */
     public ZsxqApiClient onRetry(Consumer<String> listener) {
         this.retryListener = listener == null ? message -> { } : listener;

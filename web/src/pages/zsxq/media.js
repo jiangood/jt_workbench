@@ -35,3 +35,25 @@ export function fmtTime(v) {
     if (s.includes('T')) return s.replace('T', ' ').slice(0, 16).replace(/-/g, '/')
     return s.slice(0, 16)
 }
+
+/** 附件下载地址：由服务端按需下载到对象存储后以原文件名返回 */
+export function fileDownloadUrl(topicId, fileId) {
+    const t = String(topicId || '').trim()
+    const f = String(fileId || '').trim()
+    if (!t || !f) return null
+    return UrlUtils.contextPath(`/admin/zsxq/file?topicId=${encodeURIComponent(t)}&fileId=${encodeURIComponent(f)}`)
+}
+
+/** 字节数 -> 可读大小 */
+export function fmtSize(bytes) {
+    const n = Number(bytes)
+    if (!Number.isFinite(n) || n <= 0) return ''
+    const units = ['B', 'KB', 'MB', 'GB', 'TB']
+    let value = n
+    let i = 0
+    while (value >= 1024 && i < units.length - 1) {
+        value /= 1024
+        i += 1
+    }
+    return `${value >= 10 || i === 0 ? Math.round(value) : value.toFixed(1)} ${units[i]}`
+}

@@ -44,6 +44,12 @@ public class ZsxqTopic extends BaseEntity {
     /** 图片回填失败次数（连续失败 3 次后不再自动重试） */
     private Integer imageFailCount = 0;
 
+    /** 附件清单抓取完成时间（epoch 毫秒，null 表示尚未从星球接口确认过） */
+    private Long fileSyncedAt;
+
+    /** 附件清单抓取失败次数（历史帖子补齐清单时使用） */
+    private Integer fileFailCount = 0;
+
     /** 封面：图片对象 key（新数据）或源站图片 URL（未回填的旧数据） */
     @Column(length = 2048)
     private String cover;
