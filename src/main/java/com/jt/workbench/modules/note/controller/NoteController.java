@@ -1,9 +1,11 @@
 package com.jt.workbench.modules.note.controller;
 
+import com.jt.workbench.modules.note.dto.NoteListItem;
 import com.jt.workbench.modules.note.entity.Note;
 import com.jt.workbench.modules.note.entity.NoteFolder;
-import com.jt.workbench.modules.note.repo.NoteRepository;
 import com.jt.workbench.modules.note.repo.NoteFolderRepository;
+import com.jt.workbench.modules.note.repo.NoteRepository;
+import com.jt.workbench.modules.note.service.NoteService;
 import io.github.jiangood.openadmin.util.dto.AjaxResult;
 import io.github.jiangood.openadmin.framework.perm.HasPermission;
 import org.springframework.data.domain.Page;
@@ -25,6 +27,9 @@ public class NoteController {
     @org.springframework.beans.factory.annotation.Autowired
     private NoteFolderRepository noteFolderRepository;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private NoteService noteService;
+
     /** 分页查询：folderId=none 为未分类，keyword 为标题/正文模糊搜索，都为空为全部 */
     @HasPermission("note:read")
     @PostMapping("page")
@@ -41,7 +46,9 @@ public class NoteController {
         } else {
             page = noteRepository.findAll(pageable);
         }
-        return new AjaxResult().ok().data(page);
+        // 列表不携带富文本正文，避免分页接口被大段 HTML 拖慢
+        Page<NoteListItem> items = page.map(noteService::toListItem);
+        return new AjaxResult().ok().data(items);
     }
 
     /** 详情 */
@@ -49,14 +56,16 @@ public class NoteController {
     @GetMapping("info/{id}")
     public AjaxResult info(@PathVariable String id) {
         Note item = noteRepository.findById(id).orElse(null);
-        return item != null ? new AjaxResult().ok().data(item) : new AjaxResult();
+        if (item == null) return new AjaxResult();
+        noteService.enrich(item);
+        return new AjaxResult().ok().data(item);
     }
 
     /** 创建 */
     @HasPermission("note:edit")
     @PostMapping("create")
     public AjaxResult create(@RequestBody Note input) {
-        Note saved = noteRepository.save(input);
+        Note saved = noteService.create(input);
         return new AjaxResult().ok().data(saved);
     }
 
@@ -64,17 +73,15 @@ public class NoteController {
     @HasPermission("note:edit")
     @PostMapping("update")
     public AjaxResult update(@RequestBody Note input) {
-        if (noteRepository.existsById(input.getId())) {
-            noteRepository.save(input);
-        }
-        return new AjaxResult();
+        Note saved = noteService.update(input);
+        return saved == null ? new AjaxResult() : new AjaxResult().ok().data(saved);
     }
 
     /** 删除 */
     @HasPermission("note:edit")
     @PostMapping("delete")
     public AjaxResult delete(@RequestBody io.github.jiangood.openadmin.util.dto.IdReq req) {
-        noteRepository.deleteById(req.getId());
+        noteService.delete(req.getId());
         return new AjaxResult();
     }
 

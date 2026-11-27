@@ -1,5 +1,6 @@
 package com.jt.workbench.modules.zsxq.controller;
 
+import com.jt.workbench.modules.note.entity.Note;
 import com.jt.workbench.modules.zsxq.entity.ZsxqColumn;
 import com.jt.workbench.modules.zsxq.entity.ZsxqFile;
 import com.jt.workbench.modules.zsxq.entity.ZsxqGroup;
@@ -9,6 +10,7 @@ import com.jt.workbench.modules.zsxq.repo.ZsxqGroupRepository;
 import com.jt.workbench.modules.zsxq.repo.ZsxqTopicRepository;
 import com.jt.workbench.modules.zsxq.service.ZsxqFileService;
 import com.jt.workbench.modules.zsxq.service.ZsxqImageService;
+import com.jt.workbench.modules.zsxq.service.ZsxqNoteService;
 import com.jt.workbench.modules.job.service.ZsxqSyncService;
 import io.github.jiangood.openadmin.framework.perm.HasPermission;
 import io.github.jiangood.openadmin.util.dto.AjaxResult;
@@ -62,6 +64,9 @@ public class ZsxqController {
 
     @Autowired
     private ZsxqFileService fileService;
+
+    @Autowired
+    private ZsxqNoteService noteService;
 
     @Autowired
     private ZsxqSyncService syncService;
@@ -126,6 +131,32 @@ public class ZsxqController {
     public AjaxResult info(@PathVariable String id) {
         ZsxqTopic item = topicRepository.findById(id).orElse(null);
         return item != null ? new AjaxResult().ok().data(item) : new AjaxResult();
+    }
+
+    /** 话题转笔记请求：id 为本地话题主键，title/folderId 可在转换弹窗里调整 */
+    public record ConvertNoteReq(String id, String title, String folderId) {
+    }
+
+    /**
+     * 把一个知识星球话题转成个人笔记。
+     *
+     * <p>正文与图片、附件会复制到笔记的文件库；同一话题重复转换时返回已有笔记。
+     * 写笔记属于笔记编辑权限，因此这里校验 {@code note:edit}。</p>
+     */
+    @HasPermission("note:edit")
+    @PostMapping("note")
+    public AjaxResult convertNote(@RequestBody ConvertNoteReq req) {
+        String id = req == null ? null : blankToNull(req.id());
+        if (id == null) return AjaxResult.err("参数错误");
+        ZsxqTopic topic = topicRepository.findById(id).orElse(null);
+        if (topic == null) return AjaxResult.err("帖子不存在");
+        try {
+            Note note = noteService.convert(topic, req.title(), req.folderId());
+            return new AjaxResult().ok().data(note);
+        } catch (Exception e) {
+            log.error("知识星球转笔记失败 topicId={} error={}", topic.getTopicId(), e.getMessage(), e);
+            return AjaxResult.err("转为笔记失败：" + e.getMessage());
+        }
     }
 
     /**

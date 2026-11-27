@@ -1,7 +1,8 @@
-import {ArrowLeftOutlined} from '@ant-design/icons'
+import {ArrowLeftOutlined, EyeOutlined} from '@ant-design/icons'
 import {Button, Card, Form, Input, Select, Space, Spin, message} from 'antd'
 import React from 'react'
-import {HttpClient, Page, PageUtils, history} from '@jiangood/open-admin'
+import {FieldEditor, FieldUploadFile, HttpClient, Page, PageUtils, history} from '@jiangood/open-admin'
+import {plainTextToHtml} from './html'
 import './note.css'
 
 export const pageMeta = {title: '笔记编辑'}
@@ -74,7 +75,9 @@ export default class NoteEditPage extends React.Component {
                     id: data.id,
                     title: data.title,
                     folderId: data.folderId || undefined,
-                    content: data.content,
+                    // 历史笔记只有纯文本正文，编辑时转成简单 HTML 交给富文本编辑器
+                    contentHtml: data.contentHtml || plainTextToHtml(data.content || ''),
+                    attachments: data.attachments || undefined,
                 })
             } else {
                 message.error('笔记不存在或已删除')
@@ -104,6 +107,11 @@ export default class NoteEditPage extends React.Component {
         history.push('/note')
     }
 
+    handleView = () => {
+        const {id} = this.state
+        if (id) history.push(`/note/view?id=${encodeURIComponent(id)}`)
+    }
+
     render() {
         const {id, loading, saving, folders, isMobile} = this.state
         const isEdit = !!id
@@ -112,46 +120,51 @@ export default class NoteEditPage extends React.Component {
 
         return <Page padding={false}>
             <div className='note-edit-page'>
-                    <Card
-                        className='note-edit-card'
-                        title={(
-                            <Space>
-                                <Button type='text' icon={<ArrowLeftOutlined/>} onClick={this.handleBack} aria-label='返回笔记列表'/>
-                                <span>{title}</span>
-                            </Space>
-                        )}
-                        extra={isMobile ? null : (
-                            <Space>
-                                <Button onClick={this.handleBack}>取消</Button>
-                                <Button type='primary' loading={saving} onClick={this.handleSave}>保存</Button>
-                            </Space>
-                        )}
-                    >
-                        <Spin spinning={loading}>
-                            <Form ref={this.formRef} labelCol={{flex: '70px'}} style={{maxWidth: 900}}>
-                                <Form.Item name='id' hidden>
-                                    <Input/>
-                                </Form.Item>
-                                <Form.Item label='标题' name='title' rules={[{required: true, message: '请输入标题'}]}>
-                                    <Input placeholder='请输入标题'/>
-                                </Form.Item>
-                                <Form.Item label='目录' name='folderId'>
-                                    <Select allowClear placeholder='未分类' options={folderOptions}/>
-                                </Form.Item>
-                                <Form.Item label='正文' name='content'>
-                                    <Input.TextArea autoSize={isMobile ? {minRows: 12, maxRows: 40} : {minRows: 16, maxRows: 40}}
-                                                    placeholder='请输入正文'/>
-                                </Form.Item>
-                            </Form>
-                        </Spin>
-                    </Card>
-                    {isMobile && (
-                        <div className='note-edit-actions'>
+                <Card
+                    className='note-edit-card'
+                    title={(
+                        <Space>
+                            <Button type='text' icon={<ArrowLeftOutlined/>} onClick={this.handleBack} aria-label='返回笔记列表'/>
+                            <span>{title}</span>
+                        </Space>
+                    )}
+                    extra={isMobile ? null : (
+                        <Space>
+                            {isEdit ? <Button icon={<EyeOutlined/>} onClick={this.handleView}>预览</Button> : null}
                             <Button onClick={this.handleBack}>取消</Button>
                             <Button type='primary' loading={saving} onClick={this.handleSave}>保存</Button>
-                        </div>
+                        </Space>
                     )}
-                </div>
-            </Page>
+                >
+                    <Spin spinning={loading}>
+                        <Form ref={this.formRef} labelCol={{flex: '70px'}} style={{maxWidth: 960}}>
+                            <Form.Item name='id' hidden>
+                                <Input/>
+                            </Form.Item>
+                            <Form.Item label='标题' name='title' rules={[{required: true, message: '请输入标题'}]}>
+                                <Input placeholder='请输入标题'/>
+                            </Form.Item>
+                            <Form.Item label='目录' name='folderId'>
+                                <Select allowClear placeholder='未分类' options={folderOptions}/>
+                            </Form.Item>
+                            <Form.Item label='正文' name='contentHtml'>
+                                <FieldEditor height={isMobile ? 360 : 480} isPublic={false}/>
+                            </Form.Item>
+                            <Form.Item label='附件' name='attachments'
+                                       extra='支持 PDF、Word、压缩包等；正文图片会跟随笔记一起保存。'>
+                                <FieldUploadFile maxCount={20} listType='text' isPublic={false}/>
+                            </Form.Item>
+                        </Form>
+                    </Spin>
+                </Card>
+                {isMobile && (
+                    <div className='note-edit-actions'>
+                        {isEdit ? <Button icon={<EyeOutlined/>} onClick={this.handleView}>预览</Button> : null}
+                        <Button onClick={this.handleBack}>取消</Button>
+                        <Button type='primary' loading={saving} onClick={this.handleSave}>保存</Button>
+                    </div>
+                )}
+            </div>
+        </Page>
     }
 }

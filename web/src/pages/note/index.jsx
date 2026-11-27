@@ -1,7 +1,8 @@
-import {DeleteOutlined, EditOutlined, FolderAddOutlined, PlusOutlined, SearchOutlined, SettingOutlined} from '@ant-design/icons'
+import {DeleteOutlined, EditOutlined, FolderAddOutlined, PaperClipOutlined, PlusOutlined, SearchOutlined, SettingOutlined} from '@ant-design/icons'
 import {Button, Form, Input, Modal, Select, Segmented, Space, Tree, Typography} from 'antd'
 import React from 'react'
 import {FormModal, HttpClient, Page, PermActions, ProTable, history} from '@jiangood/open-admin'
+import {htmlToPlainText} from './html'
 import './note.css'
 
 const MOBILE_QUERY = '(max-width: 768px)'
@@ -82,6 +83,11 @@ export default class NotePage extends React.Component {
     openEditNote = (record) => {
         if (!record?.id) return
         history.push(`/note/edit?id=${encodeURIComponent(record.id)}`)
+    }
+
+    openViewNote = (record) => {
+        if (!record?.id) return
+        history.push(`/note/view?id=${encodeURIComponent(record.id)}`)
     }
 
     handleNoteDelete = (record) => {
@@ -191,7 +197,12 @@ export default class NotePage extends React.Component {
                     columns={[
                         {
                             title: '标题', dataIndex: 'title', className: 'note-cell-title',
-                            render: (v, record) => <a onClick={() => this.openEditNote(record)}>{v}</a>,
+                            render: (v, record) => <a onClick={() => this.openViewNote(record)}>
+                                {v}
+                                {Number(record.attachmentCount) > 0
+                                    ? <PaperClipOutlined className='note-title-attachment' aria-label={`${record.attachmentCount} 个附件`}/>
+                                    : null}
+                            </a>,
                         },
                         {
                             title: '目录', dataIndex: 'folderId', width: 140, className: 'note-cell-folder',
@@ -199,16 +210,17 @@ export default class NotePage extends React.Component {
                         },
                         {
                             title: '内容', dataIndex: 'content', ellipsis: true, className: 'note-cell-content',
-                            render: (v) => (v || '').replace(/[#*`>\s]+/g, ' ').trim().slice(0, 80),
+                            render: (v) => htmlToPlainText(v || '').slice(0, 80),
                         },
                         {
                             title: '更新时间', dataIndex: 'updateTime', width: 160, className: 'note-cell-updated',
                             render: v => <span>{v || '-'}</span>,
                         },
                         {
-                            title: '操作', dataIndex: 'option', width: 130, className: 'note-cell-actions',
+                            title: '操作', dataIndex: 'option', width: 160, className: 'note-cell-actions',
                             render: (_, record) => (
                                 <PermActions more={isMobile} actions={[
+                                    {label: '查看', onClick: () => this.openViewNote(record)},
                                     {label: '编辑', perm: 'note:edit', onClick: () => this.openEditNote(record)},
                                     {label: '删除', danger: true, perm: 'note:edit', onClick: () => this.handleNoteDelete(record)},
                                 ]}/>

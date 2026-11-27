@@ -468,3 +468,16 @@
     .zsxq-post { padding: 14px 14px; }
     .zsxq-post-images .zsxq-post-image { width: calc(50% - 4px); height: 140px; }
 }
+
+/* 帖子元信息里的「转为笔记」按钮：与纯文本元信息保持同一行高 */
+.zsxq-post-meta .zsxq-post-note.ant-btn-link {
+    height: auto;
+    padding: 0;
+    color: #eb2f96;
+    font-size: 12px;
+    line-height: 1.6;
+}
+
+.zsxq-post-meta .zsxq-post-note.ant-btn-link:hover {
+    color: #c41d7f;
+}

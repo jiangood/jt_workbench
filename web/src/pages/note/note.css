@@ -405,3 +405,220 @@
         }
     }
 }
+
+.note-title-attachment {
+    margin-left: 6px;
+    color: var(--oa-color-text-tertiary, #999);
+    font-size: 12px;
+}
+
+/* ---------- 笔记详情 ---------- */
+
+.note-view-page {
+    padding: 16px;
+}
+
+.note-view-card {
+    .ant-card-body {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 24px 28px 28px;
+    }
+}
+
+.note-view-title {
+    margin: 0 0 8px;
+    font-size: 24px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.note-view-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 12px;
+    margin-bottom: 20px;
+    color: var(--oa-color-text-secondary, #8c8c8c);
+    font-size: 12px;
+
+    a {
+        color: var(--oa-color-primary, #1677ff);
+        text-decoration: none;
+    }
+
+    a:hover {
+        text-decoration: underline;
+    }
+}
+
+.note-rich-content {
+    color: var(--oa-color-text, #1f1f1f);
+    font-size: 15px;
+    line-height: 1.85;
+    overflow-wrap: anywhere;
+
+    p {
+        margin: 0 0 0.8em;
+    }
+
+    h1,
+    h2,
+    h3,
+    h4,
+    h5,
+    h6 {
+        margin: 1.1em 0 0.5em;
+        line-height: 1.35;
+    }
+
+    img {
+        max-width: 100%;
+        height: auto;
+        border-radius: 4px;
+    }
+
+    a {
+        color: var(--oa-color-primary, #1677ff);
+    }
+
+    blockquote {
+        margin: 0.8em 0;
+        padding: 4px 12px;
+        border-left: 3px solid var(--oa-color-border, #e8e8e8);
+        color: var(--oa-color-text-secondary, #666);
+    }
+
+    pre,
+    code {
+        background: var(--oa-color-fill-secondary, rgba(0, 0, 0, 0.04));
+        border-radius: 4px;
+    }
+
+    pre {
+        padding: 10px 12px;
+        overflow-x: auto;
+    }
+
+    table {
+        max-width: 100%;
+        border-collapse: collapse;
+    }
+
+    th,
+    td {
+        padding: 6px 10px;
+        border: 1px solid var(--oa-color-border, #e8e8e8);
+    }
+}
+
+.note-view-attachments {
+    margin-top: 24px;
+    padding-top: 16px;
+    border-top: 1px dashed var(--oa-color-border, #e8e8e8);
+}
+
+.note-view-attachments-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 8px;
+    font-weight: 600;
+    color: var(--oa-color-text-secondary, #666);
+}
+
+.note-view-attachment-list {
+    display: grid;
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+
+    li {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        min-width: 0;
+    }
+}
+
+.note-view-attachment {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: var(--oa-color-fill-quaternary, rgba(0, 0, 0, 0.03));
+    color: var(--oa-color-text, #1f1f1f);
+    text-decoration: none;
+
+    &:hover {
+        background: var(--oa-color-fill-secondary, rgba(0, 0, 0, 0.06));
+    }
+}
+
+.note-view-attachment-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.note-view-attachment-size {
+    flex: none;
+    color: var(--oa-color-text-tertiary, #999);
+    font-size: 12px;
+}
+
+.note-view-attachment-download {
+    flex: none;
+    padding: 8px;
+    border-radius: 6px;
+    color: var(--oa-color-text-secondary, #666);
+
+    &:hover {
+        background: var(--oa-color-fill-secondary, rgba(0, 0, 0, 0.06));
+    }
+}
+
+@media (max-width: 768px) {
+    .note-view-page {
+        padding: 8px 8px calc(84px + env(safe-area-inset-bottom));
+
+        .note-view-card {
+            overflow: hidden;
+
+            .ant-card-head {
+                min-height: 52px;
+                padding-inline: 8px;
+            }
+
+            .ant-card-body {
+                padding: 16px 14px 20px;
+            }
+        }
+
+        .note-view-title {
+            font-size: 20px;
+        }
+
+        .note-view-actions {
+            position: fixed;
+            inset: auto 0 0;
+            z-index: 20;
+            display: flex;
+            gap: 8px;
+            padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+            border-top: 1px solid var(--oa-color-border, #e8e8e8);
+            background: var(--oa-color-bg-container, #fff);
+
+            .ant-btn {
+                flex: 1;
+                min-height: 44px;
+            }
+        }
+    }
+}

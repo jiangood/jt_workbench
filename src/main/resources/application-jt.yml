@@ -12,6 +12,10 @@ sys:
   # 同一账号最多 3 个会话同时在线（3 个人并发登录共用账号），第 4 次登录被阻止并提示先退出
   maximum-sessions: 3
 
+  file:
+    # 笔记附件/知识星球转笔记需要接收研报压缩包等，扩展框架默认白名单（框架仍会拦截危险文件头）
+    allow-upload: doc,docx,xls,xlsx,ppt,pptx,pdf,zip,rar,7z,epub,csv,md,json,txt,log,mp3,m4a,mp4,wav,png,jpg,jpeg,webp,gif
+
   # 对象存储：默认 LOCAL（容器内 /home/files），无需外部依赖。
   # 书籍 EPUB / 上传附件若要落到 R2（与原 Node 单体共用 bucket jt-workbench），
   # 取消下面的注释并通过环境变量注入密钥后重启（注意：S3 密钥不回显，修改需重启）：

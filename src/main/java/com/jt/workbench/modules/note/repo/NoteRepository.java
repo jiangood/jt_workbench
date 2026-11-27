@@ -20,4 +20,7 @@ public interface NoteRepository extends JpaRepository<Note, String> {
     /** 标题 / 正文关键字搜索 */
     @Query("select n from Note n where n.title like %:keyword% or n.content like %:keyword% order by n.updateTime desc")
     Page<Note> pageByKeyword(@Param("keyword") String keyword, Pageable pageable);
+
+    /** 知识星球转笔记的幂等判断：同一话题只保留一条来源笔记 */
+    java.util.Optional<Note> findFirstBySourceTopicId(String sourceTopicId);
 }

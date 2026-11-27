@@ -1,9 +1,10 @@
 import React from 'react'
-import {DownloadOutlined, PaperClipOutlined} from '@ant-design/icons'
-import {Image, Switch, Tag} from 'antd'
+import {DownloadOutlined, FileTextOutlined, PaperClipOutlined} from '@ant-design/icons'
+import {Button, Image, Switch, Tag} from 'antd'
 import {fileDownloadUrl, fmtSize, fmtTime, imageSrc, topicImages} from './media'
 import {parseZsxqText} from './richText'
 import {sanitizeArticleHtml} from './articleContent'
+import SaveNoteModal from './SaveNoteModal'
 
 /** 摘要超过该长度时默认折叠，避免单条帖子占满整屏 */
 const CLAMP_THRESHOLD = 600
@@ -15,6 +16,7 @@ export default class TopicPost extends React.Component {
         ownerCommentOnly: false,
         commentsExpanded: false,
         previewIndex: -1,
+        noteModalOpen: false,
     }
 
     toggleExpanded = () => this.setState(prev => ({expanded: !prev.expanded}))
@@ -44,7 +46,7 @@ export default class TopicPost extends React.Component {
             showSourceLink = true,
             collapseCommentsWithoutOwner = false,
         } = this.props
-        const {expanded, ownerCommentOnly, commentsExpanded, previewIndex} = this.state
+        const {expanded, ownerCommentOnly, commentsExpanded, previewIndex, noteModalOpen} = this.state
         const markedIsOwner = distinguishOwner && isOwner
         const articleHtml = sanitizeArticleHtml(item.articleContent, item.articleTitle)
         const hasArticleContent = !!articleHtml.trim()
@@ -80,6 +82,9 @@ export default class TopicPost extends React.Component {
                 {Number(item.likesCount) > 0 ? <span>赞 {item.likesCount}</span> : null}
                 {Number(item.commentCount) > 0 ? <span>评论 {item.commentCount}</span> : null}
                 {item.lastCommentTime ? <span>最近回复 {fmtTime(item.lastCommentTime)}</span> : null}
+                <Button className='zsxq-post-note' type='link' size='small'
+                        icon={<FileTextOutlined/>} perm='note:edit'
+                        onClick={() => this.setState({noteModalOpen: true})}>转为笔记</Button>
             </div>
 
             {hasArticleContent ? <>
@@ -166,6 +171,9 @@ export default class TopicPost extends React.Component {
                     ))}
                 </ul>
             </div> : null}
+
+            <SaveNoteModal open={noteModalOpen} topic={item}
+                           onCancel={() => this.setState({noteModalOpen: false})}/>
         </article>
     }
 }
