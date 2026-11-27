@@ -1,6 +1,6 @@
 import React from 'react'
-import {ReloadOutlined, SearchOutlined} from '@ant-design/icons'
-import {Button, Empty, Input, Select, Spin, Switch, Tooltip} from 'antd'
+import {ArrowDownOutlined, ArrowUpOutlined, ReloadOutlined, SearchOutlined} from '@ant-design/icons'
+import {Button, Empty, Input, Spin, Switch, Tooltip} from 'antd'
 import {HttpClient, Page} from '@jiangood/open-admin'
 import TopicPost from './TopicPost'
 import './zsxq.css'
@@ -9,19 +9,14 @@ export const pageMeta = {title: '知识星球'}
 
 const PAGE_SIZE = 20
 
-/** 时间排序选项：发布时间（默认倒序）/ 发布时间正序 / 最近回复倒序 / 最近回复正序 */
-const SORT_OPTIONS = [
-    {value: 'sourceCreateTime|DESC', label: '发布时间倒序'},
-    {value: 'sourceCreateTime|ASC', label: '发布时间正序'},
-    {value: 'lastCommentTime|DESC', label: '最近回复倒序'},
-    {value: 'lastCommentTime|ASC', label: '最近回复正序'},
-]
+/** 发布时间排序字段；唯一排序方式，单击按钮切换正序/倒序 */
+const SORT_PROP = 'sourceCreateTime'
 
 /** 知识星球阅读页：传统单列信息流（帖子正文、图片与评论直接展开） */
 export default class ZsxqReaderPage extends React.Component {
     state = {
         keyword: '',
-        sort: 'sourceCreateTime|DESC',
+        sort: `${SORT_PROP}|DESC`,
         ownerOnly: false,
         items: [],
         page: 1,
@@ -81,8 +76,8 @@ export default class ZsxqReaderPage extends React.Component {
             const kw = this.state.keyword?.trim()
             if (kw) params.keyword = kw
             if (this.state.ownerOnly) params.ownerOnly = true
-            const [sortProp, sortDir] = (this.state.sort || 'sourceCreateTime|DESC').split('|')
-            params.sort = sortProp || 'sourceCreateTime'
+            const [sortProp, sortDir] = (this.state.sort || `${SORT_PROP}|DESC`).split('|')
+            params.sort = sortProp || SORT_PROP
             params.direction = sortDir || 'DESC'
             const rs = await HttpClient.post('admin/zsxq/page', null, params)
             if (seq !== this.loadSeq) return
@@ -170,6 +165,7 @@ export default class ZsxqReaderPage extends React.Component {
 
     render() {
         const {keyword, sort, ownerOnly, loading, initialLoading, stats, groups} = this.state
+        const sortAsc = sort === `${SORT_PROP}|ASC`
         const topicsCount = stats.topics ?? 0
         const groupsCount = stats.groups ?? groups.length
 
@@ -194,8 +190,16 @@ export default class ZsxqReaderPage extends React.Component {
                                     onChange={(v) => this.setState({ownerOnly: v}, () => this.reloadList(false))}/>
                             <span>只看星主</span>
                         </label>
-                        <Select className='zsxq-feed-sort' value={sort} options={SORT_OPTIONS}
-                                onChange={(v) => this.setState({sort: v}, () => this.reloadList(false))}/>
+                        <Tooltip title='单击切换发布时间正序/倒序'>
+                            <Button className='zsxq-feed-sort'
+                                    icon={sortAsc ? <ArrowUpOutlined/> : <ArrowDownOutlined/>}
+                                    onClick={() => this.setState(
+                                        s => ({sort: `${SORT_PROP}|${s.sort === `${SORT_PROP}|ASC` ? 'DESC' : 'ASC'}`}),
+                                        () => this.reloadList(false),
+                                    )}>
+                                发布时间排序
+                            </Button>
+                        </Tooltip>
                         <Tooltip title='刷新'>
                             <Button icon={<ReloadOutlined/>} loading={loading && !initialLoading} aria-label='刷新'
                                     onClick={() => { this.loadBase(); this.reloadList(false) }}/>

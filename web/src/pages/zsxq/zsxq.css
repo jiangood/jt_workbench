@@ -53,7 +53,7 @@
 }
 
 .zsxq-feed-search { width: 220px; }
-.zsxq-feed-sort { width: 148px; }
+.zsxq-feed-sort { width: auto; white-space: nowrap; }
 
 .zsxq-feed-switch {
     display: inline-flex;
@@ -409,7 +409,6 @@
     .zsxq-feed-head { align-items: stretch; }
     .zsxq-feed-filters { width: 100%; }
     .zsxq-feed-search { flex: 1; width: auto; min-width: 0; }
-    .zsxq-feed-sort { width: 132px; }
     .zsxq-post { padding: 14px 14px; }
     .zsxq-post-images .zsxq-post-image { width: calc(50% - 4px); height: 140px; }
 }
