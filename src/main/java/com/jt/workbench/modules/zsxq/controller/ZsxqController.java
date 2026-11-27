@@ -13,6 +13,7 @@ import com.jt.workbench.modules.job.service.ZsxqSyncService;
 import io.github.jiangood.openadmin.framework.perm.HasPermission;
 import io.github.jiangood.openadmin.util.dto.AjaxResult;
 import io.github.jiangood.openadmin.util.dto.IdReq;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.InputStreamResource;
 import org.springframework.data.domain.Page;
@@ -44,6 +45,7 @@ import java.util.concurrent.TimeUnit;
  */
 @RestController
 @RequestMapping("admin/zsxq")
+@Slf4j
 public class ZsxqController {
 
     @Autowired
@@ -239,6 +241,7 @@ public class ZsxqController {
             }
             return builder.body(new InputStreamResource(in));
         } catch (Exception e) {
+            log.warn("知识星球附件下载失败 topicId={} fileId={} error={}", topicId, fileId, e.getMessage());
             return ResponseEntity.<InputStreamResource>status(HttpStatus.BAD_GATEWAY).build();
         }
     }
