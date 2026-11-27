@@ -37,4 +37,4 @@
 - 版本发布：`release.yml` 在 push `vX.Y.Z` tag（或手动指定 tag）时构建并创建 GitHub Release；不推送版本或 `sha-*` 镜像标签。
 - **线上自动更新**：目标机由 Watchtower 监控 `ghcr.io/jiangood/jt_workbench:latest`，约每 5 分钟检查一次；发现新镜像后自动拉取、按 60 秒优雅停止旧容器、启动新容器并清理旧镜像。tag 发布成功后即进入自动部署队列，**不要默认要求手工 `docker compose pull && up -d`**；发布后应监控 Watchtower 日志和线上健康状态直至恢复。
 - 部署 compose 使用 GHCR 地址 `ghcr.io/jiangood/jt_workbench:latest`；`docker compose pull && docker compose up -d` 仅作为无 Watchtower 环境或应急恢复的手动方式（包为私有时目标机需先 `docker login ghcr.io`；详见 `deploy/README.md`）。
-- **禁止直操作生产**：本地不对线上资源做写操作；线上变更走既定发布流程，由 Watchtower 执行自动更新。
+- **禁止直操作生产**：本地不对线上资源做破坏性/变更性写操作；线上功能与配置变更走既定发布流程，由 Watchtower 执行自动更新。**例外**：经用户明确授权，可执行低风险的内容标记类操作（如知识星球帖子打标/清除标识），操作时需确认目标与影响范围。
