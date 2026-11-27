@@ -29,7 +29,9 @@ public interface ZsxqTopicRepository extends JpaRepository<ZsxqTopic, String> {
               and (:ownerOnly = false
                    or t.authorId = (select g.ownerId from ZsxqGroup g where g.id = t.groupId)
                    or t.author = (select g.owner from ZsxqGroup g where g.id = t.groupId))
-              and (:quality is null or t.quality = :quality)
+              and (:quality is null
+                   or (:quality = 'NONE' and (t.quality is null or t.quality = ''))
+                   or (:quality <> 'NONE' and t.quality = :quality))
             """)
     Page<ZsxqTopic> search(@Param("keyword") String keyword,
                            @Param("columnId") String columnId,

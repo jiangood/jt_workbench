@@ -87,6 +87,10 @@ class ZsxqTopicRepositoryTest {
         assertEquals(1, waterResult.getTotalElements());
         assertEquals("topic-water", waterResult.getContent().get(0).getId());
 
+        Page<ZsxqTopic> noneResult = repository.search(null, null, false, "NONE", PageRequest.of(0, 10));
+        assertEquals(1, noneResult.getTotalElements());
+        assertEquals("topic-plain", noneResult.getContent().get(0).getId());
+
         Page<ZsxqTopic> allResult = repository.search(null, null, false, null, PageRequest.of(0, 10));
         assertEquals(3, allResult.getTotalElements());
     }

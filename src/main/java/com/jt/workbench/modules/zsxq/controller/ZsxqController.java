@@ -77,7 +77,7 @@ public class ZsxqController {
     /** 可排序话题字段（限定取值，防止请求传入非法属性） */
     private static final Set<String> SORT_PROPERTIES = Set.of("sourceCreateTime", "lastCommentTime");
 
-    private static final Set<String> QUALITY_MARKS = Set.of("DRY", "WATER");
+    private static final Set<String> QUALITY_FILTERS = Set.of("DRY", "WATER", "NONE");
 
     @HasPermission("zsxq:read")
     @PostMapping("page")
@@ -89,16 +89,16 @@ public class ZsxqController {
                            @RequestParam(required = false) String sort,
                            @RequestParam(required = false) String direction) {
         Page<ZsxqTopic> page = topicRepository.search(blankToNull(keyword), blankToNull(columnId),
-                Boolean.TRUE.equals(ownerOnly), normalizeQuality(quality), effectivePageable(pageable, sort, direction));
+                Boolean.TRUE.equals(ownerOnly), normalizeQualityFilter(quality), effectivePageable(pageable, sort, direction));
         return new AjaxResult().ok().data(page);
     }
 
-    /** 质量标识：只接受 DRY/WATER，其他值视为不过滤/清除。 */
-    private static String normalizeQuality(String quality) {
+    /** 列表筛选：DRY/WATER/NONE(未标记)，其他值视为不过滤。 */
+    private static String normalizeQualityFilter(String quality) {
         String v = blankToNull(quality);
         if (v == null) return null;
         String upper = v.toUpperCase(Locale.ROOT);
-        return QUALITY_MARKS.contains(upper) ? upper : null;
+        return QUALITY_FILTERS.contains(upper) ? upper : null;
     }
 
     /** 取最终分页参数：请求显式指定 sort/direction 时优先；未指定时沿用默认（发布时间倒序） */
@@ -155,10 +155,18 @@ public class ZsxqController {
         if (id == null) return AjaxResult.err("参数错误");
         ZsxqTopic topic = topicRepository.findById(id).orElse(null);
         if (topic == null) return AjaxResult.err("帖子不存在");
-        String quality = normalizeQuality(req.quality());
+        String quality = normalizeQualityMark(req.quality());
         topic.setQuality(quality);
         topicRepository.save(topic);
         return new AjaxResult().ok().data(Map.of("id", topic.getId(), "quality", quality == null ? "" : quality));
+    }
+
+    /** 标记写入：只接受 DRY/WATER，空值清除。 */
+    private static String normalizeQualityMark(String quality) {
+        String v = blankToNull(quality);
+        if (v == null) return null;
+        String upper = v.toUpperCase(Locale.ROOT);
+        return ("DRY".equals(upper) || "WATER".equals(upper)) ? upper : null;
     }
 
     /** 话题转笔记请求：id 为本地话题主键，title/folderId/sourceUrl 可在转换弹窗里调整 */
