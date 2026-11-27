@@ -2,9 +2,9 @@ import {Spin} from 'antd'
 import React from 'react'
 import {HttpClient, history} from '@jiangood/open-admin'
 
-export const pageMeta = {layout: 'blank', title: '读书'}
+export const pageMeta = {layout: 'blank', title: '书架'}
 
-/** 读书入口：优先续读最近打开过的 EPUB，否则回到书架。 */
+/** 书架入口：优先续读最近打开过的 EPUB，否则回到书架。 */
 export default function BookEntry() {
     React.useEffect(() => {
         let cancelled = false

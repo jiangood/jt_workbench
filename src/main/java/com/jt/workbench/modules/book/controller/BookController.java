@@ -95,7 +95,7 @@ public class BookController {
         return new AjaxResult().ok().data(data);
     }
 
-    /** 读书入口：返回最近阅读且已有 EPUB 的书，没有记录时返回空 */
+    /** 书架入口：返回最近阅读且已有 EPUB 的书，没有记录时返回空 */
     @HasPermission("book:read")
     @GetMapping("latest")
     public AjaxResult latest() {
