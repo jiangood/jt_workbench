@@ -10,7 +10,7 @@
     </parent>
     <groupId>com.jt</groupId>
     <artifactId>jt-workbench</artifactId>
-    <version>2.0.79</version>
+    <version>2.0.80</version>
     <name>jt-workbench</name>
     <description>个人工作台（open-admin 迁移版）：资讯/股票/笔记/音乐/书架/提醒/知识星球</description>
 
