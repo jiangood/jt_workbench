@@ -1,9 +1,7 @@
 package com.jt.workbench.modules.news.controller;
 
-import com.jt.workbench.modules.news.entity.NewsBlockWord;
 import com.jt.workbench.modules.news.entity.NewsItem;
 import com.jt.workbench.modules.news.entity.NewsSource;
-import com.jt.workbench.modules.news.repo.NewsBlockWordRepository;
 import com.jt.workbench.modules.news.repo.NewsItemRepository;
 import com.jt.workbench.modules.news.repo.NewsSourceRepository;
 import io.github.jiangood.openadmin.framework.perm.HasPermission;
@@ -18,11 +16,10 @@ import org.springframework.web.bind.annotation.*;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.LinkedHashMap;
-import java.util.Locale;
 import java.util.Map;
 
 /**
- * 资讯：列表 / 已读 / 收藏 / 订阅源 / 屏蔽词维护。
+ * 资讯：列表 / 已读 / 订阅源维护。
  * 正文在浏览器端消毒后展示（原文入库）。
  */
 @RestController
@@ -35,9 +32,6 @@ public class NewsController {
     @Autowired
     private NewsSourceRepository newsSourceRepository;
 
-    @Autowired
-    private NewsBlockWordRepository newsBlockWordRepository;
-
     /** 分页查询：keyword 匹配标题/正文/作者，sourceId、status 可选 */
     @HasPermission("news:read")
     @PostMapping("page")
@@ -45,20 +39,17 @@ public class NewsController {
                            @RequestParam(required = false) String sourceId,
                            @RequestParam(required = false) String status,
                            @RequestParam(required = false) String keyword) {
-        purgeBlockedItems();
         Page<NewsItem> page = newsItemRepository.search(blankToNull(keyword), blankToNull(sourceId),
                 blankToNull(status), pageable);
         return new AjaxResult().ok().data(page);
     }
 
-    /** 统计：未读 / 收藏 / 总数 / 近 24 小时新增 / 订阅源数 */
+    /** 统计：未读 / 总数 / 近 24 小时新增 / 订阅源数 */
     @HasPermission("news:read")
     @GetMapping("stats")
     public AjaxResult stats() {
-        purgeBlockedItems();
         Map<String, Object> map = new LinkedHashMap<>();
         map.put("unread", newsItemRepository.countByStatus("unread"));
-        map.put("fav", newsItemRepository.countByStatus("fav"));
         map.put("total", newsItemRepository.count());
         map.put("recent24h", newsItemRepository.countSince(LocalDateTime.now().minus(24, ChronoUnit.HOURS)));
         map.put("sources", newsSourceRepository.count());
@@ -70,10 +61,6 @@ public class NewsController {
     @GetMapping("info/{id}")
     public AjaxResult info(@PathVariable String id) {
         NewsItem item = newsItemRepository.findById(id).orElse(null);
-        if (item != null && isBlocked(item.getTitle(), item.getAuthor())) {
-            newsItemRepository.deleteById(id);
-            return new AjaxResult();
-        }
         return item != null ? new AjaxResult().ok().data(item) : new AjaxResult();
     }
 
@@ -81,9 +68,6 @@ public class NewsController {
     @HasPermission("news:create")
     @PostMapping("create")
     public AjaxResult create(@RequestBody NewsItem input) {
-        if (isBlocked(input.getTitle(), input.getAuthor())) {
-            return new AjaxResult();
-        }
         NewsItem saved = newsItemRepository.save(input);
         return new AjaxResult().ok().data(saved);
     }
@@ -93,11 +77,7 @@ public class NewsController {
     @PostMapping("update")
     public AjaxResult update(@RequestBody NewsItem input) {
         if (newsItemRepository.existsById(input.getId())) {
-            if (isBlocked(input.getTitle(), input.getAuthor())) {
-                newsItemRepository.deleteById(input.getId());
-            } else {
-                newsItemRepository.save(input);
-            }
+            newsItemRepository.save(input);
         }
         return new AjaxResult();
     }
@@ -131,18 +111,6 @@ public class NewsController {
         }
         int updated = newsItemRepository.markReadByIds(ids);
         return new AjaxResult().ok().data(Map.of("updated", updated));
-    }
-
-    /** 收藏 / 取消收藏（在 fav 与 unread 之间切换） */
-    @HasPermission("news:read")
-    @PostMapping("{id}/fav")
-    public AjaxResult markFav(@PathVariable String id) {
-        NewsItem item = newsItemRepository.findById(id).orElse(null);
-        if (item != null) {
-            item.setStatus("fav".equals(item.getStatus()) ? "unread" : "fav");
-            newsItemRepository.save(item);
-        }
-        return item != null ? new AjaxResult().ok().data(item) : new AjaxResult();
     }
 
     // ---------------- 订阅源 ----------------
@@ -180,55 +148,6 @@ public class NewsController {
     public AjaxResult deleteSource(@PathVariable String id) {
         newsSourceRepository.deleteById(id);
         return new AjaxResult();
-    }
-
-    // ---------------- 屏蔽词 ----------------
-
-    @HasPermission("news:block")
-    @GetMapping("blocks")
-    public AjaxResult blocks() {
-        return new AjaxResult().ok().data(newsBlockWordRepository.findAll(Sort.by("word")));
-    }
-
-    @HasPermission("news:block")
-    @PostMapping("blocks")
-    public AjaxResult createBlock(@RequestBody NewsBlockWord input) {
-        NewsBlockWord saved = newsBlockWordRepository.save(input);
-        if (saved.getWord() != null && !saved.getWord().isBlank()
-                && (saved.getEnabled() == null || saved.getEnabled())) {
-            newsItemRepository.deleteByBlockWord(saved.getWord().trim());
-        }
-        return new AjaxResult().ok().data(saved);
-    }
-
-    @HasPermission("news:block")
-    @DeleteMapping("blocks/{id}")
-    public AjaxResult deleteBlock(@PathVariable String id) {
-        newsBlockWordRepository.deleteById(id);
-        return new AjaxResult();
-    }
-
-    private void purgeBlockedItems() {
-        for (NewsBlockWord b : newsBlockWordRepository.findByEnabledTrue()) {
-            String word = b.getWord();
-            if (word != null && !word.isBlank()) {
-                newsItemRepository.deleteByBlockWord(word.trim());
-            }
-        }
-    }
-
-    private boolean isBlocked(String title, String author) {
-        String t = title == null ? "" : title.toLowerCase(Locale.ROOT);
-        String a = author == null ? "" : author.toLowerCase(Locale.ROOT);
-        for (NewsBlockWord b : newsBlockWordRepository.findByEnabledTrue()) {
-            String word = b.getWord();
-            if (word == null || word.isBlank()) continue;
-            String w = word.trim().toLowerCase(Locale.ROOT);
-            if ((!t.isEmpty() && t.contains(w)) || (!a.isEmpty() && a.contains(w))) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private static String blankToNull(String v) {

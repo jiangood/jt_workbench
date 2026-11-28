@@ -9,7 +9,6 @@ menus:
       - {name: 新建, code: news:create}
       - {name: 编辑, code: news:update}
       - {name: 源管理, code: news:source}
-      - {name: 屏蔽词, code: news:block}
   jt-stock:
     name: 鱼池
     icon: FundOutlined

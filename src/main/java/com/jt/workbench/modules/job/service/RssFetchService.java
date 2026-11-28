@@ -68,8 +68,6 @@ public class RssFetchService {
         if (sources.isEmpty()) return JobResult.skip("没有启用的 RSS 数据源");
 
         ensureSchema();
-        Set<String> blockWords = loadBlockWords();
-        purgeBlockedNews(blockWords);
 
         HttpClient client = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(15))
@@ -77,7 +75,7 @@ public class RssFetchService {
                 .build();
 
         long now = System.currentTimeMillis();
-        int succeeded = 0, inserted = 0, skipped = 0, deduped = 0, blocked = 0, fetchedNew = 0;
+        int succeeded = 0, inserted = 0, skipped = 0, deduped = 0, fetchedNew = 0;
         List<String> errors = new ArrayList<>();
 
         for (int s = 0; s < sources.size() && fetchedNew < MAX_ITEMS_TOTAL; s++) {
@@ -136,13 +134,10 @@ public class RssFetchService {
             java.util.Map<String, Object> best = hash == null ? null : bestByHash.get(hash);
             boolean isBest = best != null && sourceId.equals(String.valueOf(best.get("SOURCE_ID")))
                     && externalId.equals(String.valueOf(best.get("EXTERNAL_ID")));
-            String title = row.get("TITLE") == null ? "" : String.valueOf(row.get("TITLE"));
-            String author = row.get("AUTHOR") == null ? "" : String.valueOf(row.get("AUTHOR"));
 
-            if (!isBest || isBlocked(title, author, blockWords)) {
+            if (!isBest) {
                 jdbc.update("UPDATE rss_item SET reported = 2 WHERE source_id = ? AND external_id = ?", sourceId, externalId);
-                if (isBest) blocked++;
-                else deduped++;
+                deduped++;
                 continue;
             }
 
@@ -160,7 +155,6 @@ public class RssFetchService {
                 + "，新入暂存 " + inserted + " 条"
                 + (reported > 0 ? "，入库 " + reported + " 条" : "")
                 + (deduped > 0 ? "，标题去重 " + deduped + " 条" : "")
-                + (blocked > 0 ? "，屏蔽 " + blocked + " 条" : "")
                 + (skipped > 0 ? "，跳过已采集 " + skipped + " 条" : "")
                 + (pruned > 0 ? "，清理过期 " + pruned + " 条" : "");
         if (errors.isEmpty()) {
@@ -318,45 +312,6 @@ public class RssFetchService {
                 + "reported INT NOT NULL DEFAULT 0, PRIMARY KEY (source_id, external_id))");
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_rss_item_title_hash ON rss_item (title_hash)");
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_rss_item_reported ON rss_item (reported, title_hash)");
-    }
-
-    private Set<String> loadBlockWords() {
-        Set<String> words = new HashSet<>();
-        try {
-            for (java.util.Map<String, Object> row : jdbc.queryForList("SELECT word FROM news_block_word WHERE enabled = 1")) {
-                Object w = row.get("WORD");
-                if (w != null && !String.valueOf(w).isBlank()) words.add(String.valueOf(w).trim().toLowerCase(Locale.ROOT));
-            }
-        } catch (Exception ignored) {
-            // 表可能尚未由 JPA 建出
-        }
-        return words;
-    }
-
-    private static boolean isBlocked(String title, String author, Set<String> words) {
-        if (words.isEmpty()) return false;
-        String lowerTitle = title == null ? "" : title.toLowerCase(Locale.ROOT);
-        String lowerAuthor = author == null ? "" : author.toLowerCase(Locale.ROOT);
-        for (String word : words) {
-            if ((!lowerTitle.isEmpty() && lowerTitle.contains(word))
-                    || (!lowerAuthor.isEmpty() && lowerAuthor.contains(word))) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private void purgeBlockedNews(Set<String> blockWords) {
-        if (blockWords.isEmpty()) return;
-        for (String word : blockWords) {
-            String pattern = "%" + word.toLowerCase(Locale.ROOT) + "%";
-            try {
-                jdbc.update("DELETE FROM news_item WHERE LOWER(COALESCE(title,'')) LIKE ? OR LOWER(COALESCE(author,'')) LIKE ?",
-                        pattern, pattern);
-            } catch (Exception ignored) {
-                // 表可能尚未由 JPA 建出
-            }
-        }
     }
 
     private void insertNews(java.util.Map<String, Object> row, long now) {

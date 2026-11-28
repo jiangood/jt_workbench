@@ -11,7 +11,7 @@ import java.sql.Timestamp;
 import java.time.Instant;
 
 /**
- * 清理过期资讯：非收藏（status <> 'fav'）且超过保留期（15 天）的条目。
+ * 清理过期资讯：超过保留期（15 天）的条目。
  */
 @Slf4j
 @Service
@@ -26,7 +26,7 @@ public class NewsOldPruneService {
     public JobResult run(Logger logger, java.util.function.Consumer<String> progress) {
         long now = System.currentTimeMillis();
         int deleted = jdbc.update(
-                "DELETE FROM news_item WHERE status <> 'fav' AND create_time < ?",
+                "DELETE FROM news_item WHERE create_time < ?",
                 Timestamp.from(Instant.ofEpochMilli(now - NEWS_RETENTION_MS)));
         logger.info("资讯清理：过期 {} 条", deleted);
         return JobResult.ok("清理过期 " + deleted + " 条");

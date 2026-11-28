@@ -4,8 +4,6 @@ import {
     MoreOutlined,
     PlusOutlined,
     ReloadOutlined,
-    StarFilled,
-    StarOutlined,
 } from '@ant-design/icons'
 import {
     Button,
@@ -58,23 +56,20 @@ function plainTextLength(html) {
     return String(html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().length
 }
 
-/** 资讯阅读页：传统单列信息流（未读 / 已读 / 收藏，正文直接展开） */
+/** 资讯阅读页：传统单列信息流（未读 / 已读，标题 + AI 摘要，点击展开全文） */
 export default class NewsReaderPage extends React.Component {
     state = {
-        tab: 'unread', // unread | read | fav
+        tab: 'unread', // unread | read
         items: [],
         page: 1,
         hasMore: true,
         loading: false,
         initialLoading: true,
-        stats: {unread: 0, fav: 0, total: 0, recent24h: 0, sources: 0},
+        stats: {unread: 0, total: 0, recent24h: 0, sources: 0},
         sources: [],
-        blocks: [],
         expandedById: {},
         sourceModalOpen: false,
-        blockModalOpen: false,
         sourceForm: {name: '', url: '', type: 'rss'},
-        blockWord: '',
     }
 
     loadSeq = 0
@@ -88,28 +83,19 @@ export default class NewsReaderPage extends React.Component {
 
     loadBase = async () => {
         try {
-            const [statsRs, srcRs, blockRs] = await Promise.all([
+            const [statsRs, srcRs] = await Promise.all([
                 HttpClient.get('admin/news/stats'),
                 HttpClient.get('admin/news/sources'),
-                HttpClient.get('admin/news/blocks'),
             ])
             this.setState({
                 stats: statsRs.data || {},
                 sources: srcRs.data || [],
-                blocks: blockRs.data || [],
             })
         } catch (_) {}
     }
 
     loadStats = () => {
         HttpClient.get('admin/news/stats').then(rs => this.setState({stats: rs.data || {}})).catch(() => {})
-    }
-
-    matchBlocks = (item) => {
-        const blocks = this.state.blocks || []
-        if (!blocks.length) return false
-        const text = `${item.title || ''} ${item.author || ''}`.toLowerCase()
-        return blocks.some(b => b.enabled !== false && text.includes(String(b.word || '').toLowerCase()))
     }
 
     reloadList = (initial = false) => {
@@ -145,7 +131,7 @@ export default class NewsReaderPage extends React.Component {
             const currentPage = data.number != null ? Number(data.number) + 1 : page
             const totalPages = data.totalPages != null ? Number(data.totalPages) : (totalElements ? Math.ceil(totalElements / size) : page)
             const serverHasMore = currentPage < totalPages
-            const visible = content.filter(i => !this.matchBlocks(i))
+            const visible = content
 
             let newlyAdded = 0
             this.setState(prev => {
@@ -240,36 +226,6 @@ export default class NewsReaderPage extends React.Component {
         window.scrollTo({top: 0, behavior: 'smooth'})
     }
 
-    toggleFav = async (record) => {
-        try {
-            const rs = await HttpClient.post(`admin/news/${record.id}/fav`)
-            const next = rs?.data?.status || (record.status === 'fav' ? 'unread' : 'fav')
-            const wasFav = record.status === 'fav'
-            const nowFav = next === 'fav'
-            this.setState(prev => {
-                let items
-                if ((prev.tab === 'fav' && next !== 'fav') || (prev.tab === 'read' && next !== 'read')) {
-                    items = prev.items.filter(it => it.id !== record.id)
-                } else {
-                    items = prev.items.map(it => it.id === record.id ? {...it, status: next} : it)
-                }
-                const unreadDelta = (!wasFav && next === 'unread' ? 1 : 0) + (record.status === 'unread' && next !== 'unread' ? -1 : 0)
-                return {
-                    items,
-                    stats: {
-                        ...prev.stats,
-                        fav: Math.max(0, (Number(prev.stats.fav) || 0) + (nowFav ? 1 : 0) + (wasFav ? -1 : 0)),
-                        unread: Math.max(0, (Number(prev.stats.unread) || 0) + unreadDelta),
-                    },
-                }
-            }, () => {
-                if ((this.state.tab === 'fav' || this.state.tab === 'read') && this.state.items.length === 0 && this.state.hasMore) {
-                    this.loadMore()
-                }
-            })
-        } catch (_) {}
-    }
-
     readAll = async () => {
         if (this.state.tab !== 'unread') return
         if (!this.state.items.length && !(Number(this.state.stats.unread) > 0)) {
@@ -318,20 +274,6 @@ export default class NewsReaderPage extends React.Component {
     toggleSource = async (row, enabled) => { await HttpClient.post('admin/news/sources/update', {id: row.id, enabled}); this.loadSources() }
     deleteSource = async (row) => { await HttpClient.ajax({url: `admin/news/sources/${row.id}`, method: 'DELETE'}); message.success('已删除订阅源'); this.loadSources(); this.loadStats() }
 
-    // ---- 屏蔽词 ----
-    loadBlocks = async () => { const rs = await HttpClient.get('admin/news/blocks'); this.setState({blocks: rs.data || []}) }
-    openBlocks = () => { this.setState({blockModalOpen: true, blockWord: ''}); this.loadBlocks() }
-    addBlock = async () => {
-        const word = (this.state.blockWord || '').trim()
-        if (!word) { message.warning('屏蔽词不能为空'); return }
-        await HttpClient.post('admin/news/blocks', {word, enabled: true})
-        this.setState({blockWord: ''})
-        message.success('已添加屏蔽词')
-        await this.loadBlocks()
-        this.reloadList(false)
-    }
-    deleteBlock = async (row) => { await HttpClient.ajax({url: `admin/news/blocks/${row.id}`, method: 'DELETE'}); await this.loadBlocks(); this.reloadList(false) }
-
     renderSourcesModal() {
         const {sources, sourceForm} = this.state
         const canDeleteSource = PermUtils.hasPermission('news:source')
@@ -352,48 +294,43 @@ export default class NewsReaderPage extends React.Component {
         </Modal>
     }
 
-    renderBlocksModal() {
-        const {blocks, blockWord} = this.state
-        return <Modal title='屏蔽词' open={this.state.blockModalOpen} onCancel={() => this.setState({blockModalOpen: false})} footer={null} width={560}>
-            <div style={{marginBottom: 12, minHeight: 32}}>
-                {blocks.length ? blocks.map(b => <Tag key={b.id} closable onClose={() => this.deleteBlock(b)} style={{marginBottom: 6}}>{b.word}</Tag>) : <Typography.Text type='secondary'>暂无屏蔽词</Typography.Text>}
-            </div>
-            <Space.Compact style={{width: '100%'}}>
-                <Input placeholder='新增屏蔽词' value={blockWord} onChange={e => this.setState({blockWord: e.target.value})} onPressEnter={this.addBlock}/>
-                <Button type='primary' icon={<PlusOutlined/>} onClick={this.addBlock}>添加</Button>
-            </Space.Compact>
-        </Modal>
-    }
-
     renderItem(item) {
         const src = this.state.sources.find(s => s.id === item.sourceId)
         const isUnread = item.status === 'unread'
-        const isFav = item.status === 'fav'
         const safe = sanitize(item.content || '')
         const key = String(item.id)
+        const hasFullText = safe.trim().length > 0
         const longText = plainTextLength(safe) > CLAMP_TEXT_LENGTH
         const expanded = !!this.state.expandedById[key]
+        const summary = (item.summary || '').trim()
+        const hasSummary = summary.length > 0
+        // 默认只显示标题 + AI 摘要；无摘要时回退为折叠原文；点击展开看全文
+        const showFullText = expanded || !hasSummary
+        const clamped = showFullText && !expanded && !hasSummary && longText
         return <article className='news-post' key={item.id}>
             <div className='news-post-meta'>
                 <span>{[src?.name, item.author, fmtTime(item.pubTime)].filter(Boolean).join(' · ')}</span>
-                {isFav ? <Tag color='gold' bordered={false}>已收藏</Tag> : null}
             </div>
             <h2 className='news-post-title'>{item.title || '(无标题)'}</h2>
             {item.tags ? <div className='news-post-tags'><Tag>{item.tags}</Tag></div> : null}
-            <div className={`news-post-content${longText && !expanded ? ' is-clamped' : ''}`}>
-                {safe.trim()
-                    ? <div className='jt-news-content' dangerouslySetInnerHTML={{__html: safe}} />
-                    : <Typography.Text type='secondary'>（无正文）</Typography.Text>}
-            </div>
-            {longText ? <button type='button' className='news-post-toggle' onClick={() => this.toggleExpanded(key)}>
+            {!expanded && hasSummary ? (
+                <div className='news-post-summary'>
+                    <span className='news-summary-tag'>AI 摘要</span>
+                    <span>{summary}</span>
+                </div>
+            ) : null}
+            {showFullText ? (
+                <div className={`news-post-content${clamped ? ' is-clamped' : ''}`}>
+                    {hasFullText
+                        ? <div className='jt-news-content' dangerouslySetInnerHTML={{__html: safe}} />
+                        : <Typography.Text type='secondary'>（无正文）</Typography.Text>}
+                </div>
+            ) : null}
+            {(hasSummary || longText) && hasFullText ? <button type='button' className='news-post-toggle' onClick={() => this.toggleExpanded(key)}>
                 {expanded ? '收起' : '展开全文'}
             </button> : null}
             <div className='news-post-actions'>
-                <button type='button' className={`news-post-favbtn${isFav ? ' active' : ''}`}
-                        onClick={() => this.toggleFav(item)} aria-label={isFav ? '取消收藏' : '收藏'}>
-                    {isFav ? <StarFilled/> : <StarOutlined/>}<span>{isFav ? '已收藏' : '收藏'}</span>
-                </button>
-                {!isUnread ? <span className='news-post-status'>{item.status === 'fav' ? '已收藏' : '已读'}</span> : null}
+                {!isUnread ? <span className='news-post-status'>已读</span> : null}
             </div>
         </article>
     }
@@ -406,7 +343,7 @@ export default class NewsReaderPage extends React.Component {
         if (!items.length) {
             return <div className='news-feed-state'>
                 <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
-                       description={tab === 'fav' ? '暂无收藏' : tab === 'read' ? '暂无已读' : '暂无未读'}/>
+                       description={tab === 'read' ? '暂无已读' : '暂无未读'}/>
             </div>
         }
         return <div className='news-feed-list'>
@@ -424,18 +361,16 @@ export default class NewsReaderPage extends React.Component {
 
     render() {
         const {tab, loading, initialLoading, stats} = this.state
-        const readCount = Math.max(0, (Number(stats.total) || 0) - (Number(stats.unread) || 0) - (Number(stats.fav) || 0))
+        const readCount = Math.max(0, (Number(stats.total) || 0) - (Number(stats.unread) || 0))
 
         const moreItems = [
             ...(tab === 'unread' ? [{key: 'readall', label: '全部已读'}] : []),
             ...(tab === 'unread' ? [{type: 'divider'}] : []),
             ...(PermUtils.hasPermission('news:source') ? [{key: 'sources', label: '订阅源'}] : []),
-            ...(PermUtils.hasPermission('news:block') ? [{key: 'blocks', label: '屏蔽词'}] : []),
         ].filter(Boolean)
         const onMore = ({key}) => {
             if (key === 'readall') this.readAll()
             else if (key === 'sources') this.openSources()
-            else if (key === 'blocks') this.openBlocks()
         }
 
         return <Page>
@@ -444,7 +379,6 @@ export default class NewsReaderPage extends React.Component {
                     <Segmented value={tab} onChange={this.onTabChange} options={[
                         {label: `未读${stats.unread ? ` (${stats.unread})` : ''}`, value: 'unread'},
                         {label: `已读${readCount ? ` (${readCount})` : ''}`, value: 'read'},
-                        {label: `收藏${stats.fav ? ` (${stats.fav})` : ''}`, value: 'fav'},
                     ]}/>
                     <div className='news-feed-actions'>
                         <Tooltip title='刷新'>
@@ -461,7 +395,6 @@ export default class NewsReaderPage extends React.Component {
             </div>
 
             {this.renderSourcesModal()}
-            {this.renderBlocksModal()}
         </Page>
     }
 }

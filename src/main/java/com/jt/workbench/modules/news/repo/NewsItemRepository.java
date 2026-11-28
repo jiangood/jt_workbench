@@ -48,13 +48,4 @@ public interface NewsItemRepository extends JpaRepository<NewsItem, String> {
     @Query("select count(n) from NewsItem n where n.pubTime >= :since")
     long countSince(@Param("since") java.time.LocalDateTime since);
 
-    /** 删除标题或作者命中屏蔽词的资讯 */
-    @Modifying
-    @Transactional
-    @Query("""
-            delete from NewsItem n
-            where lower(coalesce(n.title, '')) like lower(concat('%', :word, '%'))
-               or lower(coalesce(n.author, '')) like lower(concat('%', :word, '%'))
-            """)
-    int deleteByBlockWord(@Param("word") String word);
 }

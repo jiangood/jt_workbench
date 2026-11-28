@@ -87,7 +87,6 @@ public class DashboardController {
         Map<String, Object> news = new LinkedHashMap<>();
         news.put("latest", items);
         news.put("unread", newsItemRepository.countByStatus("unread"));
-        news.put("fav", newsItemRepository.countByStatus("fav"));
         return news;
     }
 
