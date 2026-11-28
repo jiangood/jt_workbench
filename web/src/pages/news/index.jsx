@@ -56,7 +56,7 @@ function plainTextLength(html) {
     return String(html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().length
 }
 
-/** 资讯阅读页：传统单列信息流（未读 / 已读，标题 + AI 摘要，点击展开全文） */
+/** 资讯阅读页：传统单列信息流（未读 / 已读，标题 + 折叠原文，点击展开全文） */
 export default class NewsReaderPage extends React.Component {
     state = {
         tab: 'unread', // unread | read
@@ -302,31 +302,20 @@ export default class NewsReaderPage extends React.Component {
         const hasFullText = safe.trim().length > 0
         const longText = plainTextLength(safe) > CLAMP_TEXT_LENGTH
         const expanded = !!this.state.expandedById[key]
-        const summary = (item.summary || '').trim()
-        const hasSummary = summary.length > 0
-        // 默认只显示标题 + AI 摘要；无摘要时回退为折叠原文；点击展开看全文
-        const showFullText = expanded || !hasSummary
-        const clamped = showFullText && !expanded && !hasSummary && longText
+        // 默认显示标题 + 折叠原文；点击展开看全文
+        const clamped = !expanded && longText
         return <article className='news-post' key={item.id}>
             <div className='news-post-meta'>
                 <span>{[src?.name, item.author, fmtTime(item.pubTime)].filter(Boolean).join(' · ')}</span>
             </div>
             <h2 className='news-post-title'>{item.title || '(无标题)'}</h2>
             {item.tags ? <div className='news-post-tags'><Tag>{item.tags}</Tag></div> : null}
-            {!expanded && hasSummary ? (
-                <div className='news-post-summary'>
-                    <span className='news-summary-tag'>AI 摘要</span>
-                    <span>{summary}</span>
-                </div>
-            ) : null}
-            {showFullText ? (
-                <div className={`news-post-content${clamped ? ' is-clamped' : ''}`}>
-                    {hasFullText
-                        ? <div className='jt-news-content' dangerouslySetInnerHTML={{__html: safe}} />
-                        : <Typography.Text type='secondary'>（无正文）</Typography.Text>}
-                </div>
-            ) : null}
-            {(hasSummary || longText) && hasFullText ? <button type='button' className='news-post-toggle' onClick={() => this.toggleExpanded(key)}>
+            <div className={`news-post-content${clamped ? ' is-clamped' : ''}`}>
+                {hasFullText
+                    ? <div className='jt-news-content' dangerouslySetInnerHTML={{__html: safe}} />
+                    : <Typography.Text type='secondary'>（无正文）</Typography.Text>}
+            </div>
+            {longText && hasFullText ? <button type='button' className='news-post-toggle' onClick={() => this.toggleExpanded(key)}>
                 {expanded ? '收起' : '展开全文'}
             </button> : null}
             <div className='news-post-actions'>
