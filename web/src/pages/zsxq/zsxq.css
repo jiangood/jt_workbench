@@ -480,3 +480,8 @@
 .zsxq-post-meta .zsxq-post-note.ant-btn-link:hover {
     color: #c41d7f;
 }
+
+/* 标记单选框：靠右，方便快速标记 */
+.zsxq-post-mark {
+    margin-left: auto;
+}

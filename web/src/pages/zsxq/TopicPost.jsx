@@ -1,7 +1,7 @@
 import React from 'react'
 import {DownloadOutlined, FileTextOutlined, PaperClipOutlined} from '@ant-design/icons'
-import {Button, Dropdown, Image, Switch, Tag} from 'antd'
-import {HttpClient} from '@jiangood/open-admin'
+import {Button, Image, Radio, Switch, Tag} from 'antd'
+import {HttpClient, PermUtils} from '@jiangood/open-admin'
 import {fileDownloadUrl, fmtSize, fmtTime, imageSrc, topicImages} from './media'
 import {parseZsxqText} from './richText'
 import {sanitizeArticleHtml} from './articleContent'
@@ -92,18 +92,17 @@ export default class TopicPost extends React.Component {
                 {Number(item.likesCount) > 0 ? <span>赞 {item.likesCount}</span> : null}
                 {Number(item.commentCount) > 0 ? <span>评论 {item.commentCount}</span> : null}
                 {item.lastCommentTime ? <span>最近回复 {fmtTime(item.lastCommentTime)}</span> : null}
-                <Dropdown
-                    menu={{
-                        items: [
-                            {key: 'DRY', label: '干货帖'},
-                            {key: 'WATER', label: '水帖'},
-                            ...(item.quality ? [{type: 'divider'}, {key: 'CLEAR', label: '清除标识'}] : []),
-                        ],
-                        onClick: ({key}) => this.setQuality(key === 'CLEAR' ? '' : key),
-                    }}
-                >
-                    <Button className='zsxq-post-note' type='link' size='small' perm='zsxq:manage'>标识</Button>
-                </Dropdown>
+                {PermUtils.hasPermission('zsxq:manage') ? <Radio.Group
+                    className='zsxq-post-mark'
+                    size='small'
+                    optionType='button'
+                    value={item.quality || undefined}
+                    options={[
+                        {label: '干货', value: 'DRY'},
+                        {label: '水帖', value: 'WATER'},
+                    ]}
+                    onChange={(e) => this.setQuality(e.target.value)}
+                /> : null}
                 <Button className='zsxq-post-note' type='link' size='small'
                         icon={<FileTextOutlined/>} perm='note:edit'
                         onClick={() => this.setState({noteModalOpen: true})}>转为笔记</Button>
