@@ -93,7 +93,7 @@ public class ZsxqController {
         return new AjaxResult().ok().data(page);
     }
 
-    /** 列表筛选：DRY/WATER/NONE(未标记)，其他值视为不过滤。 */
+    /** 列表筛选：DRY/WATER/NONE(待标记)，其他值视为不过滤。 */
     private static String normalizeQualityFilter(String quality) {
         String v = blankToNull(quality);
         if (v == null) return null;
