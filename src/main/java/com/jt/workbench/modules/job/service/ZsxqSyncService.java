@@ -67,6 +67,8 @@ public class ZsxqSyncService {
     private static final int FILE_BACKFILL_MAX_FAILS = 3;
     /** 作者信息回填：默认每轮处理 200 条历史匿名/缺作者 ID 的话题。 */
     private static final int AUTHOR_BACKFILL_DEFAULT_BATCH = 200;
+    /** 内容回填：默认每轮处理 200 条正文/标题缺失或截断的历史话题。 */
+    private static final int CONTENT_BACKFILL_DEFAULT_BATCH = 200;
     /** 专栏文章完整正文回填：默认每轮 200 条，连续失败 3 次后不再重试。 */
     private static final int ARTICLE_BACKFILL_DEFAULT_BATCH = 200;
     private static final int ARTICLE_BACKFILL_MAX_FAILS = 3;
@@ -191,6 +193,7 @@ public class ZsxqSyncService {
                 if (backfill) {
                     parts.add(backfillTopics(client, groupIds, logger, progress));
                     parts.add(backfillAuthors(client, logger, progress));
+                    parts.add(backfillContent(client, logger, progress));
                     parts.add(syncColumns(client, groupIds, logger, progress, true));
                     setState(STATE_COLUMNS_LAST_OK, System.currentTimeMillis());
                     parts.add(backfillColumnArticles(client, logger, progress));
@@ -733,6 +736,104 @@ public class ZsxqSyncService {
     }
 
     /**
+     * 内容回填：历史帖子可能只存了列表接口的截断标题/摘要，或正文为空。
+     * 取 `/v2/topics/{topicId}/info` 后补齐完整正文；普通长贴用 `talk.text`，长文优先读原文页。
+     * `digest` 仍保留摘要上限，完整正文写入 `article_content`；不用空值覆盖已有内容。
+     */
+    private String backfillContent(ZsxqApiClient client, Logger logger,
+                                   java.util.function.Consumer<String> progress) throws InterruptedException {
+        String digestMax = String.valueOf(ZsxqTopic.DIGEST_MAX_LENGTH);
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT topic_id FROM zsxq_topic WHERE (visible IS NULL OR visible = TRUE) "
+                        + "AND (column_id IS NULL OR column_id = '') "
+                        + "AND ("
+                        + "(digest IS NULL OR TRIM(digest) = '' OR digest LIKE '%...' OR digest LIKE '%…' "
+                        + " OR LENGTH(digest) >= " + digestMax + " OR article_title IS NULL OR TRIM(article_title) = '' "
+                        + " OR article_title LIKE '%...' OR article_title LIKE '%…' "
+                        + " OR article_content IS NULL OR TRIM(article_content) = '' "
+                        + " OR article_content LIKE '%...' OR article_content LIKE '%…')"
+                        + ") ORDER BY COALESCE(source_create_time, '') ASC, topic_id ASC LIMIT " + CONTENT_BACKFILL_DEFAULT_BATCH);
+        if (rows.isEmpty()) return "内容回填跳过（没有待补齐或截断的帖子）";
+
+        int done = 0, failed = 0;
+        for (int i = 0; i < rows.size(); i++) {
+            Map<String, Object> row = rows.get(i);
+            String tid = rowCell(row, "topic_id");
+            if (tid.isBlank()) continue;
+            progress.accept("回填内容 " + (i + 1) + "/" + rows.size());
+            pause(topicPauseMs);
+            try {
+                Topic topic = getTopic(client, tid);
+                if (topic == null) {
+                    failed++;
+                    continue;
+                }
+                fillAuthorIfMissing(tid, topic, null);
+                updateTopicContent(client, tid, topic);
+                done++;
+            } catch (Exception e) {
+                if (isRiskControl(e)) throw new RiskControlException(e);
+                if (isTopicGone(e)) {
+                    markTopicDeleted(tid);
+                    logger.info("帖子已删除，内容回填跳过 topicId={}", tid);
+                    continue;
+                }
+                failed++;
+                logger.warn("内容回填失败 topicId={} error={}", tid, e.getMessage());
+                if (isAuthOrFatal(e)) {
+                    logger.warn("知识星球授权/请求异常，中止本轮内容回填");
+                    break;
+                }
+            }
+        }
+        return "内容回填处理 " + done + " 条，失败 " + failed + " 条";
+    }
+
+    /** 用话题详情补齐/修正标题、摘要、原文地址和完整正文；空值不覆盖已有内容。 */
+    private void updateTopicContent(ZsxqApiClient client, String topicId, Topic topic) throws Exception {
+        String digest = topicDigest(topic);
+        String title = columnArticleTitle(topic);
+        String articleUrl = articleUrlOf(topic);
+        String content = columnArticleContentOf(topic);
+        String contentUrl = articleContentUrlOf(topic);
+        if (needsArticleContentFetch(content) && !contentUrl.isBlank()) {
+            pause(topicPauseMs);
+            content = client.getArticleContent(contentUrl);
+        }
+        if (content.isBlank() || isTruncated(content)) content = talkArticleContentOf(topic);
+        int digestLength = digest.length();
+        int titleLength = title.length();
+        int contentLength = content.length();
+        jdbc.update("UPDATE zsxq_topic SET "
+                        + "digest = CASE WHEN ? <> '' AND (digest IS NULL OR digest = '' "
+                        + "OR digest LIKE '%...' OR digest LIKE '%…' OR LENGTH(digest) >= "
+                        + ZsxqTopic.DIGEST_MAX_LENGTH + " OR ? > LENGTH(digest)) THEN ? ELSE digest END, "
+                        + "article_title = CASE WHEN ? <> '' AND (article_title IS NULL OR article_title = '' "
+                        + "OR article_title LIKE '%...' OR article_title LIKE '%…' OR ? > LENGTH(article_title)) THEN ? ELSE article_title END, "
+                        + "article_url = CASE WHEN ? <> '' AND (article_url IS NULL OR article_url = '') THEN ? ELSE article_url END, "
+                        + "article_content = CASE WHEN ? <> '' AND (article_content IS NULL OR article_content = '' "
+                        + "OR article_content LIKE '%...' OR article_content LIKE '%…' OR ? > LENGTH(article_content)) THEN ? ELSE article_content END, "
+                        + "article_synced_at = CASE WHEN ? <> '' THEN ? ELSE article_synced_at END, "
+                        + "update_time = ? WHERE topic_id = ?",
+                digest, digestLength, digest,
+                title, titleLength, title,
+                articleUrl, articleUrl,
+                content, contentLength, content,
+                content, System.currentTimeMillis(),
+                LocalDateTime.now(), topicId);
+        if (!content.isBlank()) markArticleSynced(topicId);
+    }
+
+    private static boolean needsArticleContentFetch(String content) {
+        return content.isBlank() || isTruncated(content);
+    }
+
+    private static boolean isTruncated(String s) {
+        String v = safe(s).trim();
+        return v.endsWith("...") || v.endsWith("…");
+    }
+
+    /**
      * 回填历史帖子的附件清单：列表接口只回填了最近/正在翻页的帖子，早期存量帖子需要
      * 用话题详情确认一次 {@code talk.files}。每轮话题数由 {@code zsxq.file-meta-backfill-batch}
      * 控制，确认过的帖子写入 {@code file_synced_at}，不会重复请求。
@@ -852,7 +953,8 @@ public class ZsxqSyncService {
         if (batch == 0) return "专栏正文回填跳过（已关闭）";
         List<Map<String, Object>> rows = jdbc.queryForList(
                 "SELECT topic_id FROM zsxq_topic WHERE column_id IS NOT NULL "
-                        + "AND (article_content IS NULL OR article_content = '') "
+                        + "AND (article_content IS NULL OR article_content = '' "
+                        + "OR article_content LIKE '%...' OR article_content LIKE '%…') "
                         + "AND COALESCE(article_fail_count, 0) < " + ARTICLE_BACKFILL_MAX_FAILS
                         + " ORDER BY COALESCE(article_fail_count, 0) ASC, "
                         + "COALESCE(source_create_time, '') ASC LIMIT " + batch);
@@ -909,9 +1011,11 @@ public class ZsxqSyncService {
         jdbc.update("UPDATE zsxq_topic SET "
                         + "article_title = CASE WHEN ? <> '' AND (article_title IS NULL OR article_title = '' "
                         + "OR article_title LIKE '%...' OR article_title LIKE '%…') THEN ? ELSE article_title END, "
-                        + "digest = CASE WHEN (digest IS NULL OR digest = '') AND ? <> '' THEN ? ELSE digest END, "
+                        + "digest = CASE WHEN ? <> '' AND (digest IS NULL OR digest = '' OR digest LIKE '%...' "
+                        + "OR digest LIKE '%…' OR LENGTH(digest) >= " + ZsxqTopic.DIGEST_MAX_LENGTH + ") THEN ? ELSE digest END, "
                         + "article_url = CASE WHEN (article_url IS NULL OR article_url = '') AND ? <> '' THEN ? ELSE article_url END, "
-                        + "article_content = CASE WHEN (article_content IS NULL OR article_content = '') AND ? <> '' THEN ? ELSE article_content END, "
+                        + "article_content = CASE WHEN ? <> '' AND (article_content IS NULL OR article_content = '' "
+                        + "OR article_content LIKE '%...' OR article_content LIKE '%…') THEN ? ELSE article_content END, "
                         + "author = CASE WHEN (author IS NULL OR author = '') AND ? <> '' THEN ? ELSE author END, "
                         + "author_id = CASE WHEN (author_id IS NULL OR author_id = '') AND ? <> '' THEN ? ELSE author_id END, "
                         + "update_time = ? WHERE topic_id = ?",
@@ -1473,11 +1577,11 @@ public class ZsxqSyncService {
     private void upsertTopic(String gid, String tid, Topic t, String columnId) {
         String column = columnId == null || columnId.isBlank() ? null : columnId;
         String digest = topicDigest(t);
-        String title = column == null ? articleTitle(t) : columnArticleTitle(t);
+        String title = columnArticleTitle(t);
         String articleUrl = articleUrlOf(t);
         String articleContent = articleContentOf(t);
-        // 专栏里的普通长贴没有 article 元数据，列表/详情里的 talk.text 就是完整正文
-        if (articleContent.isBlank() && column != null) articleContent = talkArticleContentOf(t);
+        // 普通话题和专栏里的普通长贴没有 article 元数据时，列表/详情里的 talk.text 就是完整正文
+        if (articleContent.isBlank()) articleContent = talkArticleContentOf(t);
         Long articleSyncedAt = articleContent.isBlank() ? null : System.currentTimeMillis();
         TalkContent talk = t.getTalk();
 
