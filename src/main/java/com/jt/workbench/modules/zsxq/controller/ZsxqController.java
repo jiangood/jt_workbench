@@ -77,7 +77,7 @@ public class ZsxqController {
     /** 可排序话题字段（限定取值，防止请求传入非法属性） */
     private static final Set<String> SORT_PROPERTIES = Set.of("sourceCreateTime", "lastCommentTime");
 
-    private static final Set<String> QUALITY_FILTERS = Set.of("DRY", "WATER", "NONE");
+    private static final Set<String> QUALITY_FILTERS = Set.of("DRY", "NORMAL", "WATER", "NONE");
 
     @HasPermission("zsxq:read")
     @PostMapping("page")
@@ -93,7 +93,7 @@ public class ZsxqController {
         return new AjaxResult().ok().data(page);
     }
 
-    /** 列表筛选：DRY/WATER/NONE(待标记)，其他值视为不过滤。 */
+    /** 列表筛选：DRY/NORMAL/WATER/NONE(待标记)，其他值视为不过滤。 */
     private static String normalizeQualityFilter(String quality) {
         String v = blankToNull(quality);
         if (v == null) return null;
@@ -144,7 +144,7 @@ public class ZsxqController {
         return item != null ? new AjaxResult().ok().data(item) : new AjaxResult();
     }
 
-    /** 话题质量标识：DRY=干货，WATER=水帖，空值=清除标识 */
+    /** 话题质量标识：DRY=干货，NORMAL=普通，WATER=水帖，空值=清除标识 */
     public record QualityReq(String id, String quality) {
     }
 
@@ -161,12 +161,12 @@ public class ZsxqController {
         return new AjaxResult().ok().data(Map.of("id", topic.getId(), "quality", quality == null ? "" : quality));
     }
 
-    /** 标记写入：只接受 DRY/WATER，空值清除。 */
+    /** 标记写入：只接受 DRY/NORMAL/WATER，空值清除。 */
     private static String normalizeQualityMark(String quality) {
         String v = blankToNull(quality);
         if (v == null) return null;
         String upper = v.toUpperCase(Locale.ROOT);
-        return ("DRY".equals(upper) || "WATER".equals(upper)) ? upper : null;
+        return ("DRY".equals(upper) || "NORMAL".equals(upper) || "WATER".equals(upper)) ? upper : null;
     }
 
     /** 话题转笔记请求：id 为本地话题主键，title/folderId/sourceUrl 可在转换弹窗里调整 */

@@ -153,7 +153,7 @@ export default class ZsxqReaderPage extends React.Component {
     onQualityChange = (id, quality) => {
         this.setState(prev => {
             const nextQuality = quality || null
-            if (prev.quality === 'NONE' && (nextQuality === 'DRY' || nextQuality === 'WATER')) {
+            if (prev.quality === 'NONE' && (nextQuality === 'DRY' || nextQuality === 'NORMAL' || nextQuality === 'WATER')) {
                 return {items: (prev.items || []).filter(it => it.id !== id)}
             }
             return {items: (prev.items || []).map(it => it.id === id ? {...it, quality: nextQuality} : it)}
@@ -221,6 +221,7 @@ export default class ZsxqReaderPage extends React.Component {
                             options={[
                                 {label: '全部', value: ''},
                                 {label: '干货', value: 'DRY'},
+                                {label: '普通', value: 'NORMAL'},
                                 {label: '水帖', value: 'WATER'},
                                 {label: '待标记', value: 'NONE'},
                             ]}

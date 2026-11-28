@@ -510,6 +510,12 @@
     background: rgba(250, 140, 22, 0.1);
 }
 
+.zsxq-post-actions .zsxq-post-mark-btn.is-normal.ant-btn-text,
+.zsxq-post-actions .zsxq-post-mark-btn.is-normal.ant-btn-text:hover {
+    color: #1677ff;
+    background: rgba(22, 119, 255, 0.1);
+}
+
 .zsxq-post-actions .zsxq-post-mark-btn.is-water.ant-btn-text,
 .zsxq-post-actions .zsxq-post-mark-btn.is-water.ant-btn-text:hover {
     color: #8c8c8c;

@@ -63,9 +63,17 @@ class ZsxqTopicRepositoryTest {
         dry.setQuality("DRY");
         entityManager.persistAndFlush(dry);
 
+        ZsxqTopic normal = new ZsxqTopic();
+        normal.setId("topic-normal");
+        normal.setTopicId("2");
+        normal.setGroupId("g1");
+        normal.setDigest("普通内容");
+        normal.setQuality("NORMAL");
+        entityManager.persistAndFlush(normal);
+
         ZsxqTopic water = new ZsxqTopic();
         water.setId("topic-water");
-        water.setTopicId("2");
+        water.setTopicId("3");
         water.setGroupId("g1");
         water.setDigest("水帖内容");
         water.setQuality("WATER");
@@ -73,15 +81,19 @@ class ZsxqTopicRepositoryTest {
 
         ZsxqTopic plain = new ZsxqTopic();
         plain.setId("topic-plain");
-        plain.setTopicId("3");
+        plain.setTopicId("4");
         plain.setGroupId("g1");
-        plain.setDigest("普通内容");
+        plain.setDigest("待标记内容");
         entityManager.persistAndFlush(plain);
         entityManager.clear();
 
         Page<ZsxqTopic> dryResult = repository.search(null, null, false, "DRY", PageRequest.of(0, 10));
         assertEquals(1, dryResult.getTotalElements());
         assertEquals("topic-dry", dryResult.getContent().get(0).getId());
+
+        Page<ZsxqTopic> normalResult = repository.search(null, null, false, "NORMAL", PageRequest.of(0, 10));
+        assertEquals(1, normalResult.getTotalElements());
+        assertEquals("topic-normal", normalResult.getContent().get(0).getId());
 
         Page<ZsxqTopic> waterResult = repository.search(null, null, false, "WATER", PageRequest.of(0, 10));
         assertEquals(1, waterResult.getTotalElements());
@@ -92,7 +104,7 @@ class ZsxqTopicRepositoryTest {
         assertEquals("topic-plain", noneResult.getContent().get(0).getId());
 
         Page<ZsxqTopic> allResult = repository.search(null, null, false, null, PageRequest.of(0, 10));
-        assertEquals(3, allResult.getTotalElements());
+        assertEquals(4, allResult.getTotalElements());
     }
 
     @Configuration(proxyBeanMethods = false)

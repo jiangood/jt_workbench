@@ -1,5 +1,5 @@
 import React from 'react'
-import {CaretDownFilled, CaretDownOutlined, CaretUpFilled, CaretUpOutlined, FileTextOutlined, PaperClipOutlined, DownloadOutlined} from '@ant-design/icons'
+import {CaretDownFilled, CaretDownOutlined, CaretUpFilled, CaretUpOutlined, DownloadOutlined, FileTextOutlined, MinusOutlined, PaperClipOutlined} from '@ant-design/icons'
 import {Button, Image, Switch, Tag, Tooltip} from 'antd'
 import {HttpClient, PermUtils} from '@jiangood/open-admin'
 import {fileDownloadUrl, fmtSize, fmtTime, imageSrc, topicImages} from './media'
@@ -80,6 +80,7 @@ export default class TopicPost extends React.Component {
                     <span>{item.author || '匿名'}</span>
                     {markedIsOwner ? <Tag color='magenta' bordered={false}>星主</Tag> : null}
                     {item.quality === 'DRY' ? <Tag color='gold' bordered={false}>干货</Tag> : null}
+                    {item.quality === 'NORMAL' ? <Tag color='blue' bordered={false}>普通</Tag> : null}
                     {item.quality === 'WATER' ? <Tag bordered={false}>水帖</Tag> : null}
                 </div>
                 <span className='zsxq-post-time'>{fmtTime(item.sourceCreateTime)}</span>
@@ -162,6 +163,13 @@ export default class TopicPost extends React.Component {
                                 aria-label='标记为干货'
                                 icon={item.quality === 'DRY' ? <CaretUpFilled/> : <CaretUpOutlined/>}
                                 onClick={() => this.setQuality('DRY')}/>
+                    </Tooltip>
+                    <Tooltip title='普通'>
+                        <Button type='text' size='small'
+                                className={`zsxq-post-mark-btn${item.quality === 'NORMAL' ? ' is-normal' : ''}`}
+                                aria-label='标记为普通'
+                                icon={<MinusOutlined/>}
+                                onClick={() => this.setQuality('NORMAL')}/>
                     </Tooltip>
                     <Tooltip title='水帖'>
                         <Button type='text' size='small'

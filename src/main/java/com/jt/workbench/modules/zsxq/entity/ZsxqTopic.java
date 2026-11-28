@@ -56,7 +56,7 @@ public class ZsxqTopic extends BaseEntity {
 
     private Boolean visible = true;
 
-    /** 内容质量标识：DRY=干货，WATER=水帖，null=未标识 */
+    /** 内容质量标识：DRY=干货，NORMAL=普通，WATER=水帖，null=未标识 */
     @Column(length = 16)
     private String quality;
 
