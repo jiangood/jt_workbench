@@ -54,57 +54,42 @@ class ZsxqTopicRepositoryTest {
     }
 
     @Test
-    void searchFiltersByQuality() {
-        ZsxqTopic dry = new ZsxqTopic();
-        dry.setId("topic-dry");
-        dry.setTopicId("1");
-        dry.setGroupId("g1");
-        dry.setDigest("干货内容");
-        dry.setQuality("DRY");
-        entityManager.persistAndFlush(dry);
+    void searchFiltersByRead() {
+        ZsxqTopic read = new ZsxqTopic();
+        read.setId("topic-read");
+        read.setTopicId("1");
+        read.setGroupId("g1");
+        read.setDigest("已读内容");
+        read.setRead(true);
+        entityManager.persistAndFlush(read);
 
-        ZsxqTopic normal = new ZsxqTopic();
-        normal.setId("topic-normal");
-        normal.setTopicId("2");
-        normal.setGroupId("g1");
-        normal.setDigest("普通内容");
-        normal.setQuality("NORMAL");
-        entityManager.persistAndFlush(normal);
-
-        ZsxqTopic water = new ZsxqTopic();
-        water.setId("topic-water");
-        water.setTopicId("3");
-        water.setGroupId("g1");
-        water.setDigest("水帖内容");
-        water.setQuality("WATER");
-        entityManager.persistAndFlush(water);
+        ZsxqTopic unread = new ZsxqTopic();
+        unread.setId("topic-unread");
+        unread.setTopicId("2");
+        unread.setGroupId("g1");
+        unread.setDigest("未读内容");
+        unread.setRead(false);
+        entityManager.persistAndFlush(unread);
 
         ZsxqTopic plain = new ZsxqTopic();
         plain.setId("topic-plain");
-        plain.setTopicId("4");
+        plain.setTopicId("3");
         plain.setGroupId("g1");
-        plain.setDigest("待标记内容");
+        plain.setDigest("默认未读内容");
         entityManager.persistAndFlush(plain);
         entityManager.clear();
 
-        Page<ZsxqTopic> dryResult = repository.search(null, null, false, "DRY", PageRequest.of(0, 10));
-        assertEquals(1, dryResult.getTotalElements());
-        assertEquals("topic-dry", dryResult.getContent().get(0).getId());
+        Page<ZsxqTopic> readResult = repository.search(null, null, false, "READ", PageRequest.of(0, 10));
+        assertEquals(1, readResult.getTotalElements());
+        assertEquals("topic-read", readResult.getContent().get(0).getId());
 
-        Page<ZsxqTopic> normalResult = repository.search(null, null, false, "NORMAL", PageRequest.of(0, 10));
-        assertEquals(1, normalResult.getTotalElements());
-        assertEquals("topic-normal", normalResult.getContent().get(0).getId());
-
-        Page<ZsxqTopic> waterResult = repository.search(null, null, false, "WATER", PageRequest.of(0, 10));
-        assertEquals(1, waterResult.getTotalElements());
-        assertEquals("topic-water", waterResult.getContent().get(0).getId());
-
-        Page<ZsxqTopic> noneResult = repository.search(null, null, false, "NONE", PageRequest.of(0, 10));
-        assertEquals(1, noneResult.getTotalElements());
-        assertEquals("topic-plain", noneResult.getContent().get(0).getId());
+        Page<ZsxqTopic> unreadResult = repository.search(null, null, false, "UNREAD", PageRequest.of(0, 10));
+        assertEquals(2, unreadResult.getTotalElements());
+        assertTrue(unreadResult.getContent().stream().anyMatch(item -> "topic-unread".equals(item.getId())));
+        assertTrue(unreadResult.getContent().stream().anyMatch(item -> "topic-plain".equals(item.getId())));
 
         Page<ZsxqTopic> allResult = repository.search(null, null, false, null, PageRequest.of(0, 10));
-        assertEquals(4, allResult.getTotalElements());
+        assertEquals(3, allResult.getTotalElements());
     }
 
     @Configuration(proxyBeanMethods = false)

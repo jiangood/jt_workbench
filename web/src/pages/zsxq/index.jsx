@@ -18,7 +18,7 @@ export default class ZsxqReaderPage extends React.Component {
         keyword: '',
         sort: `${SORT_PROP}|DESC`,
         ownerOnly: false,
-        quality: 'NONE',
+        read: 'UNREAD',
         items: [],
         page: 1,
         hasMore: true,
@@ -78,7 +78,7 @@ export default class ZsxqReaderPage extends React.Component {
             const kw = this.state.keyword?.trim()
             if (kw) params.keyword = kw
             if (this.state.ownerOnly) params.ownerOnly = true
-            if (this.state.quality) params.quality = this.state.quality
+            if (this.state.read) params.read = this.state.read
             const [sortProp, sortDir] = (this.state.sort || `${SORT_PROP}|DESC`).split('|')
             params.sort = sortProp || SORT_PROP
             params.direction = sortDir || 'DESC'
@@ -150,25 +150,29 @@ export default class ZsxqReaderPage extends React.Component {
         this.searchTimer = setTimeout(() => this.reloadList(false), 350)
     }
 
-    onQualityChange = (id, quality) => {
+    onReadChange = (id, read) => {
         this.setState(prev => {
-            const nextQuality = quality || null
+            const nextRead = !!read
             const items = prev.items || []
             const oldItem = items.find(it => it.id === id)
-            const oldQuality = oldItem?.quality || null
-            const qKey = (q) => (q === 'DRY' || q === 'NORMAL' || q === 'WATER') ? q : 'NONE'
+            const oldRead = !!oldItem?.read
             const stats = prev.stats || {}
-            const qc = stats.quality ? {...stats.quality} : null
-            if (qc && oldQuality !== nextQuality) {
-                const ok = qKey(oldQuality)
-                const nk = qKey(nextQuality)
-                qc[ok] = Math.max(0, (Number(qc[ok]) || 0) - 1)
-                qc[nk] = (Number(qc[nk]) || 0) + 1
+            const rc = stats.read ? {...stats.read} : null
+            if (rc && oldRead !== nextRead) {
+                if (nextRead) {
+                    rc.read = (Number(rc.read) || 0) + 1
+                    rc.unread = Math.max(0, (Number(rc.unread) || 0) - 1)
+                } else {
+                    rc.unread = (Number(rc.unread) || 0) + 1
+                    rc.read = Math.max(0, (Number(rc.read) || 0) - 1)
+                }
             }
-            const nextItems = (prev.quality === 'NONE' && (nextQuality === 'DRY' || nextQuality === 'NORMAL' || nextQuality === 'WATER'))
+            const filter = prev.read
+            const remove = (filter === 'UNREAD' && nextRead) || (filter === 'READ' && !nextRead)
+            const nextItems = remove
                 ? items.filter(it => it.id !== id)
-                : items.map(it => it.id === id ? {...it, quality: nextQuality} : it)
-            return qc ? {items: nextItems, stats: {...stats, quality: qc}} : {items: nextItems}
+                : items.map(it => it.id === id ? {...it, read: nextRead} : it)
+            return rc ? {items: nextItems, stats: {...stats, read: rc}} : {items: nextItems}
         })
     }
 
@@ -181,7 +185,7 @@ export default class ZsxqReaderPage extends React.Component {
 
         return <TopicPost key={item.id} item={item} comments={comments} files={files} isOwner={isOwner}
                           collapseCommentsWithoutOwner={this.state.ownerOnly}
-                          onQualityChange={this.onQualityChange}/>
+                          onReadChange={this.onReadChange}/>
     }
 
     renderList() {
@@ -229,14 +233,13 @@ export default class ZsxqReaderPage extends React.Component {
                         />
                         <Segmented
                             size='middle'
-                            value={this.state.quality}
+                            value={this.state.read}
                             options={[
-                                {label: `待标记 ${stats?.quality?.NONE ?? 0}`, value: 'NONE'},
-                                {label: `干货 ${stats?.quality?.DRY ?? 0}`, value: 'DRY'},
-                                {label: `普通 ${stats?.quality?.NORMAL ?? 0}`, value: 'NORMAL'},
-                                {label: `水帖 ${stats?.quality?.WATER ?? 0}`, value: 'WATER'},
+                                {label: `未读 ${stats?.read?.unread ?? 0}`, value: 'UNREAD'},
+                                {label: `已读 ${stats?.read?.read ?? 0}`, value: 'READ'},
+                                {label: `全部 ${stats?.read?.all ?? 0}`, value: 'ALL'},
                             ]}
-                            onChange={(v) => this.setState({quality: v}, () => this.reloadList(false))}
+                            onChange={(v) => this.setState({read: v}, () => this.reloadList(false))}
                         />
                         <label className='zsxq-feed-switch'>
                             <Switch size='small' checked={ownerOnly}

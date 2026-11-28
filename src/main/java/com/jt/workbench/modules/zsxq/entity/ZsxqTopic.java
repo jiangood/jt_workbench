@@ -56,9 +56,9 @@ public class ZsxqTopic extends BaseEntity {
 
     private Boolean visible = true;
 
-    /** 内容质量标识：DRY=干货，NORMAL=普通，WATER=水帖，null=未标识 */
-    @Column(length = 16)
-    private String quality;
+    /** 是否已读 */
+    @Column(name = "is_read")
+    private Boolean read = Boolean.FALSE;
 
     /** 星球原始帖子 ID（同步幂等键） */
     private String topicId;

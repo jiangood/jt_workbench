@@ -1,5 +1,5 @@
 import React from 'react'
-import {CaretDownFilled, CaretDownOutlined, CaretUpFilled, CaretUpOutlined, DownloadOutlined, FileTextOutlined, MinusOutlined, PaperClipOutlined} from '@ant-design/icons'
+import {CheckCircleFilled, CheckCircleOutlined, DownloadOutlined, FileTextOutlined, PaperClipOutlined} from '@ant-design/icons'
 import {Button, Image, Switch, Tag, Tooltip} from 'antd'
 import {HttpClient, PermUtils} from '@jiangood/open-admin'
 import {fileDownloadUrl, fmtSize, fmtTime, imageSrc, topicImages} from './media'
@@ -28,11 +28,12 @@ export default class TopicPost extends React.Component {
 
     togglePreview = (index, open) => this.setState({previewIndex: open ? index : -1})
 
-    setQuality = async (quality) => {
-        const {item, onQualityChange} = this.props
-        const rs = await HttpClient.post('admin/zsxq/quality', {id: item.id, quality: quality || ''})
-        const next = rs?.data?.quality ?? (quality || '')
-        if (onQualityChange) onQualityChange(item.id, next || null)
+    toggleRead = async () => {
+        const {item, onReadChange} = this.props
+        const nextRead = !item.read
+        const rs = await HttpClient.post('admin/zsxq/read', {id: item.id, read: nextRead})
+        const next = rs?.data?.read ?? nextRead
+        if (onReadChange) onReadChange(item.id, !!next)
     }
 
     renderTextParts = (parts) => parts.map((part, index) => part.href
@@ -74,14 +75,12 @@ export default class TopicPost extends React.Component {
                 ? `https://wx.zsxq.com/dweb2/index/topic_detail/${encodeURIComponent(item.topicId)}`
                 : '')
 
-        return <article className={`zsxq-post${markedIsOwner ? ' is-owner' : ''}`}>
+        return <article className={`zsxq-post${markedIsOwner ? ' is-owner' : ''}${item.read ? ' is-read' : ''}`}>
             <div className='zsxq-post-head'>
                 <div className='zsxq-post-author'>
                     <span>{item.author || '匿名'}</span>
                     {markedIsOwner ? <Tag color='magenta' bordered={false}>星主</Tag> : null}
-                    {item.quality === 'DRY' ? <Tag color='gold' bordered={false}>干货</Tag> : null}
-                    {item.quality === 'NORMAL' ? <Tag color='blue' bordered={false}>普通</Tag> : null}
-                    {item.quality === 'WATER' ? <Tag bordered={false}>水帖</Tag> : null}
+                    {item.read ? <Tag bordered={false}>已读</Tag> : null}
                 </div>
                 <span className='zsxq-post-time'>{fmtTime(item.sourceCreateTime)}</span>
             </div>
@@ -152,34 +151,18 @@ export default class TopicPost extends React.Component {
                 </ul>
             </div> : null}
 
-            {(PermUtils.hasPermission('note:edit') || PermUtils.hasPermission('zsxq:manage')) ? <div className='zsxq-post-actions'>
+            <div className='zsxq-post-actions'>
                 <Button className='zsxq-post-note' type='text' size='small'
                         icon={<FileTextOutlined/>} perm='note:edit'
                         onClick={() => this.setState({noteModalOpen: true})}>笔记</Button>
-                {PermUtils.hasPermission('zsxq:manage') ? <>
-                    <Tooltip title='干货'>
-                        <Button type='text' size='small'
-                                className={`zsxq-post-mark-btn${item.quality === 'DRY' ? ' is-dry' : ''}`}
-                                aria-label='标记为干货'
-                                icon={item.quality === 'DRY' ? <CaretUpFilled/> : <CaretUpOutlined/>}
-                                onClick={() => this.setQuality('DRY')}/>
-                    </Tooltip>
-                    <Tooltip title='普通'>
-                        <Button type='text' size='small'
-                                className={`zsxq-post-mark-btn${item.quality === 'NORMAL' ? ' is-normal' : ''}`}
-                                aria-label='标记为普通'
-                                icon={<MinusOutlined/>}
-                                onClick={() => this.setQuality('NORMAL')}/>
-                    </Tooltip>
-                    <Tooltip title='水帖'>
-                        <Button type='text' size='small'
-                                className={`zsxq-post-mark-btn${item.quality === 'WATER' ? ' is-water' : ''}`}
-                                aria-label='标记为水帖'
-                                icon={item.quality === 'WATER' ? <CaretDownFilled/> : <CaretDownOutlined/>}
-                                onClick={() => this.setQuality('WATER')}/>
-                    </Tooltip>
-                </> : null}
-            </div> : null}
+                <Tooltip title={item.read ? '标为未读' : '标记已读'}>
+                    <Button type='text' size='small'
+                            className={`zsxq-post-mark-btn${item.read ? ' is-read' : ''}`}
+                            aria-label={item.read ? '标为未读' : '标记已读'}
+                            icon={item.read ? <CheckCircleFilled/> : <CheckCircleOutlined/>}
+                            onClick={this.toggleRead}/>
+                </Tooltip>
+            </div>
 
             {comments.length ? <div className='zsxq-post-comments'>
                 <div className='zsxq-comments-head'>

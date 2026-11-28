@@ -10,7 +10,7 @@ import org.springframework.data.repository.query.Param;
 public interface ZsxqTopicRepository extends JpaRepository<ZsxqTopic, String> {
 
     /**
-     * 关键字匹配摘要、标题和专栏正文，可按专栏过滤、只看星主、按质量标识过滤。
+     * 关键字匹配摘要、标题和专栏正文，可按专栏过滤、只看星主、按已读状态过滤。
      *
      * <p>不指定 {@code columnId} 时只返回星球话题，排除归档到专栏的文章
      * （专栏内容只在专栏页展示，避免混入主信息流）。</p>
@@ -29,14 +29,14 @@ public interface ZsxqTopicRepository extends JpaRepository<ZsxqTopic, String> {
               and (:ownerOnly = false
                    or t.authorId = (select g.ownerId from ZsxqGroup g where g.id = t.groupId)
                    or t.author = (select g.owner from ZsxqGroup g where g.id = t.groupId))
-              and (:quality is null
-                   or (:quality = 'NONE' and (t.quality is null or t.quality = ''))
-                   or (:quality <> 'NONE' and t.quality = :quality))
+              and (:readFilter is null
+                   or (:readFilter = 'UNREAD' and (t.read is null or t.read = false))
+                   or (:readFilter = 'READ' and t.read = true))
             """)
     Page<ZsxqTopic> search(@Param("keyword") String keyword,
                            @Param("columnId") String columnId,
                            @Param("ownerOnly") boolean ownerOnly,
-                           @Param("quality") String quality,
+                           @Param("readFilter") String readFilter,
                            Pageable pageable);
 
     /** 星球话题（不含专栏文章）分页：首页卡片等只读展示用。 */

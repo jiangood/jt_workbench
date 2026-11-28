@@ -77,7 +77,7 @@ public class ZsxqController {
     /** 可排序话题字段（限定取值，防止请求传入非法属性） */
     private static final Set<String> SORT_PROPERTIES = Set.of("sourceCreateTime", "lastCommentTime");
 
-    private static final Set<String> QUALITY_FILTERS = Set.of("DRY", "NORMAL", "WATER", "NONE");
+    private static final Set<String> READ_FILTERS = Set.of("UNREAD", "READ");
 
     @HasPermission("zsxq:read")
     @PostMapping("page")
@@ -85,20 +85,20 @@ public class ZsxqController {
                            @RequestParam(required = false) String keyword,
                            @RequestParam(required = false) String columnId,
                            @RequestParam(required = false) Boolean ownerOnly,
-                           @RequestParam(required = false) String quality,
+                           @RequestParam(required = false) String read,
                            @RequestParam(required = false) String sort,
                            @RequestParam(required = false) String direction) {
         Page<ZsxqTopic> page = topicRepository.search(blankToNull(keyword), blankToNull(columnId),
-                Boolean.TRUE.equals(ownerOnly), normalizeQualityFilter(quality), effectivePageable(pageable, sort, direction));
+                Boolean.TRUE.equals(ownerOnly), normalizeReadFilter(read), effectivePageable(pageable, sort, direction));
         return new AjaxResult().ok().data(page);
     }
 
-    /** 列表筛选：DRY/NORMAL/WATER/NONE(待标记)，其他值视为不过滤。 */
-    private static String normalizeQualityFilter(String quality) {
-        String v = blankToNull(quality);
+    /** 列表筛选：UNREAD/READ，其他值视为不过滤。 */
+    private static String normalizeReadFilter(String read) {
+        String v = blankToNull(read);
         if (v == null) return null;
         String upper = v.toUpperCase(Locale.ROOT);
-        return QUALITY_FILTERS.contains(upper) ? upper : null;
+        return READ_FILTERS.contains(upper) ? upper : null;
     }
 
     /** 取最终分页参数：请求显式指定 sort/direction 时优先；未指定时沿用默认（发布时间倒序） */
@@ -144,29 +144,21 @@ public class ZsxqController {
         return item != null ? new AjaxResult().ok().data(item) : new AjaxResult();
     }
 
-    /** 话题质量标识：DRY=干货，NORMAL=普通，WATER=水帖，空值=清除标识 */
-    public record QualityReq(String id, String quality) {
+    /** 话题已读标记 */
+    public record ReadReq(String id, Boolean read) {
     }
 
-    @HasPermission("zsxq:manage")
-    @PostMapping("quality")
-    public AjaxResult quality(@RequestBody QualityReq req) {
+    @HasPermission("zsxq:read")
+    @PostMapping("read")
+    public AjaxResult read(@RequestBody ReadReq req) {
         String id = req == null ? null : blankToNull(req.id());
         if (id == null) return AjaxResult.err("参数错误");
         ZsxqTopic topic = topicRepository.findById(id).orElse(null);
         if (topic == null) return AjaxResult.err("帖子不存在");
-        String quality = normalizeQualityMark(req.quality());
-        topic.setQuality(quality);
+        boolean read = req.read() == null || Boolean.TRUE.equals(req.read());
+        topic.setRead(read);
         topicRepository.save(topic);
-        return new AjaxResult().ok().data(Map.of("id", topic.getId(), "quality", quality == null ? "" : quality));
-    }
-
-    /** 标记写入：只接受 DRY/NORMAL/WATER，空值清除。 */
-    private static String normalizeQualityMark(String quality) {
-        String v = blankToNull(quality);
-        if (v == null) return null;
-        String upper = v.toUpperCase(Locale.ROOT);
-        return ("DRY".equals(upper) || "NORMAL".equals(upper) || "WATER".equals(upper)) ? upper : null;
+        return new AjaxResult().ok().data(Map.of("id", topic.getId(), "read", read));
     }
 
     /** 话题转笔记请求：id 为本地话题主键，title/folderId/sourceUrl 可在转换弹窗里调整 */
@@ -313,7 +305,7 @@ public class ZsxqController {
         }
     }
 
-    /** 统计：帖子总数（不含专栏文章）/ 星球数 / 专栏数 / 质量分布 */
+    /** 统计：帖子总数（不含专栏文章）/ 星球数 / 专栏数 / 已读分布 */
     @HasPermission("zsxq:read")
     @GetMapping("stats")
     public AjaxResult stats() {
@@ -322,32 +314,31 @@ public class ZsxqController {
         map.put("topics", topics);
         map.put("groups", groupRepository.count());
         map.put("columns", columnRepository.countByVisibleTrue());
-        map.put("quality", qualityCounts(topics));
+        map.put("read", readCounts(topics));
         return new AjaxResult().ok().data(map);
     }
 
-    /** 主话题质量分布（不含专栏文章），用于筛选按钮计数。 */
-    private Map<String, Long> qualityCounts(long total) {
+    /** 主话题已读分布（不含专栏文章），用于筛选按钮计数。 */
+    private Map<String, Long> readCounts(long total) {
         Map<String, Long> counts = new LinkedHashMap<>();
         counts.put("all", total);
-        counts.put("DRY", 0L);
-        counts.put("NORMAL", 0L);
-        counts.put("WATER", 0L);
-        counts.put("NONE", 0L);
+        counts.put("read", 0L);
+        counts.put("unread", total);
         try {
             List<Map<String, Object>> rows = jdbc.queryForList(
-                    "SELECT COALESCE(NULLIF(quality, ''), 'NONE') AS q, COUNT(*) AS c "
+                    "SELECT CASE WHEN is_read = TRUE THEN 'READ' ELSE 'UNREAD' END AS r, COUNT(*) AS c "
                             + "FROM zsxq_topic WHERE column_id IS NULL OR column_id = '' "
-                            + "GROUP BY COALESCE(NULLIF(quality, ''), 'NONE')");
+                            + "GROUP BY CASE WHEN is_read = TRUE THEN 'READ' ELSE 'UNREAD' END");
             for (Map<String, Object> row : rows) {
-                String q = cell(row, "q").toUpperCase(Locale.ROOT);
+                String r = cell(row, "r").toUpperCase(Locale.ROOT);
                 Object c = row.get("c");
                 if (c == null) c = row.get("C");
                 long n = c instanceof Number num ? num.longValue() : 0L;
-                if (counts.containsKey(q)) counts.put(q, n);
+                if ("READ".equals(r)) counts.put("read", n);
+                if ("UNREAD".equals(r)) counts.put("unread", n);
             }
         } catch (Exception e) {
-            log.debug("查询质量分布失败 error={}", e.getMessage());
+            log.debug("查询已读分布失败 error={}", e.getMessage());
         }
         return counts;
     }
