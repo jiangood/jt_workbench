@@ -31,11 +31,13 @@ export default class ZsxqReaderPage extends React.Component {
     }
 
     loadSeq = 0
+    statsSeq = 0
     loadMoreLock = false
     searchTimer = null
 
     componentDidMount() {
         this.loadBase()
+        this.loadStats()
         this.reloadList(true)
     }
 
@@ -45,14 +47,23 @@ export default class ZsxqReaderPage extends React.Component {
 
     loadBase = async () => {
         try {
-            const [statsRs, groupsRs] = await Promise.all([
-                HttpClient.get('admin/zsxq/stats'),
-                HttpClient.get('admin/zsxq/groups'),
-            ])
-            this.setState({
-                stats: statsRs.data || {},
-                groups: groupsRs.data || [],
-            })
+            const rs = await HttpClient.get('admin/zsxq/groups')
+            this.setState({groups: rs.data || []})
+        } catch (_) {}
+    }
+
+    /** 已读计数跟随关键字/只看星主筛选；已读页签本身不参与统计 */
+    loadStats = async () => {
+        this.statsSeq += 1
+        const seq = this.statsSeq
+        const params = {}
+        const kw = this.state.keyword?.trim()
+        if (kw) params.keyword = kw
+        if (this.state.ownerOnly) params.ownerOnly = true
+        try {
+            const rs = await HttpClient.get('admin/zsxq/stats', params)
+            if (seq !== this.statsSeq) return
+            this.setState({stats: rs.data || {}})
         } catch (_) {}
     }
 
@@ -147,7 +158,10 @@ export default class ZsxqReaderPage extends React.Component {
         const keyword = e.target.value
         this.setState({keyword})
         clearTimeout(this.searchTimer)
-        this.searchTimer = setTimeout(() => this.reloadList(false), 350)
+        this.searchTimer = setTimeout(() => {
+            this.loadStats()
+            this.reloadList(false)
+        }, 350)
     }
 
     onReadChange = (id, read) => {
@@ -243,7 +257,10 @@ export default class ZsxqReaderPage extends React.Component {
                         />
                         <label className='zsxq-feed-switch'>
                             <Switch size='small' checked={ownerOnly}
-                                    onChange={(v) => this.setState({ownerOnly: v}, () => this.reloadList(false))}/>
+                                    onChange={(v) => this.setState({ownerOnly: v}, () => {
+                                        this.loadStats()
+                                        this.reloadList(false)
+                                    })}/>
                             <span>只看星主</span>
                         </label>
                         <Tooltip title={sortAsc ? '发布时间：正序' : '发布时间：倒序'}>
@@ -257,7 +274,7 @@ export default class ZsxqReaderPage extends React.Component {
                         </Tooltip>
                         <Tooltip title='刷新'>
                             <Button icon={<ReloadOutlined/>} loading={loading && !initialLoading} aria-label='刷新'
-                                    onClick={() => { this.loadBase(); this.reloadList(false) }}/>
+                                    onClick={() => { this.loadBase(); this.loadStats(); this.reloadList(false) }}/>
                         </Tooltip>
                     </div>
                 </header>

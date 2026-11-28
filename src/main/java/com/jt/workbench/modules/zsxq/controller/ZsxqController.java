@@ -305,41 +305,45 @@ public class ZsxqController {
         }
     }
 
-    /** 统计：帖子总数（不含专栏文章）/ 星球数 / 专栏数 / 已读分布 */
+    /**
+     * 统计：帖子总数（不含专栏文章）/ 星球数 / 专栏数 / 已读分布。
+     *
+     * <p>关键字、专栏、只看星主与列表筛选保持一致，已读分布跟随筛选变化；
+     * 已读/未读筛选本身不参与统计，否则切换页签时计数会互相抵消。</p>
+     */
     @HasPermission("zsxq:read")
     @GetMapping("stats")
-    public AjaxResult stats() {
+    public AjaxResult stats(@RequestParam(required = false) String keyword,
+                            @RequestParam(required = false) String columnId,
+                            @RequestParam(required = false) Boolean ownerOnly) {
+        Map<String, Long> read = readCounts(blankToNull(keyword), blankToNull(columnId),
+                Boolean.TRUE.equals(ownerOnly));
         Map<String, Object> map = new LinkedHashMap<>();
-        long topics = topicRepository.countMainTopics();
-        map.put("topics", topics);
+        map.put("topics", read.get("all"));
         map.put("groups", groupRepository.count());
         map.put("columns", columnRepository.countByVisibleTrue());
-        map.put("read", readCounts(topics));
+        map.put("read", read);
         return new AjaxResult().ok().data(map);
     }
 
-    /** 主话题已读分布（不含专栏文章），用于筛选按钮计数。 */
-    private Map<String, Long> readCounts(long total) {
-        Map<String, Long> counts = new LinkedHashMap<>();
-        counts.put("all", total);
-        counts.put("read", 0L);
-        counts.put("unread", total);
+    /** 按当前筛选条件统计已读分布，用于筛选按钮计数；统计逻辑复用列表查询。 */
+    private Map<String, Long> readCounts(String keyword, String columnId, boolean ownerOnly) {
+        long all;
+        long read;
         try {
-            List<Map<String, Object>> rows = jdbc.queryForList(
-                    "SELECT CASE WHEN is_read = TRUE THEN 'READ' ELSE 'UNREAD' END AS r, COUNT(*) AS c "
-                            + "FROM zsxq_topic WHERE column_id IS NULL OR column_id = '' "
-                            + "GROUP BY CASE WHEN is_read = TRUE THEN 'READ' ELSE 'UNREAD' END");
-            for (Map<String, Object> row : rows) {
-                String r = cell(row, "r").toUpperCase(Locale.ROOT);
-                Object c = row.get("c");
-                if (c == null) c = row.get("C");
-                long n = c instanceof Number num ? num.longValue() : 0L;
-                if ("READ".equals(r)) counts.put("read", n);
-                if ("UNREAD".equals(r)) counts.put("unread", n);
-            }
+            all = topicRepository.search(keyword, columnId, ownerOnly, null, PageRequest.of(0, 1))
+                    .getTotalElements();
+            read = topicRepository.search(keyword, columnId, ownerOnly, "READ", PageRequest.of(0, 1))
+                    .getTotalElements();
         } catch (Exception e) {
             log.debug("查询已读分布失败 error={}", e.getMessage());
+            all = topicRepository.countMainTopics();
+            read = 0L;
         }
+        Map<String, Long> counts = new LinkedHashMap<>();
+        counts.put("all", all);
+        counts.put("read", read);
+        counts.put("unread", Math.max(0L, all - read));
         return counts;
     }
 

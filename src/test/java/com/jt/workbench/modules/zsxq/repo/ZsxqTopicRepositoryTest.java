@@ -92,6 +92,38 @@ class ZsxqTopicRepositoryTest {
         assertEquals(3, allResult.getTotalElements());
     }
 
+    @Test
+    void searchCountsReadDistributionWithKeyword() {
+        ZsxqTopic read = new ZsxqTopic();
+        read.setId("topic-count-read");
+        read.setTopicId("11");
+        read.setGroupId("g1");
+        read.setDigest("筛选统计 已读");
+        read.setRead(true);
+        entityManager.persistAndFlush(read);
+
+        ZsxqTopic unread = new ZsxqTopic();
+        unread.setId("topic-count-unread");
+        unread.setTopicId("12");
+        unread.setGroupId("g1");
+        unread.setDigest("筛选统计 未读");
+        unread.setRead(false);
+        entityManager.persistAndFlush(unread);
+
+        ZsxqTopic other = new ZsxqTopic();
+        other.setId("topic-count-other");
+        other.setTopicId("13");
+        other.setGroupId("g1");
+        other.setDigest("其他内容");
+        entityManager.persistAndFlush(other);
+        entityManager.clear();
+
+        PageRequest single = PageRequest.of(0, 1);
+        assertEquals(2, repository.search("筛选统计", null, false, null, single).getTotalElements());
+        assertEquals(1, repository.search("筛选统计", null, false, "READ", single).getTotalElements());
+        assertEquals(1, repository.search("筛选统计", null, false, "UNREAD", single).getTotalElements());
+    }
+
     @Configuration(proxyBeanMethods = false)
     @EnableJpaRepositories(basePackageClasses = ZsxqTopicRepository.class)
     @EntityScan(basePackageClasses = ZsxqTopic.class)
