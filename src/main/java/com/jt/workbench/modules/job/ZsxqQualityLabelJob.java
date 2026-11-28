@@ -11,7 +11,7 @@ import org.slf4j.Logger;
 import org.springframework.stereotype.Component;
 
 /**
- * 知识星球内容质量 AI 标注（默认关闭）。
+ * 知识星球内容质量 AI 标注（默认开启）。
  *
  * <p>对未标记话题调用可配置的 AI 接口判定 DRY/WATER，拿不准跳过。
  * 默认使用免 key 的 Pollinations OpenAI-compatible 接口，也可改为任意兼容接口。</p>
@@ -22,7 +22,7 @@ import org.springframework.stereotype.Component;
         key = "jt.zsxqQualityLabel",
         label = "知识星球AI标注",
         defaultCron = "0 30 3 * * ?",
-        defaultEnabled = false
+        defaultEnabled = true
 )
 public class ZsxqQualityLabelJob extends BaseJob {
 
