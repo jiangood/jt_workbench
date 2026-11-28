@@ -8,17 +8,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** 回归：请求签名与错误文案必须与网页端行为一致。 */
+/** 回归：鉴权方式统一为 App 风格 authorization token（不发网页 Cookie、不签名），且错误文案保持一致。 */
 class ZsxqApiClientTest {
 
     private final JsonMapper mapper = JsonMapper.builder().build();
-
-    @Test
-    void signatureMatchesBrowserSha1() {
-        String url = "https://api.zsxq.com/v2/groups/48885445242158/topics?count=20&scope=all";
-        String signature = ZsxqApiClient.signature(url, "1795583896", "5f0a1b2c-3d4e-4f50-8a9b-0c1d2e3f4a5b");
-        assertEquals("aaf00b3c83a2e096cada10165845f96ea967fece", signature);
-    }
 
     @Test
     void requestIdUsesWebFormat() {
@@ -27,21 +20,33 @@ class ZsxqApiClientTest {
     }
 
     @Test
-    void cookieUsesFullBrowserCookieAsIs() {
+    void unifiedAppAuthSendsAuthorizationTokenWithoutCookieOrSignature() {
         ZsxqApiClient client = new ZsxqApiClient("zsxq_access_token=abc; zsxqsessionid=xyz; abtest_env=product");
-        assertEquals("zsxq_access_token=abc; zsxqsessionid=xyz; abtest_env=product", client.cookieHeader());
+        java.net.http.HttpRequest request = client.buildGet("/v2/groups/48885445242158/topics?count=20&scope=all");
+        assertEquals("abc", request.headers().firstValue("authorization").orElse(""));
+        assertTrue(request.headers().firstValue("Cookie").isEmpty());
+        assertTrue(request.headers().firstValue("x-signature").isEmpty());
+        assertTrue(request.headers().firstValue("x-timestamp").isEmpty());
+        assertEquals("2.83.0", request.headers().firstValue("x-version").orElse(""));
+        assertEquals("xiaomiquan/2.83.0 SDK/1.0.0", request.headers().firstValue("User-Agent").orElse(""));
+        assertTrue(request.headers().firstValue("x-request-id").orElse("").matches("^[0-9a-f]{9}(-[0-9a-f]{4}){3}-[0-9a-f]{11}$"));
+        assertTrue(request.headers().firstValue("x-aduid").orElse("").matches("^[0-9a-f]{9}(-[0-9a-f]{4}){3}-[0-9a-f]{11}$"));
     }
 
     @Test
-    void cookieAddsAbtestWhenMissing() {
-        ZsxqApiClient client = new ZsxqApiClient("zsxq_access_token=abc");
-        assertEquals("abtest_env=product; zsxq_access_token=abc", client.cookieHeader());
+    void unifiedAppAuthIgnoresOtherCookieFieldsAndAbtest() {
+        ZsxqApiClient client = new ZsxqApiClient("zsxqsessionid=xyz; zsxq_access_token=tok_123; abtest_env=product");
+        java.net.http.HttpRequest request = client.buildGet("/v2/groups");
+        assertEquals("tok_123", request.headers().firstValue("authorization").orElse(""));
+        assertTrue(request.headers().firstValue("Cookie").isEmpty());
     }
 
     @Test
-    void blankCookieStaysBlank() {
-        ZsxqApiClient client = new ZsxqApiClient("");
-        assertEquals("", client.cookieHeader());
+    void missingAccessTokenRejected() {
+        ZsxqApiClient client = new ZsxqApiClient("zsxqsessionid=xyz");
+        org.junit.jupiter.api.Assertions.assertThrows(ZsxqApiException.class, () -> client.buildGet("/v2/groups"));
+        ZsxqApiClient blank = new ZsxqApiClient("");
+        org.junit.jupiter.api.Assertions.assertThrows(ZsxqApiException.class, () -> blank.buildGet("/v2/groups"));
     }
 
     @Test

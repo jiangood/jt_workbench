@@ -58,14 +58,14 @@
 - 专栏接口返回的是文章索引（`topic_id`/`create_time` 等），每轮回填逐篇调用话题详情补齐标题/摘要、作者与完整正文。正文分两类：
   - 长文章（`article` 元数据）：读取 `articles.zsxq.com` 正文页；
   - 普通长贴（`type=talk`，本项目的专栏主要是这一类）：完整正文就在 `talk.text`，没有 `article` 对象。回填时把星球自定义 `<e ...>` 标记还原为普通链接、转义文本、换行转 `<br/>`，并把 `talk.images` 追加到正文末尾
-- 专栏正文统一存入 `zsxq_topic.article_content`（HTML），阅读页直接展示；前端用 DOMPurify 清洗，并把星球图片改走站内代理。正文页仅允许 HTTPS 的 `articles.zsxq.com`，禁止重定向以避免 Cookie 外泄
+- 专栏正文页（`articles.zsxq.com`）本身不签名；鉴权已与其余请求统一为 `authorization` token（原发送网页 Cookie，未对真实接口验证）。专栏正文统一存入 `zsxq_topic.article_content`（HTML），阅读页直接展示；前端用 DOMPurify 清洗，并把星球图片改走站内代理。正文页仅允许 HTTPS 的 `articles.zsxq.com`，禁止重定向以避免凭据外泄
 - 正文回填按「失败次数升序 + 发帖时间升序」排队，先处理从未尝试过的旧条目，避免新内容一直占满每轮批次、老专栏永远轮不到
 - 专栏阅读页按发布时间正序展示，不提供搜索、星主筛选或「查看原文」入口；专栏内容均为星主发布，不再添加星主标记与强调样式
 
 ### 附件
 
 - 话题列表/详情里的 `talk.files` 只保存**元数据**（file_id、文件名、大小、创建时间）到 `zsxq_file`，同步时不会批量下载文件内容
-- 文件下载地址需要用 `file_id` 调星球 `/v2/files/{file_id}/download_url` 换取，该接口有下载量/频率监控，因此下载按需进行；鉴权走 **App 端 `authorization` token**（从 `zsxq.cookie` 中提取 `zsxq_access_token`，App 版本 `2.83.0`），因为「仅 App 可见」的附件用网页端 Cookie 请求会被拒绝，而更高版本 App UA 会命中 1059 风控：
+- 文件下载地址需要用 `file_id` 调星球 `/v2/files/{file_id}/download_url` 换取，该接口有下载量/频率监控，因此下载按需进行；鉴权与全部请求统一为 **App 端 `authorization` token**（从 `zsxq.cookie` 中提取 `zsxq_access_token`，App 版本 `2.83.0`），更高版本 App UA 会命中 1059 风控：
   - 阅读页点击附件时，服务端换取地址、下载到对象存储 `zsxq-file/<file_id>_<文件名>`，再以原文件名返回给浏览器；同一文件只下载一次
   - 每轮回填按 `zsxq.file-backfill-batch` 批量预下载，失败 3 次后不再自动重试（仍可手动点击重试）
   - 历史帖子没有附件清单时，每轮回填按 `zsxq.file-meta-backfill-batch` 调用话题详情补齐；老帖在增量/回填翻页中重新出现时也会顺带补清单，不再额外请求
@@ -87,17 +87,17 @@
 
 ## 四、避免触发风控
 
-知识星球对非官方客户端有风控（业务码 `1059`，提示「不支持非官方工具访问」）。实测它不是固定指纹问题：网页端 48 个请求 0 命中，同一 token 从服务器直连在同样的“干净窗口”里也 0 命中；但短时间密集请求会把账号风险分推高，随后一段时间内请求会被随机拦截。原则是**按浏览器真实方式请求 + 命中后原地重试 + 少发请求/及时停手**：
+知识星球对非官方客户端有风控（业务码 `1059`，提示「不支持非官方工具访问」）。实测它不是固定指纹问题：网页端 48 个请求 0 命中，同一 token 从服务器直连在同样的“干净窗口”里也 0 命中；但短时间密集请求会把账号风险分推高，随后一段时间内请求会被随机拦截。鉴权已按要求统一为 App `authorization` token（**未对真实接口验证**，原为按浏览器真实方式请求 + SHA1 签名）；其余原则仍是**命中后原地重试 + 少发请求/及时停手**：
 
 | 措施 | 实现 |
 |---|---|
-| 浏览器同款请求 | Cookie `zsxq_access_token` + `abtest_env=product` 认证；签名 `SHA1(完整 URL + " " + 秒级时间戳 + " " + x-request-id)`；带 `X-Version / X-Aduid / Origin / Referer / Accept-Language / sec-ch-ua / sec-fetch-*` 与 Chrome UA；ID 用星球自定义 9-4-4-4-11 位格式（附件下载地址除外，见「附件」一节） |
+| 鉴权方式已统一 | **所有请求统一用 App 端 `authorization` token**（从 `zsxq.cookie` 提取 `zsxq_access_token`），**不再发送网页 Cookie、不再 SHA1 签名**（无 `x-signature / x-timestamp`）；UA `xiaomiquan/2.83.0 SDK/1.0.0`，`x-version 2.83.0`，带 `x-request-id / x-aduid`；ID 用星球自定义 9-4-4-4-11 位格式。**注意：该统一改动未对真实接口验证**，原网页端接口需要 Cookie + 签名，若命中鉴权失败或 1059 需改回网页端方案 |
 | 1059 原地重试 | 同一请求换 request-id 重试（默认 3 次，3/6/12 秒退避 + 抖动），成功后额外静默 2~3 秒；单轮累计重试上限 20 次，避免在风险窗口里靠重试放大请求量 |
 | 复用请求 | Cookie 校验与星球发现合并为一次 `/v2/groups`，不再额外请求 |
 | 固定间隔 + 随机抖动 | 分页请求 8～10 秒、话题/评论之间 3～5 秒（固定值 + 0～2 秒随机），可用 `zsxq.page-pause-seconds` / `zsxq.topic-pause-seconds` 调整 |
 | 降低请求量 | 专栏默认 24 小时同步一次；话题增量每轮头部 2 页；图片每轮回填 10 条、专栏正文每轮回填 200 条（只处理待回填条目，存量补齐后不会持续产生请求）；老帖新增评论默认不补抓 |
 | 分离长任务 | 增量同步每 30 分钟一次；历史回填每小时整点连续翻页，两者共享锁不并发 |
-| 设备号稳定 | 无需手工配置：按 Cookie 派生固定的 `x-aduid`，多轮同步保持同一设备 |
+| 设备号稳定 | 无需手工配置：按 `zsxq_access_token` 派生固定的 `x-aduid`，多轮同步保持同一设备 |
 | ID 精度 | 话题/评论/专栏直接按强类型 DTO 解析，所有 ID 用字符串接收，避免 64 位 `topic_id` 被 `Double` 四舍五入 |
 
 ## 五、触发风控后的处理
@@ -126,14 +126,14 @@
     ```
 - **频繁触发**：先确认不是重试次数设置过低（`zsxq.risk-retry-count` 默认 3 次，单次逻辑请求全失败概率约 0.2⁴≈0.16%），
   再调大 `zsxq.page-pause-seconds` / `zsxq.topic-pause-seconds`，或临时禁用 `jt.zsxqBackfill`。
-  官方 Skill（`https://garden.zsxq.com/skill/`）不使用，本项目继续走网页端接口 + 浏览器同款请求 + 原地重试的方案。
+  官方 Skill（`https://garden.zsxq.com/skill/`）不使用，本项目走网页端接口 + **统一 App `authorization` token** + 原地重试的方案（鉴权统一改动未对真实接口验证）。
 - **已删除的配置**：`zsxq.request-budget`、`zsxq.backfill-pages` 已移除，数据库里的旧值不再生效，可自行清理。
 
 ## 七、参数
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `zsxq.cookie` | 空 | **必填**：直接粘贴浏览器 `api.zsxq.com` 请求头里的完整 Cookie（含 `zsxq_access_token`，可含 `zsxqsessionid` 等） |
+| `zsxq.cookie` | 空 | **必填**：直接粘贴浏览器 `api.zsxq.com` 请求头里的完整 Cookie（**必须含 `zsxq_access_token`**，可含 `zsxqsessionid` 等）；服务端只从中提取 `zsxq_access_token` 作为 `authorization` 发送，不会把整个 Cookie 发给星球 |
 | `zsxq.risk-retry-count` | 3 | 命中 1059/40001 时同一请求的原地重试次数（1～6） |
 | `zsxq.risk-retry-pause-seconds` | 3 | 首次重试等待秒数（1～60），之后按 2/4/8 倍退避并叠加 0～1 秒抖动；单轮累计重试上限 20 次 |
 | `zsxq.head-pages` | 2 | 增量同步头部翻页数（1～10，每页 20 条），碰到已同步帖子即提前停止 |

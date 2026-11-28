@@ -21,21 +21,24 @@ import java.util.StringJoiner;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Consumer;
-import java.util.regex.Pattern;
 
 /**
  * 知识星球只读接口的最小 HTTP 客户端（项目内源码，不再依赖 zsxq-sdk）。
  *
- * <p>按网页端（https://wx.zsxq.com）的真实请求方式构造：</p>
+ * <p><b>鉴权方式已统一为「下载部分」的 App 风格</b>（应用户要求，原网页端 Cookie + SHA1 签名方案已移除）：</p>
  * <ul>
- *     <li>普通接口走浏览器 Cookie（{@code zsxq_access_token} 等）；附件下载地址改用 App 端
- *         {@code authorization} token（从 Cookie 中提取 {@code zsxq_access_token}），
- *         因为「仅 App 可见」的附件用网页端请求会被拒绝；</li>
- *     <li>签名与浏览器一致：{@code SHA1(完整 URL + " " + 秒级时间戳 + " " + x-request-id)}；</li>
- *     <li>请求头带 {@code x-request-id / x-version / x-timestamp / x-signature / x-aduid}，
- *         并补上浏览器的 {@code Origin / Referer / Accept-Language / sec-ch-ua / sec-fetch-*}；
- *         {@code x-aduid} 与 {@code x-request-id} 使用星球自定义的 9-4-4-4-11 位格式。</li>
+ *     <li>所有请求统一用 App 端 {@code authorization} token 鉴权，token 从配置的 Cookie 中提取
+ *         {@code zsxq_access_token}；<b>不再发送网页 Cookie，也不再做 SHA1 签名</b>
+ *         （不再带 {@code x-signature / x-timestamp}）；</li>
+ *     <li>用户代理统一为 App UA {@code xiaomiquan/<version> SDK/1.0.0}，{@code x-version} 统一为
+ *         {@value #APP_VERSION}（与附件下载地址接口此前实测可用的版本一致；更高版本会命中 1059 风控）；</li>
+ *     <li>请求头带 {@code x-request-id / x-version / x-aduid}；
+ *         {@code x-aduid} 与 {@code x-request-id} 使用星球自定义的 9-4-4-4-11 位格式，
+ *         {@code x-aduid} 按 token 派生固定值保持同一设备。</li>
  * </ul>
+ * <p><b>注意（未验证）：</b>知识星球官方网页端接口原先要求网页 Cookie + SHA1 签名；
+ * 本次统一后是否仍被星球接受<b>未能对真实接口验证</b>，命中鉴权失败或业务码 1059 时
+ * 需改回网页端方案。Cookie 校验/风控/重试逻辑不变。</p>
  *
  * <p>知识星球对非官方通道的拦截（业务码 {@code 1059}）是**按账号风险分/时间窗口**出现的：
  * 短时间密集请求会把风险分推高，之后一段时间内请求会被随机拦截；停一会儿或换新会话就恢复。
@@ -46,15 +49,15 @@ public class ZsxqApiClient {
 
     private static final String BASE_URL = "https://api.zsxq.com";
     private static final String WEB_ORIGIN = "https://wx.zsxq.com";
-    private static final String DEFAULT_APP_VERSION = "2.100.0";
-    /** App 端附件下载地址接口实测可用的版本；2.100.0 会命中 1059 风控。 */
-    private static final String APP_TOKEN_VERSION = "2.83.0";
-    private static final String DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.7977.167 Safari/537.36";
+    /**
+     * 统一 App 版本；与附件下载地址接口此前实测可用的版本一致；更高版本（如 2.100.0）会命中 1059 风控。
+     */
+    private static final String APP_VERSION = "2.83.0";
+    /** 统一 App 用户代理（与下载部分一致）。 */
+    private static final String APP_USER_AGENT = "xiaomiquan/" + APP_VERSION + " SDK/1.0.0";
     private static final String ACCEPT = "application/json, text/plain, */*";
     private static final String ACCEPT_LANGUAGE = "zh-CN";
     private static final String ACCEPT_ENCODING = "gzip, deflate";
-    private static final Pattern CHROME_VERSION = Pattern.compile("Chrome/(\\d+)");
     private static final int DEFAULT_TIMEOUT_SECONDS = 20;
     private static final int DEFAULT_TRANSPORT_RETRY = 3;
     private static final int DEFAULT_RISK_RETRY = 3;
@@ -64,8 +67,6 @@ public class ZsxqApiClient {
     private static final int MAX_TOTAL_RISK_RETRIES = 20;
     /** 重试成功后额外静默一会儿，让风险分回落，避免紧接着的下一个请求再次命中。 */
     private static final long RECOVERY_PAUSE_MS = 2000L;
-    /** 浏览器端可见的 A/B 标记 Cookie（网页端所有请求都会带）。 */
-    private static final String ABTEST_COOKIE = "abtest_env=product";
     private static final int CODE_RISK_CONTROL = 1059;
     private static final int CODE_RATE_LIMIT = 40001;
     /**
@@ -74,8 +75,6 @@ public class ZsxqApiClient {
      */
     private final String cookie;
     private final String deviceId;
-    private final String appVersion;
-    private final String userAgent;
     private final int riskRetryCount;
     private final long riskRetryPauseMs;
     private final int transportRetryCount;
@@ -96,8 +95,6 @@ public class ZsxqApiClient {
     public ZsxqApiClient(String cookie, int riskRetryCount, long riskRetryPauseMs) {
         this.cookie = cookie == null ? "" : cookie.trim();
         this.deviceId = normalizeDeviceId(this.cookie);
-        this.appVersion = DEFAULT_APP_VERSION;
-        this.userAgent = DEFAULT_USER_AGENT;
         this.riskRetryCount = Math.max(0, riskRetryCount);
         this.riskRetryPauseMs = riskRetryPauseMs <= 0 ? DEFAULT_RISK_RETRY_PAUSE_MS : riskRetryPauseMs;
         this.transportRetryCount = DEFAULT_TRANSPORT_RETRY;
@@ -122,28 +119,31 @@ public class ZsxqApiClient {
     }
 
     /**
-     * 获取专栏文章完整正文 HTML。正文页与 API 域名不同，只带 Cookie、不签名；
-     * 仅允许 HTTPS 的 articles.zsxq.com，且禁止重定向，避免把 Cookie 带到其它域名。
+     * 获取专栏文章完整正文 HTML。正文页与 API 域名不同，不签名；
+     * 仅允许 HTTPS 的 articles.zsxq.com，且禁止重定向，避免把凭据带到其它域名。
+     *
+     * <p>鉴权方式已与其余请求统一：发送 App 端 {@code authorization} token
+     * （从 Cookie 提取 {@code zsxq_access_token}），<b>不再发送网页 Cookie</b>；
+     * 但该 HTML 页面原先依赖网页登录态 Cookie，本改动<b>未对真实接口验证</b>，
+     * 若页面要求登录（返回 SPA 壳或 401）需改回网页 Cookie。</p>
      */
     public String getArticleContent(String articleUrl) {
         if (!isAllowedArticleUrl(articleUrl)) {
             throw new ZsxqApiException(0, "专栏文章地址不受支持，仅允许 https://articles.zsxq.com/");
         }
-        if (cookie.isBlank()) throw new ZsxqApiException(401, "知识星球 Cookie 为空，无法读取专栏正文");
 
         String url = articleUrl.trim();
-        HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
                 .timeout(timeout)
                 .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
                 .header("Accept-Language", ACCEPT_LANGUAGE)
-                .header("User-Agent", userAgent)
+                .header("User-Agent", APP_USER_AGENT)
                 .header("Referer", WEB_ORIGIN + "/")
                 .header("sec-fetch-dest", "document")
                 .header("sec-fetch-mode", "navigate")
-                .header("sec-fetch-site", "same-site")
-                .header("Cookie", cookieHeader())
-                .GET()
-                .build();
+                .header("sec-fetch-site", "same-site");
+        applyUnifiedAuth(builder);
+        HttpRequest request = builder.GET().build();
         try {
             HttpResponse<byte[]> response = http.send(request, HttpResponse.BodyHandlers.ofByteArray());
             if (response.statusCode() >= 300 && response.statusCode() < 400) {
@@ -214,30 +214,26 @@ public class ZsxqApiClient {
      *
      * <p>该接口在星球侧有下载量/频率监控，调用方需要控制节奏，不要批量并发请求。</p>
      *
-     * <p>走 App 端 {@code authorization} token 鉴权：仅 App 可见的附件用网页端 Cookie 请求
-     * 会被拒绝（「权限不足，无权该请求」）；token 从 Cookie 中的 {@code zsxq_access_token}
-     * 提取，App 版本用实测可用的 {@value #APP_TOKEN_VERSION}（更高版本会命中 1059 风控）。</p>
+     * <p>鉴权方式与其余请求统一：App 端 {@code authorization} token
+     * （从 Cookie 中的 {@code zsxq_access_token} 提取），App 版本 {@value #APP_VERSION}
+     * （更高版本会命中 1059 风控）；不发送网页 Cookie、不签名。</p>
      */
     public String fileDownloadUrl(String fileId) {
         String id = fileId == null ? "" : fileId.trim();
         if (id.isEmpty()) throw new ZsxqApiException(0, "知识星球附件 file_id 为空");
-        String token = accessTokenFromCookie(cookie);
-        if (token.isEmpty()) throw new ZsxqApiException(0, "zsxq.cookie 中未找到 zsxq_access_token，无法换取附件下载地址");
+        if (accessTokenFromCookie(cookie).isEmpty()) {
+            throw new ZsxqApiException(401, "zsxq.cookie 中未找到 zsxq_access_token，无法换取附件下载地址");
+        }
 
         String path = "/v2/files/" + URLEncoder.encode(id, StandardCharsets.UTF_8) + "/download_url";
         String url = BASE_URL + path;
-        String requestId = UUID.randomUUID().toString();
-        HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
                 .timeout(timeout)
                 .header("Accept", ACCEPT)
                 .header("Accept-Language", ACCEPT_LANGUAGE)
-                .header("User-Agent", "xiaomiquan/" + APP_TOKEN_VERSION + " SDK/1.0.0")
-                .header("authorization", token)
-                .header("x-request-id", requestId)
-                .header("x-version", APP_TOKEN_VERSION)
-                .header("x-aduid", UUID.randomUUID().toString())
-                .GET()
-                .build();
+                .header("User-Agent", APP_USER_AGENT);
+        applyUnifiedAuth(builder);
+        HttpRequest request = builder.GET().build();
         ZsxqModels.FileDownloadUrl data;
         try {
             HttpResponse<byte[]> response = http.send(request, HttpResponse.BodyHandlers.ofByteArray());
@@ -276,7 +272,7 @@ public class ZsxqApiClient {
 
     /**
      * 发送请求；1059（非官方工具随机拦截）与 40001（限流）在客户端原地重试，
-     * 每次重试都会重新生成时间戳、request-id 与签名，避免复用被拦下的请求指纹。
+     * 每次重试都会重新生成 request-id，避免复用被拦下的请求指纹。
      */
     private <T> T execute(String requestPath, Class<T> respType) {
         int transportAttempt = 0;
@@ -325,42 +321,36 @@ public class ZsxqApiClient {
         }
     }
 
-    /** 按浏览器的方式构造 GET：Cookie 认证 + SHA1 签名 + 网页端请求头。 */
-    private HttpRequest buildGet(String requestPath) {
+    /**
+     * 构造 GET：鉴权方式与下载部分统一为 App 风格 {@code authorization} token，
+     * 不发送网页 Cookie，不做 SHA1 签名（无 {@code x-timestamp / x-signature}）。
+     */
+    HttpRequest buildGet(String requestPath) {
         String url = BASE_URL + requestPath;
-        String timestamp = String.valueOf(System.currentTimeMillis() / 1000);
-        String requestId = newZsxqId();
-        String chromeMajor = chromeMajor(userAgent);
-
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
                 .timeout(timeout)
                 .header("Accept", ACCEPT)
                 .header("Accept-Language", ACCEPT_LANGUAGE)
                 .header("Accept-Encoding", ACCEPT_ENCODING)
-                .header("User-Agent", userAgent)
-                .header("Origin", WEB_ORIGIN)
-                .header("Referer", WEB_ORIGIN + "/")
-                .header("sec-ch-ua", "\"Not?A_Brand\";v=\"24\", \"Chromium\";v=\"" + chromeMajor + "\"")
-                .header("sec-ch-ua-mobile", "?0")
-                .header("sec-ch-ua-platform", "\"Windows\"")
-                .header("sec-fetch-dest", "empty")
-                .header("sec-fetch-mode", "cors")
-                .header("sec-fetch-site", "same-site")
-                .header("priority", "u=1, i")
-                .header("x-request-id", requestId)
-                .header("x-version", appVersion)
-                .header("x-aduid", deviceId)
-                .header("x-timestamp", timestamp)
-                .header("x-signature", signature(url, timestamp, requestId));
-        String cookie = cookieHeader();
-        if (!cookie.isEmpty()) builder.header("Cookie", cookie);
+                .header("User-Agent", APP_USER_AGENT);
+        applyUnifiedAuth(builder);
         return builder.GET().build();
     }
 
-    /** 网页端认证 Cookie：使用配置的完整 Cookie，未带 A/B 标记时补上。 */
-    String cookieHeader() {
-        if (cookie.isEmpty() || cookie.contains("abtest_env=")) return cookie;
-        return ABTEST_COOKIE + "; " + cookie;
+    /**
+     * 统一鉴权：设置 App 端 {@code authorization} token
+     * （从配置 Cookie 中提取 {@code zsxq_access_token}），并设置 {@code x-version / x-aduid / x-request-id}；
+     * 不发送网页 Cookie，不做签名。缺少 token 时抛 401。
+     */
+    private void applyUnifiedAuth(HttpRequest.Builder builder) {
+        String token = accessTokenFromCookie(cookie);
+        if (token.isEmpty()) {
+            throw new ZsxqApiException(401, "zsxq.cookie 中未找到 zsxq_access_token，无法鉴权知识星球请求");
+        }
+        builder.header("authorization", token)
+                .header("x-request-id", newZsxqId())
+                .header("x-version", APP_VERSION)
+                .header("x-aduid", deviceId);
     }
 
     private <T> T parse(HttpResponse<byte[]> response, Class<T> respType) {
@@ -432,17 +422,6 @@ public class ZsxqApiClient {
         return "内部错误".equals(error) || "internal server error".equals(lower) || "error".equals(lower);
     }
 
-    /** 与网页端一致：SHA1(完整 URL + " " + 秒级时间戳 + " " + x-request-id) 的小写十六进制。 */
-    static String signature(String url, String timestamp, String requestId) {
-        String payload = url + " " + timestamp + " " + requestId;
-        try {
-            MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
-            return HexFormat.of().formatHex(sha1.digest(payload.getBytes(StandardCharsets.UTF_8)));
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("生成知识星球请求签名失败", e);
-        }
-    }
-
     private static boolean isTransientRisk(int code) {
         return code == CODE_RISK_CONTROL || code == CODE_RATE_LIMIT;
     }
@@ -511,11 +490,6 @@ public class ZsxqApiClient {
     private static String formatZsxqId(String hex32) {
         return hex32.substring(0, 9) + "-" + hex32.substring(9, 13) + "-"
                 + hex32.substring(13, 17) + "-" + hex32.substring(17, 21) + "-" + hex32.substring(21);
-    }
-
-    private static String chromeMajor(String userAgent) {
-        java.util.regex.Matcher m = CHROME_VERSION.matcher(userAgent);
-        return m.find() ? m.group(1) : "152";
     }
 
     private static String brief(String body) {
