@@ -65,6 +65,8 @@ public class ZsxqSyncService {
     private static final int FILE_BACKFILL_DEFAULT_BATCH = 20;
     private static final int FILE_META_BACKFILL_DEFAULT_BATCH = 20000;
     private static final int FILE_BACKFILL_MAX_FAILS = 3;
+    /** 作者信息回填：默认每轮处理 200 条历史匿名/缺作者 ID 的话题。 */
+    private static final int AUTHOR_BACKFILL_DEFAULT_BATCH = 200;
     /** 专栏文章完整正文回填：默认每轮 200 条，连续失败 3 次后不再重试。 */
     private static final int ARTICLE_BACKFILL_DEFAULT_BATCH = 200;
     private static final int ARTICLE_BACKFILL_MAX_FAILS = 3;
@@ -188,6 +190,7 @@ public class ZsxqSyncService {
                 log.info("[知识星球] 本轮{}开始：{} 个星球", taskName, groupIds.size());
                 if (backfill) {
                     parts.add(backfillTopics(client, groupIds, logger, progress));
+                    parts.add(backfillAuthors(client, logger, progress));
                     parts.add(syncColumns(client, groupIds, logger, progress, true));
                     setState(STATE_COLUMNS_LAST_OK, System.currentTimeMillis());
                     parts.add(backfillColumnArticles(client, logger, progress));
@@ -470,18 +473,31 @@ public class ZsxqSyncService {
     /**
      * 老数据补齐作者信息：列表接口本身带 owner，历史帖子（作者名/ID 缺失）在回填翻页时顺带补齐，
      * 保证“只看星主”能覆盖存量数据。长文章的 owner 可能在话题顶层。
+     *
+     * <p>历史脏数据里 `author` 为空不能直接跳过：来源 `talk.owner`/顶层 `owner`
+     * 可能只在话题详情里出现，或只有 `user_id` 没有 `name`。作者名和作者 ID 分别补齐，
+     * 不用空值覆盖已有数据；来源确实匿名/无 owner 时保留为空，前端继续显示“匿名”。</p>
      */
-    private void fillAuthorIfMissing(String tid, Topic t, ZsxqTopic local) {
-        if (local == null) return;
+    void fillAuthorIfMissing(String tid, Topic t, ZsxqTopic local) {
+        if (local == null) {
+            local = topicRepository.findByTopicId(tid).orElse(null);
+            if (local == null) return;
+        }
         // 老帖如果在列表里重新出现，顺带补齐附件清单，避免再为它单独请求话题详情
         fillFilesIfMissing(safe(local.getGroupId()), tid, t);
-        boolean missingName = safe(local.getAuthor()).isEmpty();
-        boolean missingId = safe(local.getAuthorId()).isEmpty();
+        boolean missingName = safe(local.getAuthor()).trim().isEmpty();
+        boolean missingId = safe(local.getAuthorId()).trim().isEmpty();
         if (!missingName && !missingId) return;
         String author = topicAuthor(t);
-        if (author.isEmpty()) return;
         String authorId = topicAuthorId(t);
-        jdbc.update("UPDATE zsxq_topic SET author = ?, author_id = ? WHERE topic_id = ?", author, authorId, tid);
+        String newAuthor = missingName ? author : "";
+        String newAuthorId = missingId ? authorId : "";
+        if (newAuthor.isEmpty() && newAuthorId.isEmpty()) return;
+        jdbc.update("UPDATE zsxq_topic SET "
+                        + "author = CASE WHEN ? <> '' THEN ? ELSE author END, "
+                        + "author_id = CASE WHEN ? <> '' THEN ? ELSE author_id END "
+                        + "WHERE topic_id = ?",
+                newAuthor, newAuthor, newAuthorId, newAuthorId, tid);
     }
 
     /** 附件清单尚未确认过时，用列表接口里的 {@code talk.files} 补齐；没有 talk 的列表索引留给回填作业。 */
@@ -642,6 +658,8 @@ public class ZsxqSyncService {
                 Topic topic = getTopic(client, tid);
                 TalkContent talk = topic == null ? null : topic.getTalk();
                 syncTopicFilesFromTopic(tid, topic);
+                // 图片回填本来就会取话题详情；顺带补齐历史匿名/缺作者 ID 的脏数据
+                if (topic != null) fillAuthorIfMissing(tid, topic, null);
                 List<String> keys = imageService.storeAll(tid, talk);
                 boolean complete = keys.size() >= imageService.sourceImageCount(talk);
                 saveTopicImages(tid, keys, complete);
@@ -666,6 +684,52 @@ public class ZsxqSyncService {
             }
         }
         return "图片回填 " + done + " 条，失败 " + failed + " 条，入库图片 " + stored + " 张";
+    }
+
+    /**
+     * 回填历史脏数据：作者名或作者 ID 缺失时，不因 `author` 为空跳过。
+     * 对作者为“匿名”的历史帖，仍取话题详情里的 `talk.owner`/顶层 `owner` 尝试补齐；
+     * 来源确实匿名时保留为空，不伪造作者。正序处理，每轮 {@value #AUTHOR_BACKFILL_DEFAULT_BATCH} 条。
+     */
+    private String backfillAuthors(ZsxqApiClient client, Logger logger,
+                                   java.util.function.Consumer<String> progress) throws InterruptedException {
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT topic_id FROM zsxq_topic WHERE (visible IS NULL OR visible = TRUE) "
+                        + "AND ((author IS NULL OR TRIM(author) = '') OR (author_id IS NULL OR TRIM(author_id) = '')) "
+                        + "ORDER BY COALESCE(source_create_time, '') ASC, topic_id ASC LIMIT " + AUTHOR_BACKFILL_DEFAULT_BATCH);
+        if (rows.isEmpty()) return "作者信息回填跳过（没有待补齐作者的帖子）";
+
+        int done = 0, failed = 0;
+        for (int i = 0; i < rows.size(); i++) {
+            Map<String, Object> row = rows.get(i);
+            String tid = rowCell(row, "topic_id");
+            if (tid.isBlank()) continue;
+            progress.accept("回填作者信息 " + (i + 1) + "/" + rows.size());
+            pause(topicPauseMs);
+            try {
+                Topic topic = getTopic(client, tid);
+                if (topic == null) {
+                    failed++;
+                    continue;
+                }
+                fillAuthorIfMissing(tid, topic, null);
+                done++;
+            } catch (Exception e) {
+                if (isRiskControl(e)) throw new RiskControlException(e);
+                if (isTopicGone(e)) {
+                    markTopicDeleted(tid);
+                    logger.info("帖子已删除，作者信息回填跳过 topicId={}", tid);
+                    continue;
+                }
+                failed++;
+                logger.warn("作者信息回填失败 topicId={} error={}", tid, e.getMessage());
+                if (isAuthOrFatal(e)) {
+                    logger.warn("知识星球授权/请求异常，中止本轮作者信息回填");
+                    break;
+                }
+            }
+        }
+        return "作者信息回填处理 " + done + " 条，失败 " + failed + " 条";
     }
 
     /**
@@ -694,12 +758,16 @@ public class ZsxqSyncService {
                 Topic topic = getTopic(client, tid);
                 TalkContent talk = topic == null ? null : topic.getTalk();
                 if (talk == null) {
+                    // 没有 talk 仍可能从顶层 owner 补作者；附件清单本身记为失败
+                    if (topic != null) fillAuthorIfMissing(tid, topic, null);
                     markFileMetaFailed(tid);
                     failed++;
                     continue;
                 }
                 fileService.syncFromTalk(gid, tid, talk);
                 markFileMetaChecked(tid);
+                // 附件清单回填本来就会取话题详情；顺带补齐历史匿名/缺作者 ID 的脏数据
+                fillAuthorIfMissing(tid, topic, null);
                 done++;
             } catch (Exception e) {
                 if (isRiskControl(e)) throw new RiskControlException(e);
@@ -1374,19 +1442,24 @@ public class ZsxqSyncService {
         return truncate(title + "\n" + body, ZsxqTopic.DIGEST_MAX_LENGTH);
     }
 
-    /** 作者优先取 talk.owner，其次取话题顶层 owner（专栏文章列表）。 */
-    private static String topicAuthor(Topic t) {
+    /** 作者名优先取 talk.owner，其次取话题顶层 owner；空值继续回退，不把匿名当成已补齐。 */
+    static String topicAuthor(Topic t) {
         if (t == null) return "";
-        User owner = t.getTalk() != null && t.getTalk().getOwner() != null
-                ? t.getTalk().getOwner() : t.getOwner();
-        return owner == null ? "" : safe(owner.getName()).trim();
+        User talkOwner = t.getTalk() != null ? t.getTalk().getOwner() : null;
+        String name = talkOwner != null ? safe(talkOwner.getName()).trim() : "";
+        if (!name.isEmpty()) return name;
+        User topOwner = t.getOwner();
+        return topOwner == null ? "" : safe(topOwner.getName()).trim();
     }
 
-    private static String topicAuthorId(Topic t) {
+    /** 作者 ID 优先取 talk.owner，其次取话题顶层 owner；不要求作者名非空。 */
+    static String topicAuthorId(Topic t) {
         if (t == null) return "";
-        User owner = t.getTalk() != null && t.getTalk().getOwner() != null
-                ? t.getTalk().getOwner() : t.getOwner();
-        return owner == null ? "" : normalizeId(owner.getUserId());
+        User talkOwner = t.getTalk() != null ? t.getTalk().getOwner() : null;
+        String id = talkOwner != null ? normalizeId(talkOwner.getUserId()) : "";
+        if (!id.isEmpty()) return id;
+        User topOwner = t.getOwner();
+        return topOwner == null ? "" : normalizeId(topOwner.getUserId());
     }
 
     /** 长文章正文是 HTML：粗转纯文本并压缩空白，避免摘要里出现标签。 */
@@ -1430,10 +1503,15 @@ public class ZsxqSyncService {
                 articleSyncedAt, LocalDateTime.now(), LocalDateTime.now(), tid);
 
         // 话题作者：来自话题内容的 owner（长文章可能只在话题顶层）；已有帖子也由此逐步补齐
+        // 作者名和作者 ID 分别补齐；空值不覆盖已有数据，只有 user_id 时也保留 ID。
         String author = topicAuthor(t);
         String authorId = topicAuthorId(t);
-        if (!author.isEmpty()) {
-            jdbc.update("UPDATE zsxq_topic SET author = ?, author_id = ? WHERE topic_id = ?", author, authorId, tid);
+        if (!author.isEmpty() || !authorId.isEmpty()) {
+            jdbc.update("UPDATE zsxq_topic SET "
+                            + "author = CASE WHEN ? <> '' THEN ? ELSE author END, "
+                            + "author_id = CASE WHEN ? <> '' THEN ? ELSE author_id END "
+                            + "WHERE topic_id = ?",
+                    author, author, authorId, authorId, tid);
         }
 
         // 附件只存元数据；内容由回填作业或用户点击下载时再落到对象存储
