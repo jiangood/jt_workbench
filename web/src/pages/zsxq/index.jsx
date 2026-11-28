@@ -18,7 +18,7 @@ export default class ZsxqReaderPage extends React.Component {
         keyword: '',
         sort: `${SORT_PROP}|DESC`,
         ownerOnly: false,
-        quality: '',
+        quality: 'NONE',
         items: [],
         page: 1,
         hasMore: true,
@@ -153,10 +153,22 @@ export default class ZsxqReaderPage extends React.Component {
     onQualityChange = (id, quality) => {
         this.setState(prev => {
             const nextQuality = quality || null
-            if (prev.quality === 'NONE' && (nextQuality === 'DRY' || nextQuality === 'NORMAL' || nextQuality === 'WATER')) {
-                return {items: (prev.items || []).filter(it => it.id !== id)}
+            const items = prev.items || []
+            const oldItem = items.find(it => it.id === id)
+            const oldQuality = oldItem?.quality || null
+            const qKey = (q) => (q === 'DRY' || q === 'NORMAL' || q === 'WATER') ? q : 'NONE'
+            const stats = prev.stats || {}
+            const qc = stats.quality ? {...stats.quality} : null
+            if (qc && oldQuality !== nextQuality) {
+                const ok = qKey(oldQuality)
+                const nk = qKey(nextQuality)
+                qc[ok] = Math.max(0, (qc[ok] || 0) - 1)
+                qc[nk] = (qc[nk] || 0) + 1
             }
-            return {items: (prev.items || []).map(it => it.id === id ? {...it, quality: nextQuality} : it)}
+            const nextItems = (prev.quality === 'NONE' && (nextQuality === 'DRY' || nextQuality === 'NORMAL' || nextQuality === 'WATER'))
+                ? items.filter(it => it.id !== id)
+                : items.map(it => it.id === id ? {...it, quality: nextQuality} : it)
+            return qc ? {items: nextItems, stats: {...stats, quality: qc}} : {items: nextItems}
         })
     }
 
@@ -219,11 +231,10 @@ export default class ZsxqReaderPage extends React.Component {
                             size='middle'
                             value={this.state.quality}
                             options={[
-                                {label: '全部', value: ''},
-                                {label: '干货', value: 'DRY'},
-                                {label: '普通', value: 'NORMAL'},
-                                {label: '水帖', value: 'WATER'},
-                                {label: '待标记', value: 'NONE'},
+                                {label: `待标记 ${stats?.quality?.NONE ?? 0}`, value: 'NONE'},
+                                {label: `干货 ${stats?.quality?.DRY ?? 0}`, value: 'DRY'},
+                                {label: `普通 ${stats?.quality?.NORMAL ?? 0}`, value: 'NORMAL'},
+                                {label: `水帖 ${stats?.quality?.WATER ?? 0}`, value: 'WATER'},
                             ]}
                             onChange={(v) => this.setState({quality: v}, () => this.reloadList(false))}
                         />

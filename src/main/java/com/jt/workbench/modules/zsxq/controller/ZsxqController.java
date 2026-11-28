@@ -313,15 +313,43 @@ public class ZsxqController {
         }
     }
 
-    /** 统计：帖子总数（不含专栏文章）/ 星球数 / 专栏数 */
+    /** 统计：帖子总数（不含专栏文章）/ 星球数 / 专栏数 / 质量分布 */
     @HasPermission("zsxq:read")
     @GetMapping("stats")
     public AjaxResult stats() {
         Map<String, Object> map = new LinkedHashMap<>();
-        map.put("topics", topicRepository.countMainTopics());
+        long topics = topicRepository.countMainTopics();
+        map.put("topics", topics);
         map.put("groups", groupRepository.count());
         map.put("columns", columnRepository.countByVisibleTrue());
+        map.put("quality", qualityCounts(topics));
         return new AjaxResult().ok().data(map);
+    }
+
+    /** 主话题质量分布（不含专栏文章），用于筛选按钮计数。 */
+    private Map<String, Long> qualityCounts(long total) {
+        Map<String, Long> counts = new LinkedHashMap<>();
+        counts.put("all", total);
+        counts.put("DRY", 0L);
+        counts.put("NORMAL", 0L);
+        counts.put("WATER", 0L);
+        counts.put("NONE", 0L);
+        try {
+            List<Map<String, Object>> rows = jdbc.queryForList(
+                    "SELECT COALESCE(NULLIF(quality, ''), 'NONE') AS q, COUNT(*) AS c "
+                            + "FROM zsxq_topic WHERE column_id IS NULL OR column_id = '' "
+                            + "GROUP BY COALESCE(NULLIF(quality, ''), 'NONE')");
+            for (Map<String, Object> row : rows) {
+                String q = cell(row, "q").toUpperCase(Locale.ROOT);
+                Object c = row.get("c");
+                if (c == null) c = row.get("C");
+                long n = c instanceof Number num ? num.longValue() : 0L;
+                if (counts.containsKey(q)) counts.put(q, n);
+            }
+        } catch (Exception e) {
+            log.debug("查询质量分布失败 error={}", e.getMessage());
+        }
+        return counts;
     }
 
     // ---------- 管理：删除 / 启用星球 ----------
