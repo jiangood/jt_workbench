@@ -24,11 +24,12 @@ class ZsxqJobTest {
     }
 
     @Test
-    void historicalBackfillRunsDailyAtEight() {
+    void historicalBackfillRunsEveryHour() {
         JobDescription description = ZsxqBackfillJob.class.getAnnotation(JobDescription.class);
         assertNotNull(description);
         assertEquals("jt.zsxqBackfill", description.key());
-        assertEquals("0 0 8 * * ?", description.defaultCron());
+        assertEquals("0 0 * * * ?", description.defaultCron());
+        assertEquals(ZsxqBackfillJob.DEFAULT_CRON, description.defaultCron());
         assertTrue(description.defaultEnabled());
         assertTrue(CronExpression.isValidExpression(description.defaultCron()));
         assertTrue(ZsxqBackfillJob.class.isAnnotationPresent(DisallowConcurrentExecution.class));

@@ -33,7 +33,7 @@ import java.util.concurrent.locks.ReentrantLock;
 /**
  * 知识星球同步与历史回填。
  *
- * <p>{@link #syncAll} 负责每 30 分钟的头部增量；{@link #backfillAll} 负责每天 08:00 的历史回填，
+ * <p>{@link #syncAll} 负责每 30 分钟的头部增量；{@link #backfillAll} 负责每小时的历史回填，
  * 从游标连续翻到最早页，并补齐专栏、图片与专栏文章完整正文。两个入口共享风控状态与同步游标，
  * 通过进程内锁互斥，避免并发执行时覆盖本轮状态。</p>
  *
@@ -142,7 +142,7 @@ public class ZsxqSyncService {
         }
     }
 
-    /** 历史回填入口（每天 08:00）：连续翻页直到追平，不受单轮请求预算限制。 */
+    /** 历史回填入口（每小时触发）：连续翻页直到追平，不受单轮请求预算限制。 */
     public JobResult backfillAll(Logger logger, java.util.function.Consumer<String> progress) {
         try {
             return execute("历史回填", true, logger, progress);
@@ -155,7 +155,7 @@ public class ZsxqSyncService {
     private JobResult execute(String taskName, boolean backfill, Logger logger,
                               java.util.function.Consumer<String> progress) throws InterruptedException {
         if (backfill) {
-            // 08:00 与增量作业可能同时触发：回填等待增量结束，避免抢锁导致当天回填被跳过
+            // 与增量作业可能同时触发（整点）：回填等待增量结束，避免抢锁导致本轮回填被跳过
             runLock.lockInterruptibly();
         } else if (!runLock.tryLock()) {
             return JobResult.skip("知识星球同步跳过（历史回填正在执行）");
@@ -404,7 +404,7 @@ public class ZsxqSyncService {
                 if (existingOnPage > 0 || list.size() < TOPICS_PER_PAGE) break;
             }
 
-            // 首次增量同步只负责初始化历史游标，实际回填交给每日独立作业
+            // 首次增量同步只负责初始化历史游标，实际回填交给独立回填作业
             if (cursor(gid).isEmpty() && !headOldest.isEmpty()) saveCursor(gid, headOldest);
             groupsDone++;
         }
@@ -484,7 +484,7 @@ public class ZsxqSyncService {
         jdbc.update("UPDATE zsxq_topic SET author = ?, author_id = ? WHERE topic_id = ?", author, authorId, tid);
     }
 
-    /** 附件清单尚未确认过时，用列表接口里的 {@code talk.files} 补齐；没有 talk 的列表索引留给每日回填。 */
+    /** 附件清单尚未确认过时，用列表接口里的 {@code talk.files} 补齐；没有 talk 的列表索引留给回填作业。 */
     private void fillFilesIfMissing(String gid, String tid, Topic t) {
         try {
             Long checked = jdbc.query("SELECT file_synced_at FROM zsxq_topic WHERE topic_id = ?",
@@ -499,7 +499,7 @@ public class ZsxqSyncService {
 
     /**
      * 保存附件元数据并标记清单已抓取。{@code talk} 为空表示列表接口只返回了索引
-     * （专栏常见），此时不标记，交给每日回填调用话题详情再补。
+     * （专栏常见），此时不标记，交给回填作业调用话题详情再补。
      */
     private void syncTopicFiles(String gid, String tid, TalkContent talk) {
         if (talk == null) return;
@@ -956,7 +956,7 @@ public class ZsxqSyncService {
             if (existingOnPage > 0 || list.size() < TOPICS_PER_PAGE) break;
         }
 
-        // 2) 历史回填：增量作业只初始化游标；每日回填作业连续翻到最早页
+        // 2) 历史回填：增量作业只初始化游标；每轮回填作业连续翻到最早页
         String end = safe(column.getSyncCursor()).trim();
         if (end.isEmpty() && !headOldest.isEmpty()) end = headOldest;
         if (fullBackfill) {
@@ -1436,7 +1436,7 @@ public class ZsxqSyncService {
             jdbc.update("UPDATE zsxq_topic SET author = ?, author_id = ? WHERE topic_id = ?", author, authorId, tid);
         }
 
-        // 附件只存元数据；内容由每日回填或用户点击下载时再落到对象存储
+        // 附件只存元数据；内容由回填作业或用户点击下载时再落到对象存储
         syncTopicFiles(gid, tid, talk);
     }
 
