@@ -162,8 +162,8 @@ export default class ZsxqReaderPage extends React.Component {
             if (qc && oldQuality !== nextQuality) {
                 const ok = qKey(oldQuality)
                 const nk = qKey(nextQuality)
-                qc[ok] = Math.max(0, (qc[ok] || 0) - 1)
-                qc[nk] = (qc[nk] || 0) + 1
+                qc[ok] = Math.max(0, (Number(qc[ok]) || 0) - 1)
+                qc[nk] = (Number(qc[nk]) || 0) + 1
             }
             const nextItems = (prev.quality === 'NONE' && (nextQuality === 'DRY' || nextQuality === 'NORMAL' || nextQuality === 'WATER'))
                 ? items.filter(it => it.id !== id)
