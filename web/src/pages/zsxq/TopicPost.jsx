@@ -92,27 +92,6 @@ export default class TopicPost extends React.Component {
                 {Number(item.likesCount) > 0 ? <span>赞 {item.likesCount}</span> : null}
                 {Number(item.commentCount) > 0 ? <span>评论 {item.commentCount}</span> : null}
                 {item.lastCommentTime ? <span>最近回复 {fmtTime(item.lastCommentTime)}</span> : null}
-                <span className='zsxq-post-actions'>
-                    <Button className='zsxq-post-note' type='text' size='small'
-                            icon={<FileTextOutlined/>} perm='note:edit'
-                            onClick={() => this.setState({noteModalOpen: true})}>笔记</Button>
-                    {PermUtils.hasPermission('zsxq:manage') ? <>
-                        <Tooltip title='干货'>
-                            <Button type='text' size='small'
-                                    className={`zsxq-post-mark-btn${item.quality === 'DRY' ? ' is-dry' : ''}`}
-                                    aria-label='标记为干货'
-                                    icon={item.quality === 'DRY' ? <CaretUpFilled/> : <CaretUpOutlined/>}
-                                    onClick={() => this.setQuality('DRY')}/>
-                        </Tooltip>
-                        <Tooltip title='水帖'>
-                            <Button type='text' size='small'
-                                    className={`zsxq-post-mark-btn${item.quality === 'WATER' ? ' is-water' : ''}`}
-                                    aria-label='标记为水帖'
-                                    icon={item.quality === 'WATER' ? <CaretDownFilled/> : <CaretDownOutlined/>}
-                                    onClick={() => this.setQuality('WATER')}/>
-                        </Tooltip>
-                    </> : null}
-                </span>
             </div>
 
             {hasArticleContent ? <>
@@ -170,6 +149,28 @@ export default class TopicPost extends React.Component {
                         </li>
                     })}
                 </ul>
+            </div> : null}
+
+            {(PermUtils.hasPermission('note:edit') || PermUtils.hasPermission('zsxq:manage')) ? <div className='zsxq-post-actions'>
+                <Button className='zsxq-post-note' type='text' size='small'
+                        icon={<FileTextOutlined/>} perm='note:edit'
+                        onClick={() => this.setState({noteModalOpen: true})}>笔记</Button>
+                {PermUtils.hasPermission('zsxq:manage') ? <>
+                    <Tooltip title='干货'>
+                        <Button type='text' size='small'
+                                className={`zsxq-post-mark-btn${item.quality === 'DRY' ? ' is-dry' : ''}`}
+                                aria-label='标记为干货'
+                                icon={item.quality === 'DRY' ? <CaretUpFilled/> : <CaretUpOutlined/>}
+                                onClick={() => this.setQuality('DRY')}/>
+                    </Tooltip>
+                    <Tooltip title='水帖'>
+                        <Button type='text' size='small'
+                                className={`zsxq-post-mark-btn${item.quality === 'WATER' ? ' is-water' : ''}`}
+                                aria-label='标记为水帖'
+                                icon={item.quality === 'WATER' ? <CaretDownFilled/> : <CaretDownOutlined/>}
+                                onClick={() => this.setQuality('WATER')}/>
+                    </Tooltip>
+                </> : null}
             </div> : null}
 
             {comments.length ? <div className='zsxq-post-comments'>
