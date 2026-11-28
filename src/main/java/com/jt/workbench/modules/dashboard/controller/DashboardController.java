@@ -1,9 +1,5 @@
 package com.jt.workbench.modules.dashboard.controller;
 
-import com.jt.workbench.modules.news.entity.NewsItem;
-import com.jt.workbench.modules.news.entity.NewsSource;
-import com.jt.workbench.modules.news.repo.NewsItemRepository;
-import com.jt.workbench.modules.news.repo.NewsSourceRepository;
 import com.jt.workbench.modules.note.entity.Note;
 import com.jt.workbench.modules.note.repo.NoteRepository;
 import com.jt.workbench.modules.reminder.entity.Reminder;
@@ -26,10 +22,10 @@ import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
-import java.util.stream.Collectors;
+
 
 /**
- * 首页 Dashboard 汇总：资讯 / 提醒 / 自选股 / 笔记 / 知识星球。
+ * 首页 Dashboard 汇总：提醒 / 自选股 / 笔记 / 知识星球。
  * 服务端仅做简单聚合与展示计算（如提醒下一次事件日期估算）。
  */
 @RestController
@@ -39,10 +35,6 @@ public class DashboardController {
     private static final ZoneId ZONE = ZoneId.systemDefault();
     private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
 
-    @Autowired
-    private NewsItemRepository newsItemRepository;
-    @Autowired
-    private NewsSourceRepository newsSourceRepository;
     @Autowired
     private ReminderRepository reminderRepository;
     @Autowired
@@ -56,38 +48,12 @@ public class DashboardController {
     public AjaxResult summary() {
         Map<String, Object> data = new LinkedHashMap<>();
 
-        data.put("news", buildNews());
         data.put("reminders", buildReminders());
         data.put("stocks", buildStocks());
         data.put("notes", buildNotes());
         data.put("zsxq", buildZsxq());
 
         return new AjaxResult().ok().data(data);
-    }
-
-    private Map<String, Object> buildNews() {
-        Map<String, String> sourceNames = newsSourceRepository.findAll().stream()
-                .collect(Collectors.toMap(NewsSource::getId, s -> s.getName() == null ? "" : s.getName(), (a, b) -> a));
-
-        List<NewsItem> latest = newsItemRepository.search(null, null, "unread",
-                PageRequest.of(0, 8, Sort.by(Sort.Direction.DESC, "pubTime"))).getContent();
-
-        List<Map<String, Object>> items = new ArrayList<>();
-        for (NewsItem n : latest) {
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("id", n.getId());
-            m.put("title", n.getTitle());
-            m.put("sourceName", sourceNames.getOrDefault(n.getSourceId(), ""));
-            m.put("author", n.getAuthor());
-            m.put("pubTime", n.getPubTime() == null ? null : n.getPubTime().toString());
-            m.put("status", n.getStatus());
-            items.add(m);
-        }
-
-        Map<String, Object> news = new LinkedHashMap<>();
-        news.put("latest", items);
-        news.put("unread", newsItemRepository.countByStatus("unread"));
-        return news;
     }
 
     private Map<String, Object> buildReminders() {

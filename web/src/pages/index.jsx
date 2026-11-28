@@ -510,7 +510,7 @@ export default class HomePage extends React.Component {
                 <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 16, flexWrap: 'wrap', marginBottom: 16}}>
                     <div>
                         <Title level={4} style={{margin: 0}}>Dashboard</Title>
-                        <Text type="secondary">今日概览 · 资讯、提醒与市场一屏可读</Text>
+                        <Text type="secondary">今日概览 · 提醒与市场一屏可读</Text>
                     </div>
                     <Space>
                         <Text type="secondary" style={{fontSize: 12}}>

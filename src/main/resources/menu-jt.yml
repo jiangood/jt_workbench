@@ -1,14 +1,5 @@
 ## jt-workbench 业务菜单。框架预设菜单（首页/系统管理/定时任务等）位于 open-admin 框架的 menu.yml。
 menus:
-  jt-news:
-    name: 资讯
-    icon: ReadOutlined
-    path: /news
-    perms:
-      - {name: 读取, code: news:read}
-      - {name: 新建, code: news:create}
-      - {name: 编辑, code: news:update}
-      - {name: 源管理, code: news:source}
   jt-stock:
     name: 鱼池
     icon: FundOutlined
