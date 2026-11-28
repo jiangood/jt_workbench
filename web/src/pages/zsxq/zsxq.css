@@ -468,20 +468,49 @@
     .zsxq-post-images .zsxq-post-image { width: calc(50% - 4px); height: 140px; }
 }
 
-/* 帖子元信息里的「转为笔记」按钮：与纯文本元信息保持同一行高 */
-.zsxq-post-meta .zsxq-post-note.ant-btn-link {
+/* 帖子元信息右侧动作：笔记（弱化）+ 干货/水帖三角标记 */
+.zsxq-post-actions {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+}
+
+.zsxq-post-meta .zsxq-post-note.ant-btn-text {
     height: auto;
-    padding: 0;
-    color: #eb2f96;
+    padding: 0 4px;
+    color: var(--oa-color-text-secondary, #8c8c8c);
     font-size: 12px;
     line-height: 1.6;
 }
 
-.zsxq-post-meta .zsxq-post-note.ant-btn-link:hover {
-    color: #c41d7f;
+.zsxq-post-meta .zsxq-post-note.ant-btn-text:hover {
+    color: var(--oa-color-text, #1f1f1f);
+    background: transparent;
 }
 
-/* 标记单选框：靠右，方便快速标记 */
-.zsxq-post-mark {
-    margin-left: auto;
+.zsxq-post-meta .zsxq-post-mark-btn.ant-btn-text {
+    width: 24px;
+    min-width: 24px;
+    height: 24px;
+    padding: 0;
+    color: var(--oa-color-text-quaternary, #bfbfbf);
+    font-size: 16px;
+}
+
+.zsxq-post-meta .zsxq-post-mark-btn.ant-btn-text:hover {
+    color: var(--oa-color-text-secondary, #8c8c8c);
+    background: var(--oa-color-fill-secondary, #f5f5f5);
+}
+
+.zsxq-post-meta .zsxq-post-mark-btn.is-dry.ant-btn-text,
+.zsxq-post-meta .zsxq-post-mark-btn.is-dry.ant-btn-text:hover {
+    color: #fa8c16;
+    background: rgba(250, 140, 22, 0.1);
+}
+
+.zsxq-post-meta .zsxq-post-mark-btn.is-water.ant-btn-text,
+.zsxq-post-meta .zsxq-post-mark-btn.is-water.ant-btn-text:hover {
+    color: #8c8c8c;
+    background: rgba(0, 0, 0, 0.06);
 }

@@ -1,6 +1,6 @@
 import React from 'react'
-import {DownloadOutlined, FileTextOutlined, PaperClipOutlined} from '@ant-design/icons'
-import {Button, Image, Radio, Switch, Tag} from 'antd'
+import {CaretDownFilled, CaretDownOutlined, CaretUpFilled, CaretUpOutlined, FileTextOutlined, PaperClipOutlined, DownloadOutlined} from '@ant-design/icons'
+import {Button, Image, Switch, Tag, Tooltip} from 'antd'
 import {HttpClient, PermUtils} from '@jiangood/open-admin'
 import {fileDownloadUrl, fmtSize, fmtTime, imageSrc, topicImages} from './media'
 import {parseZsxqText} from './richText'
@@ -92,20 +92,27 @@ export default class TopicPost extends React.Component {
                 {Number(item.likesCount) > 0 ? <span>赞 {item.likesCount}</span> : null}
                 {Number(item.commentCount) > 0 ? <span>评论 {item.commentCount}</span> : null}
                 {item.lastCommentTime ? <span>最近回复 {fmtTime(item.lastCommentTime)}</span> : null}
-                {PermUtils.hasPermission('zsxq:manage') ? <Radio.Group
-                    className='zsxq-post-mark'
-                    size='small'
-                    optionType='button'
-                    value={item.quality || undefined}
-                    options={[
-                        {label: '干货', value: 'DRY'},
-                        {label: '水帖', value: 'WATER'},
-                    ]}
-                    onChange={(e) => this.setQuality(e.target.value)}
-                /> : null}
-                <Button className='zsxq-post-note' type='link' size='small'
-                        icon={<FileTextOutlined/>} perm='note:edit'
-                        onClick={() => this.setState({noteModalOpen: true})}>转为笔记</Button>
+                <span className='zsxq-post-actions'>
+                    <Button className='zsxq-post-note' type='text' size='small'
+                            icon={<FileTextOutlined/>} perm='note:edit'
+                            onClick={() => this.setState({noteModalOpen: true})}>笔记</Button>
+                    {PermUtils.hasPermission('zsxq:manage') ? <>
+                        <Tooltip title='干货'>
+                            <Button type='text' size='small'
+                                    className={`zsxq-post-mark-btn${item.quality === 'DRY' ? ' is-dry' : ''}`}
+                                    aria-label='标记为干货'
+                                    icon={item.quality === 'DRY' ? <CaretUpFilled/> : <CaretUpOutlined/>}
+                                    onClick={() => this.setQuality('DRY')}/>
+                        </Tooltip>
+                        <Tooltip title='水帖'>
+                            <Button type='text' size='small'
+                                    className={`zsxq-post-mark-btn${item.quality === 'WATER' ? ' is-water' : ''}`}
+                                    aria-label='标记为水帖'
+                                    icon={item.quality === 'WATER' ? <CaretDownFilled/> : <CaretDownOutlined/>}
+                                    onClick={() => this.setQuality('WATER')}/>
+                        </Tooltip>
+                    </> : null}
+                </span>
             </div>
 
             {hasArticleContent ? <>
