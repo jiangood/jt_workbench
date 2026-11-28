@@ -23,7 +23,5 @@ public class Music extends BaseEntity {
 
     private Integer playCount = 0;
 
-    private Integer favorite = 0;
-
     private String coverUrl;
 }

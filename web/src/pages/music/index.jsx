@@ -12,8 +12,6 @@ import {
     CloseOutlined,
     DeleteOutlined,
     EditOutlined,
-    HeartFilled,
-    HeartOutlined,
     LeftOutlined,
     LoadingOutlined,
     MoreOutlined,
@@ -206,11 +204,6 @@ class MusicPageInner extends React.Component {
         const qi = player.queue.findIndex(t => t.id === String(id))
         if (qi >= 0) player.removeAt(qi)
         this.app.message.success('已删除')
-        this.reload()
-    }
-
-    toggleFavorite = async (record) => {
-        await HttpClient.post(`admin/music/${record.id}/favorite`)
         this.reload()
     }
 
@@ -508,7 +501,6 @@ class MusicPageInner extends React.Component {
         const dur = this.state.duration || (cur?.duration ? Number(cur.duration) : 0)
         const curT = this.state.curTime
         const mode = PLAY_MODES.find(m => m.key === player.mode) || PLAY_MODES[0]
-        const fav = cur ? Number(cur.favorite) > 0 : false
 
         return <div className='mc-player' aria-label='播放控制栏'>
             <div className='mc-now'>
@@ -519,13 +511,6 @@ class MusicPageInner extends React.Component {
                     <div className='mc-now-title'>{cur ? (cur.title || '(未命名曲目)') : '未在播放'}</div>
                     <div className='mc-now-sub'>{cur ? (cur.artist || '未知艺术家') : '在列表中选择曲目开始播放'}</div>
                 </div>
-                {cur ? (
-                    <Tooltip title={fav ? '取消收藏' : '收藏'}>
-                        <button type='button' className={`mc-heart${fav ? ' active' : ''}`} onClick={() => this.toggleFavorite(cur)}>
-                            {fav ? <HeartFilled/> : <HeartOutlined/>}
-                        </button>
-                    </Tooltip>
-                ) : null}
             </div>
             <div className='mc-center'>
                 <div className='mc-controls'>
@@ -659,12 +644,6 @@ class MusicPageInner extends React.Component {
                 <span className='mc-col-dur'>{fmtDuration(t.duration) || '—'}</span>
                 <span className='mc-col-acts'>
                     <PermActions more size='small' visibleCount={1} actions={[
-                        {
-                            label: Number(t.favorite) > 0 ? '取消收藏' : '收藏',
-                            icon: <HeartOutlined/>,
-                            perm: 'music:edit',
-                            onClick: () => this.toggleFavorite(t),
-                        },
                         {label: '加入播放列表', icon: <PlusOutlined/>, perm: 'music:read', onClick: () => this.addToQueue(t.id)},
                         {label: '编辑', icon: <EditOutlined/>, perm: 'music:edit', onClick: () => this.openEdit(t)},
                         {

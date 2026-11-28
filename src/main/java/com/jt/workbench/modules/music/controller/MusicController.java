@@ -64,7 +64,6 @@ public class MusicController {
             if (input.getArtist() != null) old.setArtist(input.getArtist());
             if (input.getAlbum() != null) old.setAlbum(input.getAlbum());
             if (input.getCoverUrl() != null) old.setCoverUrl(input.getCoverUrl());
-            if (input.getFavorite() != null) old.setFavorite(input.getFavorite());
             if (input.getPlayCount() != null) old.setPlayCount(input.getPlayCount());
             if (input.getDuration() != null) old.setDuration(input.getDuration());
             musicRepository.save(old);
@@ -76,19 +75,6 @@ public class MusicController {
     @PostMapping("delete")
     public AjaxResult delete(@RequestBody io.github.jiangood.openadmin.util.dto.IdReq req) {
         musicRepository.deleteById(req.getId());
-        return new AjaxResult();
-    }
-
-    /** 收藏 / 取消收藏 */
-    @HasPermission("music:edit")
-    @PostMapping("{id}/favorite")
-    public AjaxResult toggleFavorite(@PathVariable String id) {
-        Music old = musicRepository.findById(id).orElse(null);
-        if (old != null) {
-            old.setFavorite(old.getFavorite() != null && old.getFavorite() > 0 ? 0 : 1);
-            musicRepository.save(old);
-            return new AjaxResult().ok().data(old);
-        }
         return new AjaxResult();
     }
 
